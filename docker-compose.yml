@@ -1,0 +1,17 @@
+services:
+  mailbox:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mailbox
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:8787:8787"
+    networks:
+      - app-shared
+
+networks:
+  app-shared:
+    external: true

@@ -1,0 +1,18 @@
+FROM debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /app mailbox
+
+WORKDIR /app
+COPY build/mailbox-server-linux-amd64 /app/mailbox-server
+COPY dist /app/dist
+
+RUN chmod +x /app/mailbox-server
+
+ENV MAILBOX_SERVER_ADDR=0.0.0.0:8787
+ENV MAILBOX_STATIC_DIR=/app/dist
+EXPOSE 8787
+USER mailbox
+ENTRYPOINT ["/app/mailbox-server"]

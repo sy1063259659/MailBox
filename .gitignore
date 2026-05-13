@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+
+*.zip
+*.log
+*.png
+*.tsbuildinfo
+vite.config.d.ts
+
+.env
+.env.local
+.env.*.local
+
+mailbox-server-linux-amd64

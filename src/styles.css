@@ -1,0 +1,668 @@
+:root {
+  color: #1f2937;
+  background: #f4f6fb;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.app-shell {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: #f4f6fb;
+}
+
+.app-main {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.faka-shell {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 320px minmax(0, 1fr);
+  background: #f4f6fb;
+}
+
+.faka-sidebar {
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px 14px;
+  background: #ffffff;
+  border-right: 1px solid #e6ebf2;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.faka-brand {
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #1f2937;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.faka-brand .el-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #2563eb;
+}
+
+.faka-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+  padding-right: 2px;
+}
+
+.faka-nav-item,
+.faka-nav-title {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #526072;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.faka-nav-title {
+  cursor: default;
+  color: #253044;
+  font-weight: 650;
+  justify-content: space-between;
+}
+
+.faka-nav-title span {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.faka-nav-item:hover,
+.faka-nav-item.active {
+  background: #f0f5ff;
+  color: #1d4ed8;
+}
+
+.faka-nav-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+.sidebar-account-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 2px;
+}
+
+.account-shortcut {
+  color: #475569;
+  font-size: 13px;
+  min-height: 44px;
+  align-items: center;
+}
+
+.faka-total-card {
+  min-height: 82px;
+  padding: 13px;
+  border-radius: 10px;
+  background: #f8fbff;
+  border: 1px solid #e8eef7;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.faka-total-card .el-icon {
+  color: #2563eb;
+  font-size: 22px;
+}
+
+.faka-total-card span {
+  color: #667085;
+  font-size: 13px;
+}
+
+.faka-total-card strong {
+  grid-column: 2;
+  color: #1d4ed8;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.faka-main {
+  min-width: 0;
+  min-height: 0;
+  height: 100vh;
+  overflow: hidden;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.faka-topbar {
+  min-height: 42px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.faka-search {
+  max-width: 520px;
+}
+
+.faka-search .el-input__wrapper {
+  border-radius: 8px;
+  box-shadow: 0 0 0 1px #e4e9f2 inset;
+}
+
+.faka-card,
+.faka-mail-list,
+.faka-reader {
+  background: #ffffff;
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.faka-card {
+  height: calc(100vh - 72px);
+  min-height: 0;
+  overflow: hidden;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.faka-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+.faka-action-row .el-button {
+  border-radius: 7px;
+}
+
+.faka-account-table {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid #edf1f7;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.faka-account-table .el-table__header th {
+  background: #f8fafc;
+  color: #334155;
+  font-weight: 650;
+}
+
+.copy-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.copy-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-cell .el-button {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
+.mail-count {
+  display: inline-flex;
+  min-width: 32px;
+  height: 24px;
+  padding: 0 10px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1d4ed8;
+  font-weight: 650;
+  line-height: 24px;
+}
+
+.row-actions {
+  width: 100%;
+  justify-content: center;
+}
+
+.faka-pagination {
+  min-height: 44px;
+  padding-top: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.faka-mail-workspace {
+  height: calc(100vh - 72px);
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: minmax(380px, 0.92fr) minmax(460px, 1.08fr);
+  gap: 14px;
+}
+
+.faka-mail-list,
+.faka-reader {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.faka-mail-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.mail-list-toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #eef2f7;
+  margin-bottom: 10px;
+}
+
+.mail-folder-row,
+.mail-command-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+}
+
+.faka-mail-item {
+  width: 100%;
+  padding: 12px 10px;
+  border: 0;
+  border-bottom: 1px solid #edf1f7;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.faka-mail-item:hover,
+.faka-mail-item.active {
+  background: #f6faff;
+}
+
+.mail-item-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.mail-item-line strong,
+.mail-item-line span,
+.faka-mail-item h3,
+.faka-mail-item p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mail-item-line strong {
+  color: #334155;
+  font-size: 13px;
+}
+
+.mail-item-line span,
+.faka-mail-item p {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.faka-mail-item h3 {
+  margin: 5px 0 4px;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.mail-list-scrollbar {
+  flex: 1;
+  min-height: 0;
+}
+
+.mail-list-scrollbar .el-scrollbar__wrap {
+  max-height: 100%;
+}
+
+.load-more-row {
+  padding: 12px;
+  display: flex;
+  justify-content: center;
+}
+
+.faka-reader {
+  display: flex;
+  flex-direction: column;
+}
+
+.reader-empty-icon {
+  font-size: 36px;
+  color: #94a3b8;
+}
+
+.reader-head {
+  flex: 0 0 auto;
+  padding-bottom: 14px;
+  border-bottom: 1px solid #edf1f7;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reader-head h2 {
+  margin: 0 0 8px;
+  color: #111827;
+  font-size: 18px;
+}
+
+.reader-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.mail-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  line-height: 1.65;
+}
+
+.mail-body-frame {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  height: auto;
+  border: 1px solid #edf1f7;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.mail-body.plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dialog-alert,
+.import-result {
+  margin-bottom: 12px;
+}
+
+.faka-import-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+.import-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.dialog-alert p {
+  margin: 2px 0;
+}
+
+.format-box {
+  padding: 12px;
+  border-radius: 8px;
+  background: #f8fafc;
+  border: 1px solid #e8eef7;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.format-box strong,
+.import-label {
+  color: #111827;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.format-box code {
+  color: #475569;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.format-box p {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.upload-drop {
+  min-height: 86px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 8px;
+  background: #fbfdff;
+  color: #475569;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.upload-drop:hover {
+  border-color: #2563eb;
+  color: #2563eb;
+  background: #f6faff;
+}
+
+.upload-drop .el-icon {
+  font-size: 24px;
+}
+
+.upload-drop small {
+  color: #94a3b8;
+}
+
+.hidden-file {
+  display: none;
+}
+
+.import-result {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.error-list {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: #fff5f5;
+  border-radius: 6px;
+  color: #b42318;
+}
+
+.app-loading,
+.login-shell {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.app-loading {
+  color: #64748b;
+}
+
+.login-shell {
+  padding: 24px;
+  background: #f4f6fb;
+}
+
+.login-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.login-brand .el-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: #eef4ff;
+  color: #2563eb;
+  font-size: 24px;
+}
+
+.login-brand h1 {
+  margin: 0;
+  color: #111827;
+  font-size: 22px;
+}
+
+.login-brand p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.login-submit {
+  width: 100%;
+}
+
+@media (max-width: 1180px) {
+  html,
+  body,
+  #app {
+    overflow: auto;
+  }
+
+  .app-shell,
+  .app-main,
+  .faka-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+  }
+
+  .faka-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .faka-sidebar {
+    height: auto;
+    min-height: auto;
+  }
+
+  .faka-main {
+    padding: 12px;
+  }
+
+  .faka-topbar,
+  .mail-command-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .faka-search {
+    max-width: none;
+  }
+
+  .faka-mail-workspace {
+    height: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .faka-card {
+    height: auto;
+  }
+}
