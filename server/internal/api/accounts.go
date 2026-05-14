@@ -25,6 +25,12 @@ type groupsResponse struct {
 	Groups []store.Group `json:"groups"`
 }
 
+type splitHotmailResponse struct {
+	OK          bool                `json:"ok"`
+	ParentEmail string              `json:"parentEmail"`
+	Accounts    []store.MailAccount `json:"accounts"`
+}
+
 type importAccountsRequest struct {
 	Text      string `json:"text"`
 	Overwrite bool   `json:"overwrite"`
@@ -80,11 +86,30 @@ func (api accountAPI) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "bad_request", "email is required")
 		return
 	}
-	if err := api.store.DeleteAccount(r.Context(), email); err != nil {
+	deletedEmails, err := api.store.DeleteAccount(r.Context(), email)
+	if err != nil {
 		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "deletedEmails": deletedEmails})
+}
+
+func (api accountAPI) splitHotmail(w http.ResponseWriter, r *http.Request) {
+	email := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/accounts/"), "/split-hotmail")
+	if email == "" || email == r.URL.Path {
+		WriteError(w, http.StatusBadRequest, "bad_request", "email is required")
+		return
+	}
+	result, err := api.store.SplitHotmailAccount(r.Context(), email)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, splitHotmailResponse{
+		OK:          true,
+		ParentEmail: result.ParentEmail,
+		Accounts:    result.Accounts,
+	})
 }
 
 func (api accountAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {

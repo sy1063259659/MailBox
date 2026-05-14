@@ -1,17 +1,16 @@
 import { deleteDB, openDB, type DBSchema, type IDBPDatabase, type IDBPObjectStore } from 'idb'
 import type {
-  MailAccount,
   MailBody,
   MailFolder,
   MailMessage,
   MessageFilter,
-  StorageExport,
   StorageStats,
   SyncState,
 } from '../types'
 
-const DB_NAME = 'mailbox-graph-manager'
-const DB_VERSION = 1
+const DB_NAME = 'mailbox-cache'
+const LEGACY_DB_NAME = 'mailbox-graph-manager'
+const DB_VERSION = 2
 
 type MessageStorageKey = `${string}::${MailFolder}::${string}`
 type MessageBodyStorageKey = `${string}::${string}`
@@ -30,13 +29,6 @@ interface StoredSyncState extends SyncState {
 }
 
 interface MailboxDatabase extends DBSchema {
-  accounts: {
-    key: string
-    value: MailAccount
-    indexes: {
-      'by-status': string
-    }
-  }
   messages: {
     key: MessageStorageKey
     value: StoredMailMessage
@@ -63,33 +55,90 @@ interface MailboxDatabase extends DBSchema {
 }
 
 let databasePromise: Promise<IDBPDatabase<MailboxDatabase>> | undefined
+let legacyMigrationPromise: Promise<void> | undefined
 
 const getDatabase = (): Promise<IDBPDatabase<MailboxDatabase>> => {
   databasePromise ??= openDB<MailboxDatabase>(DB_NAME, DB_VERSION, {
     upgrade(database) {
-      const accounts = database.createObjectStore('accounts', { keyPath: 'email' })
-      accounts.createIndex('by-status', 'status')
+      const rawDatabase = database as unknown as IDBDatabase
+      if (rawDatabase.objectStoreNames.contains('accounts')) {
+        rawDatabase.deleteObjectStore('accounts')
+      }
 
-      const messages = database.createObjectStore('messages', {
-        keyPath: 'storageKey',
-      })
-      messages.createIndex('by-account', 'accountEmail')
-      messages.createIndex('by-folder', 'folder')
-      messages.createIndex('by-received-at', 'receivedAt')
+      const messages = database.objectStoreNames.contains('messages')
+        ? undefined
+        : database.createObjectStore('messages', {
+            keyPath: 'storageKey',
+          })
+      messages?.createIndex('by-account', 'accountEmail')
+      messages?.createIndex('by-folder', 'folder')
+      messages?.createIndex('by-received-at', 'receivedAt')
 
-      const messageBodies = database.createObjectStore('messageBodies', {
-        keyPath: 'storageKey',
-      })
-      messageBodies.createIndex('by-account', 'accountEmail')
+      const messageBodies = database.objectStoreNames.contains('messageBodies')
+        ? undefined
+        : database.createObjectStore('messageBodies', {
+            keyPath: 'storageKey',
+          })
+      messageBodies?.createIndex('by-account', 'accountEmail')
 
-      const syncStates = database.createObjectStore('syncStates', {
-        keyPath: 'storageKey',
-      })
-      syncStates.createIndex('by-account', 'accountEmail')
+      const syncStates = database.objectStoreNames.contains('syncStates')
+        ? undefined
+        : database.createObjectStore('syncStates', {
+            keyPath: 'storageKey',
+          })
+      syncStates?.createIndex('by-account', 'accountEmail')
     },
   })
 
   return databasePromise
+}
+
+const ensureLegacyMigration = async (): Promise<void> => {
+  legacyMigrationPromise ??= migrateLegacyDatabase()
+  await legacyMigrationPromise
+}
+
+const migrateLegacyDatabase = async (): Promise<void> => {
+  if (!(await databaseExists(LEGACY_DB_NAME))) {
+    return
+  }
+
+  const legacyDatabase = await openDB<MailboxDatabase>(LEGACY_DB_NAME)
+  const database = await getDatabase()
+
+  try {
+    const [messages, messageBodies, syncStates] = await Promise.all([
+      legacyDatabase.objectStoreNames.contains('messages')
+        ? legacyDatabase.getAll('messages')
+        : Promise.resolve([]),
+      legacyDatabase.objectStoreNames.contains('messageBodies')
+        ? legacyDatabase.getAll('messageBodies')
+        : Promise.resolve([]),
+      legacyDatabase.objectStoreNames.contains('syncStates')
+        ? legacyDatabase.getAll('syncStates')
+        : Promise.resolve([]),
+    ])
+
+    const transaction = database.transaction(['messages', 'messageBodies', 'syncStates'], 'readwrite')
+    await Promise.all([
+      ...messages.map((message) => transaction.objectStore('messages').put(message)),
+      ...messageBodies.map((body) => transaction.objectStore('messageBodies').put(body)),
+      ...syncStates.map((syncState) => transaction.objectStore('syncStates').put(syncState)),
+    ])
+    await transaction.done
+  } finally {
+    legacyDatabase.close()
+  }
+
+  await deleteDB(LEGACY_DB_NAME)
+}
+
+const databaseExists = async (name: string): Promise<boolean> => {
+  if (!('databases' in indexedDB)) {
+    return false
+  }
+  const databases = await indexedDB.databases()
+  return databases.some((database) => database.name === name)
 }
 
 export const createMessageKey = (
@@ -142,39 +191,8 @@ const hasBodyPrefix = (body: StoredMailBody, accountEmail: string): boolean =>
 const hasSyncStatePrefix = (syncState: StoredSyncState, accountEmail: string): boolean =>
   syncState.storageKey.startsWith(`${accountEmail}::`)
 
-export const upsertAccount = async (account: MailAccount): Promise<void> => {
-  const database = await getDatabase()
-  await database.put('accounts', account)
-}
-
-export const listAccounts = async (): Promise<MailAccount[]> => {
-  const database = await getDatabase()
-  return database.getAll('accounts')
-}
-
-export const getAccount = async (email: string): Promise<MailAccount | undefined> => {
-  const database = await getDatabase()
-  return database.get('accounts', email)
-}
-
-export const deleteAccount = async (email: string): Promise<void> => {
-  const database = await getDatabase()
-  const transaction = database.transaction(
-    ['accounts', 'messages', 'messageBodies', 'syncStates'],
-    'readwrite',
-  )
-
-  await Promise.all([
-    transaction.objectStore('accounts').delete(email),
-    deleteMessagesForAccount(transaction.objectStore('messages'), email),
-    deleteMessageBodiesForAccount(transaction.objectStore('messageBodies'), email),
-    deleteSyncStatesForAccount(transaction.objectStore('syncStates'), email),
-  ])
-
-  await transaction.done
-}
-
 export const deleteLocalMailDataForAccount = async (email: string): Promise<void> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const transaction = database.transaction(
     ['messages', 'messageBodies', 'syncStates'],
@@ -191,6 +209,7 @@ export const deleteLocalMailDataForAccount = async (email: string): Promise<void
 }
 
 export const bulkUpsertMessages = async (messages: MailMessage[]): Promise<void> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const transaction = database.transaction('messages', 'readwrite')
   const store = transaction.objectStore('messages')
@@ -203,6 +222,7 @@ export const listMessages = async (
   accountEmail: string,
   folder?: MailFolder,
 ): Promise<MailMessage[]> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const messages = await database.getAllFromIndex('messages', 'by-account', accountEmail)
   return messages
@@ -212,6 +232,7 @@ export const listMessages = async (
 }
 
 export const filterMessages = async (filter: MessageFilter): Promise<MailMessage[]> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const source = filter.accountEmail
     ? await database.getAllFromIndex('messages', 'by-account', filter.accountEmail)
@@ -247,12 +268,14 @@ export const getMessageBody = async (
   accountEmail: string,
   messageId: string,
 ): Promise<MailBody | undefined> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const body = await database.get('messageBodies', createMessageBodyKey(accountEmail, messageId))
   return body === undefined ? undefined : fromStoredBody(body)
 }
 
 export const saveMessageBody = async (body: MailBody): Promise<void> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   await database.put('messageBodies', toStoredBody(body))
 }
@@ -261,34 +284,20 @@ export const getSyncState = async (
   accountEmail: string,
   folder: MailFolder,
 ): Promise<SyncState | undefined> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const syncState = await database.get('syncStates', createSyncStateKey(accountEmail, folder))
   return syncState === undefined ? undefined : fromStoredSyncState(syncState)
 }
 
 export const saveSyncState = async (syncState: SyncState): Promise<void> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   await database.put('syncStates', toStoredSyncState(syncState))
 }
 
-export const clearAll = async (): Promise<void> => {
-  const database = await getDatabase()
-  const transaction = database.transaction(
-    ['accounts', 'messages', 'messageBodies', 'syncStates'],
-    'readwrite',
-  )
-
-  await Promise.all([
-    transaction.objectStore('accounts').clear(),
-    transaction.objectStore('messages').clear(),
-    transaction.objectStore('messageBodies').clear(),
-    transaction.objectStore('syncStates').clear(),
-  ])
-
-  await transaction.done
-}
-
 export const clearLocalMailData = async (): Promise<void> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
   const transaction = database.transaction(['messages', 'messageBodies', 'syncStates'], 'readwrite')
 
@@ -301,28 +310,10 @@ export const clearLocalMailData = async (): Promise<void> => {
   await transaction.done
 }
 
-export const exportAll = async (): Promise<StorageExport> => {
-  const database = await getDatabase()
-  const [accounts, messages, messageBodies, syncStates] = await Promise.all([
-    database.getAll('accounts'),
-    database.getAll('messages'),
-    database.getAll('messageBodies'),
-    database.getAll('syncStates'),
-  ])
-
-  return {
-    accounts,
-    messages: messages.map(fromStoredMessage),
-    messageBodies: messageBodies.map(fromStoredBody),
-    syncStates: syncStates.map(fromStoredSyncState),
-    exportedAt: new Date().toISOString(),
-  }
-}
-
 export const getStats = async (): Promise<StorageStats> => {
+  await ensureLegacyMigration()
   const database = await getDatabase()
-  const [accountCount, messageCount, messageBodyCount, syncStateCount, messages] = await Promise.all([
-    database.count('accounts'),
+  const [messageCount, messageBodyCount, syncStateCount, messages] = await Promise.all([
     database.count('messages'),
     database.count('messageBodies'),
     database.count('syncStates'),
@@ -330,7 +321,6 @@ export const getStats = async (): Promise<StorageStats> => {
   ])
 
   return {
-    accountCount,
     messageCount,
     messageBodyCount,
     syncStateCount,
@@ -349,7 +339,7 @@ export const deleteStorageDatabase = async (): Promise<void> => {
   await deleteDB(DB_NAME)
 }
 
-type DeleteTransactionStores = ['accounts', 'messages', 'messageBodies', 'syncStates']
+type DeleteTransactionStores = ['messages', 'messageBodies', 'syncStates']
 
 const deleteMessagesForAccount = async (
   store: IDBPObjectStore<MailboxDatabase, DeleteTransactionStores, 'messages', 'readwrite'>,

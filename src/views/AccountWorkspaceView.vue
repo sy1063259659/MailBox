@@ -30,11 +30,11 @@ const targetGroupName = ref('')
 const currentViewedAccount = ref<MailAccount>()
 const workspaceMode = ref<'accounts' | 'mail'>('accounts')
 const mailSortDesc = ref(true)
+const lastBatchFailedEmails = ref<string[]>([])
 
 const emit = defineEmits<{
   importAccounts: []
   exportData: []
-  clearData: []
 }>()
 
 const statusType: Record<AccountStatus, 'info' | 'primary' | 'success' | 'warning' | 'danger'> = {
@@ -89,22 +89,53 @@ const topSearchValue = computed(() =>
   workspaceMode.value === 'mail' ? mailStore.filter.query : globalKeyword.value,
 )
 
-const visibleAccounts = computed(() => {
-  const keyword = accountSearchKeyword.value.trim().toLocaleLowerCase()
-  if (!keyword) {
-    return accountStore.filteredAccounts
+const accountTree = computed<MailAccount[]>(() => {
+  const group = accountStore.selectedGroup
+  const roots = accountStore.accountTree
+  if (!group) {
+    return roots
   }
-  return accountStore.filteredAccounts.filter((account) =>
-    [account.email, account.password, account.group, account.status]
-      .filter(Boolean)
-      .some((value) => value.toLocaleLowerCase().includes(keyword)),
-  )
+  return roots
+    .map((account) => ({
+      ...account,
+      children: account.children?.filter((child) => child.group === group),
+    }))
+    .filter((account) => account.group === group || (account.children?.length ?? 0) > 0)
 })
 
-const sidebarAccounts = computed(() =>
-  accountStore.accounts
-    .filter((account) => !accountStore.selectedGroup || account.group === accountStore.selectedGroup),
-)
+const visibleAccounts = computed<MailAccount[]>(() => {
+  const keyword = accountSearchKeyword.value.trim().toLocaleLowerCase()
+  if (!keyword) {
+    return accountTree.value
+  }
+  return accountTree.value
+    .map((account) => {
+      const children = account.children?.filter((child) => accountMatchesKeyword(child, keyword)) ?? []
+      if (accountMatchesKeyword(account, keyword) || children.length > 0) {
+        return { ...account, children }
+      }
+      return undefined
+    })
+    .filter((account) => account !== undefined)
+})
+
+const visibleFlatAccounts = computed(() => flattenAccounts(visibleAccounts.value))
+
+const sidebarRootAccounts = computed(() => accountTree.value)
+
+const parentRowIndexMap = computed(() => {
+  const map = new Map<string, number>()
+  visibleAccounts.value.forEach((account, index) => {
+    map.set(account.email, index + 1)
+  })
+  return map
+})
+
+function accountMatchesKeyword(account: MailAccount, keyword: string): boolean {
+  return [account.email, account.password, account.group, account.status, account.parentEmail ?? '']
+      .filter(Boolean)
+      .some((value) => value.toLocaleLowerCase().includes(keyword))
+}
 
 const messageCountByEmail = computed(() => {
   const counts = new Map<string, number>()
@@ -113,6 +144,17 @@ const messageCountByEmail = computed(() => {
   }
   return counts
 })
+
+const batchProgressPercent = computed(() => {
+  if (mailStore.batchSyncTotal === 0) {
+    return 0
+  }
+  return Math.round((mailStore.batchSyncDone / mailStore.batchSyncTotal) * 100)
+})
+
+const batchFailedResults = computed(() =>
+  mailStore.batchSyncResults.filter((result) => result.status === 'failed'),
+)
 
 const visibleMessages = computed(() => {
   const messages = [...mailStore.messages]
@@ -137,6 +179,53 @@ function formatDateTime(value?: string): string {
     return value
   }
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' | 'updatedAt' | 'lastSyncAt'): number {
+  return new Date(left[key] ?? 0).getTime() - new Date(right[key] ?? 0).getTime()
+}
+
+function flattenAccounts(accounts: MailAccount[]): MailAccount[] {
+  return accounts.flatMap((account) => [account, ...(account.children ?? [])])
+}
+
+function splitCount(account: MailAccount): number {
+  return account.children?.length ?? 0
+}
+
+function resolveParentAccount(account: MailAccount): MailAccount {
+  if (!account.parentEmail) {
+    return account
+  }
+  return accountTree.value.find((item) => item.email === account.parentEmail)
+    ?? accountStore.accounts.find((item) => item.email === account.parentEmail)
+    ?? account
+}
+
+function resolveMailboxAccount(account: MailAccount): MailAccount {
+  return resolveParentAccount(account)
+}
+
+function accountRowLabel(account: MailAccount): string {
+  if (isSplitAccount(account)) {
+    return ''
+  }
+  return String(parentRowIndexMap.value.get(account.email) ?? 0)
+}
+
+function splitLabel(account: MailAccount): string {
+  const parent = resolveParentAccount(account)
+  const splitIndex = account.splitIndex
+    ?? ((parent.children?.findIndex((child) => child.email === account.email) ?? -1) + 1)
+  return String(splitIndex)
+}
+
+function canSplitHotmail(account: MailAccount): boolean {
+  return !account.parentEmail && /^[^+@\s]+@hotmail\.com$/i.test(account.email) && splitCount(account) === 0
+}
+
+function isSplitAccount(account: MailAccount): boolean {
+  return Boolean(account.parentEmail)
 }
 
 function setGroup(group: string) {
@@ -169,7 +258,7 @@ function copyText(value: string, label = '内容') {
 }
 
 async function copyAccounts(format: 'email' | 'password' | 'emailPassword') {
-  const targets = selectedAccountRows.value.length > 0 ? selectedAccountRows.value : visibleAccounts.value
+  const targets = selectedAccountRows.value.length > 0 ? selectedAccountRows.value : visibleFlatAccounts.value
   if (targets.length === 0) {
     ElMessage.warning('没有可复制的账号')
     return
@@ -191,9 +280,10 @@ async function copyAccounts(format: 'email' | 'password' | 'emailPassword') {
 }
 
 async function viewAccountInbox(account: MailAccount) {
-  currentViewedAccount.value = account
+  const targetAccount = resolveMailboxAccount(account)
+  currentViewedAccount.value = targetAccount
   workspaceMode.value = 'mail'
-  await mailStore.viewInbox(account.email)
+  await mailStore.viewInbox(targetAccount.email)
   await accountStore.refreshStats()
 }
 
@@ -212,47 +302,57 @@ async function refreshCurrentFolder() {
 }
 
 async function syncVisibleOrSelectedAccounts() {
-  const targets = selectedAccountRows.value.length > 0 ? selectedAccountRows.value : visibleAccounts.value
+  const targets = selectedAccountRows.value.length > 0 ? selectedAccountRows.value : visibleFlatAccounts.value
   if (targets.length === 0) {
     ElMessage.warning('没有可收信的账号')
     return
   }
 
-  let failed = 0
-  for (const account of targets) {
-    const result = await mailStore.syncAccountFolder(account.email, 'inbox')
-    if (result.error) {
-      failed += 1
-    }
-  }
-  await accountStore.refreshStats()
-  if (failed > 0) {
-    ElMessage.warning(`已处理 ${targets.length} 个账号，失败 ${failed} 个`)
+  const results = await mailStore.syncAccountsBatch(
+    Array.from(new Set(targets.map((account) => resolveMailboxAccount(account).email))),
+    'inbox',
+  )
+  lastBatchFailedEmails.value = results
+    .filter((result) => result.status === 'failed')
+    .map((result) => result.accountEmail)
+
+  if (mailStore.batchSyncFailed > 0) {
+    ElMessage.warning(`已处理 ${mailStore.batchSyncTotal} 个账号，失败 ${mailStore.batchSyncFailed} 个`)
     return
   }
-  ElMessage.success(`已完成 ${targets.length} 个账号收件箱刷新`)
+  ElMessage.success(`已完成 ${mailStore.batchSyncSuccess} 个账号收件箱刷新`)
+}
+
+async function retryFailedAccounts() {
+  if (lastBatchFailedEmails.value.length === 0) {
+    ElMessage.warning('没有可重试的失败账号')
+    return
+  }
+
+  const results = await mailStore.syncAccountsBatch(lastBatchFailedEmails.value, 'inbox')
+  lastBatchFailedEmails.value = results
+    .filter((result) => result.status === 'failed')
+    .map((result) => result.accountEmail)
+
+  if (mailStore.batchSyncFailed > 0) {
+    ElMessage.warning(`重试完成，仍失败 ${mailStore.batchSyncFailed} 个`)
+    return
+  }
+  ElMessage.success('失败账号已重试完成')
 }
 
 async function selectMessage(message: MailMessage) {
   await mailStore.selectMessage(message)
 }
 
-async function deleteAccount(account: MailAccount) {
-  await ElMessageBox.confirm(`确认删除 ${account.email} 及其本地邮件数据？`, '删除账号', {
-    confirmButtonText: '删除',
+async function splitHotmail(account: MailAccount) {
+  await ElMessageBox.confirm(`将为 ${account.email} 一次生成 5 个分裂邮箱，生成后不能重复生成。`, 'Hotmail 分裂', {
+    confirmButtonText: '生成 5 个',
     cancelButtonText: '取消',
     type: 'warning',
   })
-  await accountStore.deleteAccount(account.email)
-  await mailStore.loadMessages()
-  if (currentViewedAccount.value?.email === account.email) {
-    currentViewedAccount.value = undefined
-    workspaceMode.value = 'accounts'
-  }
-  if (globalKeyword.value && !visibleAccounts.value.some((item) => item.email.includes(globalKeyword.value))) {
-    globalKeyword.value = ''
-  }
-  ElMessage.success('账号已删除')
+  await accountStore.splitHotmailAccount(account.email)
+  ElMessage.success('已生成 5 个分裂邮箱')
 }
 
 async function batchDeleteSelected() {
@@ -337,7 +437,7 @@ onMounted(() => {
       <nav class="faka-nav">
         <button class="faka-nav-item active" type="button" @click="backToAccounts">
           <el-icon><House /></el-icon>
-          <span>账号总览面板</span>
+          <span>账号</span>
         </button>
         <div class="faka-nav-title">
           <span>
@@ -366,22 +466,26 @@ onMounted(() => {
           <span>{{ group }}</span>
         </button>
         <div class="sidebar-account-list">
-          <button
-            v-for="account in sidebarAccounts"
+          <div
+            v-for="account in sidebarRootAccounts"
             :key="account.email"
-            class="faka-nav-item account-shortcut"
-            type="button"
-            @click="viewAccountInbox(account)"
+            class="sidebar-account-group"
           >
-            <el-icon><Message /></el-icon>
-            <span>{{ account.email }}</span>
-          </button>
+            <button
+              class="faka-nav-item account-shortcut parent-shortcut"
+              type="button"
+              @click="viewAccountInbox(account)"
+            >
+              <el-icon><Message /></el-icon>
+              <span class="shortcut-email">{{ account.email }}</span>
+            </button>
+          </div>
         </div>
       </nav>
 
       <div class="faka-total-card">
         <el-icon><Files /></el-icon>
-        <span>总邮箱数</span>
+        <span>账号</span>
         <strong>{{ accountStore.accounts.length }}</strong>
       </div>
     </aside>
@@ -405,21 +509,64 @@ onMounted(() => {
       <section v-if="workspaceMode === 'accounts'" class="faka-card">
         <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="emit('importAccounts')">导入账号</el-button>
-          <el-button :icon="Refresh" @click="syncVisibleOrSelectedAccounts">批量收信</el-button>
+          <el-button
+            :icon="Refresh"
+            :loading="mailStore.batchSyncRunning"
+            @click="syncVisibleOrSelectedAccounts"
+          >
+            收信
+          </el-button>
           <el-dropdown trigger="click">
-            <el-button :icon="CopyDocument">复制信息</el-button>
+            <el-button :icon="CopyDocument">复制</el-button>
             <template #dropdown>
               <el-dropdown-menu>
                 <el-dropdown-item @click="copyAccounts('email')">仅复制邮箱</el-dropdown-item>
-                <el-dropdown-item @click="copyAccounts('password')">仅复制密码</el-dropdown-item>
-                <el-dropdown-item divided @click="copyAccounts('emailPassword')">复制 邮箱----密码</el-dropdown-item>
+                <el-dropdown-item divided @click="copyAccounts('emailPassword')">邮箱----密码</el-dropdown-item>
               </el-dropdown-menu>
             </template>
           </el-dropdown>
-          <el-button :icon="FolderOpened" @click="openMoveGroupDialog">批量分组</el-button>
-          <el-button type="danger" :icon="Delete" @click="batchDeleteSelected">批量删除</el-button>
-          <el-button :icon="Download" @click="emit('exportData')">导出数据</el-button>
-          <el-button :icon="Delete" plain @click="emit('clearData')">清空本地</el-button>
+          <el-button :icon="FolderOpened" @click="openMoveGroupDialog">分组</el-button>
+          <el-button type="danger" :icon="Delete" @click="batchDeleteSelected">删除</el-button>
+          <el-button :icon="Download" @click="emit('exportData')">导出</el-button>
+        </div>
+
+        <div
+          v-if="mailStore.batchSyncRunning || mailStore.batchSyncResults.length > 0"
+          class="batch-sync-panel"
+        >
+          <div class="batch-sync-head">
+            <span>
+              收信：
+              {{ mailStore.batchSyncDone }} / {{ mailStore.batchSyncTotal }}
+            </span>
+            <strong>
+              成功 {{ mailStore.batchSyncSuccess }}，
+              失败 {{ mailStore.batchSyncFailed }}
+            </strong>
+          </div>
+          <el-progress
+            :percentage="batchProgressPercent"
+            :status="mailStore.batchSyncFailed > 0 && !mailStore.batchSyncRunning ? 'exception' : undefined"
+          />
+          <div v-if="batchFailedResults.length > 0" class="batch-error-list">
+            <div
+              v-for="result in batchFailedResults"
+              :key="`${result.accountEmail}-${result.folder}`"
+              class="batch-error-item"
+            >
+              <span>{{ result.accountEmail }}</span>
+              <small>{{ result.error }}</small>
+            </div>
+            <el-button
+              size="small"
+              type="warning"
+              plain
+              :loading="mailStore.batchSyncRunning"
+              @click="retryFailedAccounts"
+            >
+              重试失败账号
+            </el-button>
+          </div>
         </div>
 
         <el-table
@@ -427,11 +574,25 @@ onMounted(() => {
           row-key="email"
           class="faka-account-table"
           height="calc(100vh - 232px)"
+          :default-expand-all="false"
+          :tree-props="{ children: 'children' }"
+          :row-class-name="({ row }: { row: MailAccount }) => (isSplitAccount(row) ? 'split-account-row' : 'parent-account-row')"
           @selection-change="handleAccountSelection"
         >
           <el-table-column type="selection" width="52" align="center" header-align="center" />
-          <el-table-column type="index" label="#" width="64" align="center" header-align="center" />
-          <el-table-column label="邮箱地址" min-width="260" show-overflow-tooltip align="center" header-align="center">
+          <el-table-column label="" width="68" align="center" header-align="center" class-name="split-marker-column">
+            <template #default="{ row }">
+              <span v-if="isSplitAccount(row)" class="split-marker">{{ splitLabel(row) }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="#" width="64" align="center" header-align="center">
+            <template #default="{ row }">
+              <span class="row-number" :class="{ split: isSplitAccount(row) }">
+                {{ accountRowLabel(row) }}
+              </span>
+            </template>
+          </el-table-column>
+          <el-table-column label="邮箱" min-width="300" show-overflow-tooltip align="center" header-align="center">
             <template #default="{ row }">
               <div class="copy-cell">
                 <span>{{ row.email }}</span>
@@ -451,12 +612,12 @@ onMounted(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="邮件数" width="95" align="center" header-align="center">
+          <el-table-column label="邮件" width="90" align="center" header-align="center">
             <template #default="{ row }">
-              <span class="mail-count">{{ messageCountByEmail.get(row.email) ?? 0 }}</span>
+              <span class="mail-count">{{ messageCountByEmail.get(resolveMailboxAccount(row).email) ?? 0 }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="状态" width="110" align="center" header-align="center">
+          <el-table-column label="状态" width="100" align="center" header-align="center">
             <template #default="{ row }">
               <el-tag :type="statusType[row.status as AccountStatus]" size="small" effect="light">
                 {{ statusText[row.status as AccountStatus] }}
@@ -464,18 +625,46 @@ onMounted(() => {
             </template>
           </el-table-column>
           <el-table-column prop="group" label="分组" width="140" align="center" header-align="center" />
-          <el-table-column label="操作" width="170" fixed="right" align="center" header-align="center">
+          <el-table-column
+            label="导入"
+            width="170"
+            sortable
+            :sort-method="(left: MailAccount, right: MailAccount) => sortByDateTime(left, right, 'createdAt')"
+            align="center"
+            header-align="center"
+          >
+            <template #default="{ row }">
+              {{ formatDateTime(row.createdAt) }}
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="160" fixed="right" align="center" header-align="center">
             <template #default="{ row }">
               <el-space :size="8" class="row-actions">
-                <el-button size="small" type="primary" @click="viewAccountInbox(row)">查看</el-button>
-                <el-button size="small" type="danger" plain @click="deleteAccount(row)">删除</el-button>
+                <template v-if="!isSplitAccount(row)">
+                  <el-button size="small" type="primary" @click="viewAccountInbox(row)">查看</el-button>
+                  <el-tooltip
+                    :content="splitCount(row) > 0 ? '已分裂' : '生成 5 个分裂邮箱'"
+                    placement="top"
+                  >
+                    <el-button
+                      size="small"
+                      type="success"
+                      plain
+                      :disabled="!canSplitHotmail(row)"
+                      @click="splitHotmail(row)"
+                    >
+                      分裂
+                    </el-button>
+                  </el-tooltip>
+                </template>
+                <span v-else class="split-action-placeholder">随主账号</span>
               </el-space>
             </template>
           </el-table-column>
         </el-table>
         <div class="faka-pagination">
-          <span>Total {{ visibleAccounts.length }}</span>
-          <el-pagination size="small" layout="prev, pager, next" :total="visibleAccounts.length" :page-size="20" />
+          <span>Total {{ visibleFlatAccounts.length }}</span>
+          <el-pagination size="small" layout="prev, pager, next" :total="visibleFlatAccounts.length" :page-size="20" />
         </div>
       </section>
 
@@ -549,7 +738,7 @@ onMounted(() => {
         </section>
       </section>
 
-      <el-dialog v-model="groupDialogVisible" title="批量设置分组" width="420px">
+      <el-dialog v-model="groupDialogVisible" title="设置分组" width="420px">
         <el-form label-position="top">
           <el-form-item label="请输入分组名称">
             <el-input

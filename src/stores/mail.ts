@@ -29,6 +29,7 @@ import { useAccountStore } from './account'
 const DEFAULT_PAGE_SIZE = 50
 const MAIL_FOLDERS: MailFolder[] = ['inbox', 'junkemail']
 const BODY_CACHE_VERSION = 2
+const DEFAULT_BATCH_CONCURRENCY = 3
 
 type SyncKey = `${string}::${MailFolder}`
 
@@ -49,6 +50,10 @@ export interface AccountSyncResult {
   error?: string
 }
 
+export interface BatchSyncResult extends AccountSyncResult {
+  status: 'success' | 'failed'
+}
+
 interface MailState {
   messages: MailMessage[]
   selectedMessage: MailMessage | undefined
@@ -61,6 +66,12 @@ interface MailState {
   errorMessage: string | undefined
   syncErrors: Record<string, string>
   viewingAccountEmail: string
+  batchSyncRunning: boolean
+  batchSyncTotal: number
+  batchSyncDone: number
+  batchSyncSuccess: number
+  batchSyncFailed: number
+  batchSyncResults: BatchSyncResult[]
 }
 
 const createSyncKey = (accountEmail: string, folder: MailFolder): SyncKey =>
@@ -178,6 +189,12 @@ export const useMailStore = defineStore('mail', {
     errorMessage: undefined,
     syncErrors: {},
     viewingAccountEmail: '',
+    batchSyncRunning: false,
+    batchSyncTotal: 0,
+    batchSyncDone: 0,
+    batchSyncSuccess: 0,
+    batchSyncFailed: 0,
+    batchSyncResults: [],
   }),
 
   getters: {
@@ -370,6 +387,56 @@ export const useMailStore = defineStore('mail', {
       }
 
       return results
+    },
+
+    async syncAccountsBatch(
+      accountEmails: string[],
+      folder: MailFolder = 'inbox',
+      concurrency = DEFAULT_BATCH_CONCURRENCY,
+    ): Promise<BatchSyncResult[]> {
+      const uniqueEmails = Array.from(new Set(accountEmails.filter(Boolean)))
+      this.batchSyncRunning = true
+      this.batchSyncTotal = uniqueEmails.length
+      this.batchSyncDone = 0
+      this.batchSyncSuccess = 0
+      this.batchSyncFailed = 0
+      this.batchSyncResults = []
+
+      if (uniqueEmails.length === 0) {
+        this.batchSyncRunning = false
+        return []
+      }
+
+      let nextIndex = 0
+      const workerCount = Math.min(Math.max(1, concurrency), uniqueEmails.length)
+
+      const runNext = async (): Promise<void> => {
+        while (nextIndex < uniqueEmails.length) {
+          const accountEmail = uniqueEmails[nextIndex]
+          nextIndex += 1
+
+          const result = await this.syncAccountFolder(accountEmail, folder)
+          const batchResult: BatchSyncResult = {
+            ...result,
+            status: result.error ? 'failed' : 'success',
+          }
+          this.batchSyncResults.push(batchResult)
+          this.batchSyncDone += 1
+          if (batchResult.status === 'failed') {
+            this.batchSyncFailed += 1
+          } else {
+            this.batchSyncSuccess += 1
+          }
+        }
+      }
+
+      try {
+        await Promise.all(Array.from({ length: workerCount }, runNext))
+        await useAccountStore().refreshStats()
+        return this.batchSyncResults
+      } finally {
+        this.batchSyncRunning = false
+      }
     },
 
     async loadMore(): Promise<AccountSyncResult | undefined> {

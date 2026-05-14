@@ -16,6 +16,10 @@ export interface MailAccount {
   group: string
   displayName: string
   status: AccountStatus
+  parentEmail?: string
+  splitIndex?: number
+  splitGeneratedAt?: string
+  children?: MailAccount[]
   provider?: 'microsoft' | 'outlook' | 'office365' | 'imap' | 'unknown'
   createdAt: string
   updatedAt: string
@@ -73,37 +77,6 @@ export interface MailBody {
   metadata?: Record<string, unknown>
 }
 
-export interface GraphRecipient {
-  name?: string
-  email: string
-}
-
-export interface GraphMessageSummary {
-  id: string
-  subject: string
-  from?: GraphRecipient
-  toRecipients: GraphRecipient[]
-  ccRecipients: GraphRecipient[]
-  receivedDateTime: string
-  bodyPreview: string
-  isRead: boolean
-  hasAttachments: boolean
-}
-
-export interface GraphMessageBody {
-  id: string
-  subject: string
-  from?: GraphRecipient
-  toRecipients: GraphRecipient[]
-  ccRecipients: GraphRecipient[]
-  receivedDateTime: string
-  body?: {
-    contentType: 'text' | 'html'
-    content: string
-  }
-  hasAttachments: boolean
-}
-
 export interface SyncState {
   accountEmail: string
   folder: MailFolder
@@ -118,24 +91,7 @@ export interface SyncState {
   updatedAt: string
 }
 
-export interface ImportResult {
-  accountsImported: number
-  messagesImported: number
-  messageBodiesImported: number
-  syncStatesImported: number
-  errors: string[]
-}
-
-export interface StorageExport {
-  accounts: MailAccount[]
-  messages: MailMessage[]
-  messageBodies: MailBody[]
-  syncStates: SyncState[]
-  exportedAt: string
-}
-
 export interface StorageStats {
-  accountCount: number
   messageCount: number
   messageBodyCount: number
   syncStateCount: number

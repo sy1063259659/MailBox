@@ -66,7 +66,7 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
   const data = (await response.json().catch(() => undefined)) as T | ErrorResponse | undefined
   if (!response.ok) {
     const error = data as ErrorResponse | undefined
-    if (response.status === 401) {
+    if (response.status === 401 && error?.error === 'unauthorized') {
       window.dispatchEvent(new CustomEvent('mailbox:unauthorized'))
     }
     throw new ApiError(error?.error ?? 'internal_error', error?.message ?? response.statusText, response.status)

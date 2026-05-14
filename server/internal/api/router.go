@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"mailbox-server/internal/session"
 	"mailbox-server/internal/store"
@@ -27,7 +28,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/accounts/import", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.importAccounts)))
 	mux.HandleFunc("/api/accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.moveAccounts)))
 	mux.HandleFunc("/api/accounts/export", authRequired(sessions, methodHandler(http.MethodGet, accountAPI.exportAccounts)))
-	mux.HandleFunc("/api/accounts/", authRequired(sessions, methodHandler(http.MethodDelete, accountAPI.deleteAccount)))
+	mux.HandleFunc("/api/accounts/", authRequired(sessions, accountPathHandler(accountAPI)))
 	mux.HandleFunc("/api/groups", authRequired(sessions, groupsHandler(accountAPI)))
 	mux.HandleFunc("/api/groups/", authRequired(sessions, groupIDHandler(accountAPI)))
 
@@ -37,6 +38,20 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/mail/message", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.message)))
 
 	return withCORS(mux)
+}
+
+func accountPathHandler(api accountAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/split-hotmail") {
+			api.splitHotmail(w, r)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			api.deleteAccount(w, r)
+			return
+		}
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
 }
 
 func methodHandler(method string, handler http.HandlerFunc) http.HandlerFunc {

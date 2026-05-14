@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImportAccountsDialog from '@/components/ImportAccountsDialog.vue'
-import AccountsView from '@/views/AccountsView.vue'
+import AccountWorkspaceView from '@/views/AccountWorkspaceView.vue'
 import LoginView from '@/views/LoginView.vue'
 import { getImapHealth } from '@/services/imapApi'
 import { useAccountStore } from '@/stores/account'
@@ -63,7 +63,7 @@ async function clearData() {
     cancelButtonText: '取消',
     type: 'warning',
   })
-  await accountStore.clearAllData()
+  await accountStore.clearLocalMailCache()
   await mailStore.loadMessages()
   ElMessage.success('本地邮件缓存已清空')
 }
@@ -73,7 +73,7 @@ async function clearData() {
   <el-container class="app-shell">
     <el-main class="app-main">
       <LoginView v-if="authStore.checked && !authStore.isAuthenticated" />
-      <AccountsView
+      <AccountWorkspaceView
         v-else-if="authStore.checked"
         @import-accounts="importVisible = true"
         @export-data="exportData"

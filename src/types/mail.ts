@@ -1,9 +1,5 @@
 export type {
   AccountStatus,
-  GraphMessageBody,
-  GraphMessageSummary,
-  GraphRecipient,
-  ImportResult,
   MailAccount,
   MailAddress,
   MailAttachmentSummary,
@@ -11,7 +7,6 @@ export type {
   MailFolder,
   MailMessage,
   MessageFilter,
-  StorageExport,
   StorageStats,
   SyncState,
 } from './index'

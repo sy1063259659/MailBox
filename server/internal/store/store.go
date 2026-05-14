@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 
@@ -34,17 +36,20 @@ type Group struct {
 }
 
 type MailAccount struct {
-	Email        string     `json:"email"`
-	Password     string     `json:"password"`
-	ClientID     string     `json:"clientId"`
-	RefreshToken string     `json:"refreshToken,omitempty"`
-	Group        string     `json:"group"`
-	DisplayName  string     `json:"displayName"`
-	Status       string     `json:"status"`
-	ErrorMessage string     `json:"errorMessage,omitempty"`
-	LastSyncAt   *time.Time `json:"lastSyncAt,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	Email            string     `json:"email"`
+	Password         string     `json:"password"`
+	ClientID         string     `json:"clientId"`
+	RefreshToken     string     `json:"refreshToken,omitempty"`
+	Group            string     `json:"group"`
+	DisplayName      string     `json:"displayName"`
+	Status           string     `json:"status"`
+	ErrorMessage     string     `json:"errorMessage,omitempty"`
+	ParentEmail      string     `json:"parentEmail,omitempty"`
+	SplitIndex       *int       `json:"splitIndex,omitempty"`
+	SplitGeneratedAt *time.Time `json:"splitGeneratedAt,omitempty"`
+	LastSyncAt       *time.Time `json:"lastSyncAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 type AccountInput struct {
@@ -57,6 +62,7 @@ type AccountInput struct {
 
 type AccountCredentials struct {
 	Email        string
+	AuthEmail    string
 	ClientID     string
 	RefreshToken string
 }
@@ -65,6 +71,11 @@ type ImportResult struct {
 	Imported int      `json:"imported"`
 	Updated  int      `json:"updated"`
 	Errors   []string `json:"errors"`
+}
+
+type SplitResult struct {
+	ParentEmail string        `json:"parentEmail"`
+	Accounts    []MailAccount `json:"accounts"`
 }
 
 func New(ctx context.Context, databaseURL string, tokenKey []byte) (*Store, error) {
@@ -99,6 +110,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			email TEXT PRIMARY KEY,
+			auth_email TEXT NOT NULL DEFAULT '',
+			parent_email TEXT,
+			split_index INTEGER,
+			split_generated_at TIMESTAMPTZ,
 			password TEXT NOT NULL,
 			client_id TEXT NOT NULL,
 			refresh_token_encrypted TEXT NOT NULL,
@@ -115,6 +130,25 @@ func (s *Store) Migrate(ctx context.Context) error {
 		if _, err := s.pool.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
+	}
+
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS auth_email TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("store: migrate auth email column: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS parent_email TEXT`); err != nil {
+		return fmt.Errorf("store: migrate parent email column: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_index INTEGER`); err != nil {
+		return fmt.Errorf("store: migrate split index column: %w", err)
+	}
+	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`); err != nil {
+		return fmt.Errorf("store: migrate split generated column: %w", err)
+	}
+	if err := s.backfillAuthEmails(ctx); err != nil {
+		return err
+	}
+	if err := s.backfillSplitParents(ctx); err != nil {
+		return err
 	}
 
 	_, err := s.ensureGroup(ctx, DefaultGroupName)
@@ -225,10 +259,11 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.email, a.password, a.client_id, g.name, a.status, a.error_message,
+			COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
 			a.last_sync_at, a.created_at, a.updated_at
 		FROM mail_accounts a
 		JOIN groups g ON g.id = a.group_id
-		ORDER BY a.created_at ASC, a.email ASC
+		ORDER BY COALESCE(a.parent_email, a.email) ASC, a.parent_email NULLS FIRST, a.split_index NULLS FIRST, a.created_at ASC, a.email ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list accounts: %w", err)
@@ -245,6 +280,9 @@ func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 			&account.Group,
 			&account.Status,
 			&account.ErrorMessage,
+			&account.ParentEmail,
+			&account.SplitIndex,
+			&account.SplitGeneratedAt,
 			&account.LastSyncAt,
 			&account.CreatedAt,
 			&account.UpdatedAt,
@@ -272,18 +310,20 @@ func (s *Store) ImportAccounts(ctx context.Context, inputs []AccountInput) (Impo
 		if err != nil {
 			return result, err
 		}
+		authEmail := authEmailFor(input.Email)
 		tag, err := s.pool.Exec(ctx, `
 			INSERT INTO mail_accounts (
-				email, password, client_id, refresh_token_encrypted, group_id, status, error_message
+				email, auth_email, password, client_id, refresh_token_encrypted, group_id, status, error_message
 			)
-			VALUES ($1, $2, $3, $4, $5, 'idle', '')
+			VALUES ($1, $2, $3, $4, $5, $6, 'idle', '')
 			ON CONFLICT (email) DO UPDATE SET
+				auth_email = EXCLUDED.auth_email,
 				password = EXCLUDED.password,
 				client_id = EXCLUDED.client_id,
 				refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
 				group_id = EXCLUDED.group_id,
 				updated_at = now()
-		`, input.Email, input.Password, input.ClientID, encrypted, groupID)
+		`, input.Email, authEmail, input.Password, input.ClientID, encrypted, groupID)
 		if err != nil {
 			return result, fmt.Errorf("store: import account: %w", err)
 		}
@@ -332,15 +372,108 @@ func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
 	return strings.Join(lines, "\n"), rows.Err()
 }
 
-func (s *Store) DeleteAccount(ctx context.Context, email string) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM mail_accounts WHERE email = $1`, normalizeEmail(email))
+func (s *Store) DeleteAccount(ctx context.Context, email string) ([]string, error) {
+	normalized := normalizeEmail(email)
+	rows, err := s.pool.Query(ctx, `DELETE FROM mail_accounts WHERE email = $1 OR parent_email = $1 RETURNING email`, normalized)
 	if err != nil {
-		return fmt.Errorf("store: delete account: %w", err)
+		return nil, fmt.Errorf("store: delete account: %w", err)
 	}
-	if result.RowsAffected() == 0 {
-		return errors.New("账号不存在")
+	defer rows.Close()
+
+	deletedEmails := []string{}
+	for rows.Next() {
+		var deletedEmail string
+		if err := rows.Scan(&deletedEmail); err != nil {
+			return nil, fmt.Errorf("store: scan deleted account: %w", err)
+		}
+		deletedEmails = append(deletedEmails, deletedEmail)
 	}
-	return nil
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: read deleted accounts: %w", err)
+	}
+	if len(deletedEmails) == 0 {
+		return nil, errors.New("账号不存在")
+	}
+	return deletedEmails, nil
+}
+
+func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitResult, error) {
+	parentEmail := normalizeEmail(email)
+	if !isHotmailPrimary(parentEmail) {
+		return SplitResult{}, errors.New("只有 hotmail.com 主账号可以分裂")
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return SplitResult{}, fmt.Errorf("store: begin split account: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var password, clientID, encrypted, groupName string
+	var groupID int64
+	err = tx.QueryRow(ctx, `
+		SELECT a.password, a.client_id, a.refresh_token_encrypted, a.group_id, g.name
+		FROM mail_accounts a
+		JOIN groups g ON g.id = a.group_id
+		WHERE a.email = $1 AND COALESCE(a.parent_email, '') = ''
+	`, parentEmail).Scan(&password, &clientID, &encrypted, &groupID, &groupName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SplitResult{}, errors.New("主账号不存在或不是主账号")
+	}
+	if err != nil {
+		return SplitResult{}, fmt.Errorf("store: get split parent: %w", err)
+	}
+
+	var childCount int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM mail_accounts WHERE parent_email = $1`, parentEmail).Scan(&childCount); err != nil {
+		return SplitResult{}, fmt.Errorf("store: count split children: %w", err)
+	}
+	if childCount > 0 {
+		return SplitResult{}, errors.New("该账号已分裂，不能重复生成")
+	}
+
+	accounts := make([]MailAccount, 0, 5)
+	generatedAt := time.Now().UTC()
+	for index := 1; index <= 5; index++ {
+		alias, err := s.uniqueHotmailAlias(ctx, tx, parentEmail)
+		if err != nil {
+			return SplitResult{}, err
+		}
+		splitIndex := index
+		var account MailAccount
+		err = tx.QueryRow(ctx, `
+			INSERT INTO mail_accounts (
+				email, auth_email, parent_email, split_index, split_generated_at,
+				password, client_id, refresh_token_encrypted, group_id, status, error_message
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idle', '')
+			RETURNING email, password, client_id, status, error_message, parent_email, split_index,
+				split_generated_at, last_sync_at, created_at, updated_at
+		`, alias, parentEmail, parentEmail, splitIndex, generatedAt, password, clientID, encrypted, groupID).Scan(
+			&account.Email,
+			&account.Password,
+			&account.ClientID,
+			&account.Status,
+			&account.ErrorMessage,
+			&account.ParentEmail,
+			&account.SplitIndex,
+			&account.SplitGeneratedAt,
+			&account.LastSyncAt,
+			&account.CreatedAt,
+			&account.UpdatedAt,
+		)
+		if err != nil {
+			return SplitResult{}, fmt.Errorf("store: insert split child: %w", err)
+		}
+		account.Group = groupName
+		account.DisplayName = account.Email
+		accounts = append(accounts, account)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return SplitResult{}, fmt.Errorf("store: commit split account: %w", err)
+	}
+	return SplitResult{ParentEmail: parentEmail, Accounts: accounts}, nil
 }
 
 func (s *Store) MoveAccountsToGroup(ctx context.Context, emails []string, group string) error {
@@ -371,10 +504,10 @@ func (s *Store) GetCredentials(ctx context.Context, email string) (AccountCreden
 	var credentials AccountCredentials
 	var encrypted string
 	err := s.pool.QueryRow(ctx, `
-		SELECT email, client_id, refresh_token_encrypted
+		SELECT email, COALESCE(NULLIF(auth_email, ''), email), client_id, refresh_token_encrypted
 		FROM mail_accounts
 		WHERE email = $1
-	`, normalizeEmail(email)).Scan(&credentials.Email, &credentials.ClientID, &encrypted)
+	`, normalizeEmail(email)).Scan(&credentials.Email, &credentials.AuthEmail, &credentials.ClientID, &encrypted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AccountCredentials{}, errors.New("账号不存在")
 	}
@@ -444,6 +577,169 @@ func (s *Store) accountExists(ctx context.Context, email string) (bool, error) {
 		return false, fmt.Errorf("store: check account exists: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *Store) backfillAuthEmails(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT email
+		FROM mail_accounts
+		WHERE auth_email = '' OR auth_email IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("store: query auth email backfill: %w", err)
+	}
+	defer rows.Close()
+
+	emails := []string{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return fmt.Errorf("store: scan auth email backfill: %w", err)
+		}
+		emails = append(emails, email)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read auth email backfill: %w", err)
+	}
+
+	for _, email := range emails {
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE mail_accounts
+			SET auth_email = $1, updated_at = now()
+			WHERE email = $2
+		`, authEmailFor(email), normalizeEmail(email)); err != nil {
+			return fmt.Errorf("store: backfill auth email: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) backfillSplitParents(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT email
+		FROM mail_accounts
+		WHERE (parent_email IS NULL OR parent_email = '')
+			AND lower(email) LIKE '%+%@hotmail.com'
+	`)
+	if err != nil {
+		return fmt.Errorf("store: query split parent backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type splitChild struct {
+		email  string
+		parent string
+	}
+	children := []splitChild{}
+	for rows.Next() {
+		var email string
+		if err := rows.Scan(&email); err != nil {
+			return fmt.Errorf("store: scan split parent backfill: %w", err)
+		}
+		parent := hotmailParentEmail(email)
+		if parent != "" && parent != normalizeEmail(email) {
+			children = append(children, splitChild{email: normalizeEmail(email), parent: parent})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read split parent backfill: %w", err)
+	}
+
+	parentCounts := map[string]int{}
+	for _, child := range children {
+		parentCounts[child.parent]++
+		splitIndex := parentCounts[child.parent]
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE mail_accounts
+			SET parent_email = $1,
+				split_index = COALESCE(split_index, $2),
+				split_generated_at = COALESCE(split_generated_at, created_at),
+				auth_email = $1,
+				updated_at = now()
+			WHERE email = $3
+		`, child.parent, splitIndex, child.email); err != nil {
+			return fmt.Errorf("store: backfill split parent: %w", err)
+		}
+	}
+	return nil
+}
+
+func authEmailFor(email string) string {
+	email = normalizeEmail(email)
+	local, domain, ok := strings.Cut(email, "@")
+	if !ok {
+		return email
+	}
+	if !isMicrosoftPersonalDomain(domain) {
+		return email
+	}
+	if base, _, found := strings.Cut(local, "+"); found && base != "" {
+		return base + "@" + domain
+	}
+	return email
+}
+
+func isMicrosoftPersonalDomain(domain string) bool {
+	switch strings.ToLower(strings.TrimSpace(domain)) {
+	case "hotmail.com", "outlook.com", "live.com", "msn.com":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Store) uniqueHotmailAlias(ctx context.Context, tx pgx.Tx, parentEmail string) (string, error) {
+	local, domain, ok := strings.Cut(parentEmail, "@")
+	if !ok {
+		return "", errors.New("主账号格式错误")
+	}
+	for tries := 0; tries < 80; tries++ {
+		suffix, err := randomLetters(6)
+		if err != nil {
+			return "", err
+		}
+		alias := local + "+" + suffix + "@" + domain
+		var exists bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE email = $1)`, alias).Scan(&exists); err != nil {
+			return "", fmt.Errorf("store: check split alias: %w", err)
+		}
+		if !exists {
+			return alias, nil
+		}
+	}
+	return "", errors.New("生成别名失败，请重试")
+}
+
+func randomLetters(length int) (string, error) {
+	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	var builder strings.Builder
+	builder.Grow(length)
+	for index := 0; index < length; index++ {
+		value, err := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		if err != nil {
+			return "", fmt.Errorf("store: random alias suffix: %w", err)
+		}
+		builder.WriteByte(letters[value.Int64()])
+	}
+	return builder.String(), nil
+}
+
+func isHotmailPrimary(email string) bool {
+	local, domain, ok := strings.Cut(normalizeEmail(email), "@")
+	return ok && domain == "hotmail.com" && local != "" && !strings.Contains(local, "+")
+}
+
+func hotmailParentEmail(email string) string {
+	email = normalizeEmail(email)
+	local, domain, ok := strings.Cut(email, "@")
+	if !ok || domain != "hotmail.com" {
+		return ""
+	}
+	base, _, found := strings.Cut(local, "+")
+	if !found || base == "" {
+		return ""
+	}
+	return base + "@" + domain
 }
 
 func normalizeGroup(group string) string {

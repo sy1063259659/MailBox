@@ -14,6 +14,11 @@ export interface MailGroup {
   updatedAt: string
 }
 
+export interface SplitHotmailResult {
+  parentEmail: string
+  accounts: MailAccount[]
+}
+
 export async function listRemoteAccounts(): Promise<MailAccount[]> {
   const response = await apiGet<{ ok: boolean; accounts: MailAccount[] }>('/accounts')
   return response.accounts
@@ -23,12 +28,23 @@ export async function importRemoteAccounts(text: string, overwrite: boolean): Pr
   return apiPost<AccountImportResult>('/accounts/import', { text, overwrite })
 }
 
-export async function deleteRemoteAccount(email: string): Promise<void> {
-  await apiDelete<{ ok: boolean }>(`/accounts/${encodeURIComponent(email)}`)
+export async function deleteRemoteAccount(email: string): Promise<string[]> {
+  const response = await apiDelete<{ ok: boolean; deletedEmails?: string[] }>(`/accounts/${encodeURIComponent(email)}`)
+  return response.deletedEmails ?? [email]
 }
 
 export async function moveRemoteAccountsToGroup(emails: string[], group: string): Promise<void> {
   await apiPost<{ ok: boolean }>('/accounts/move-group', { emails, group })
+}
+
+export async function splitRemoteHotmailAccount(email: string): Promise<SplitHotmailResult> {
+  const response = await apiPost<{ ok: boolean; parentEmail: string; accounts: MailAccount[] }>(
+    `/accounts/${encodeURIComponent(email)}/split-hotmail`,
+  )
+  return {
+    parentEmail: response.parentEmail,
+    accounts: response.accounts,
+  }
 }
 
 export async function exportRemoteAccounts(): Promise<string> {

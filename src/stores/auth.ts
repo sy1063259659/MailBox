@@ -27,9 +27,9 @@ export const useAuthStore = defineStore('auth', {
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           this.user = undefined
-        } else {
-          throw error
+          return
         }
+        this.user = undefined
       } finally {
         this.checked = true
         this.loading = false

@@ -7,6 +7,7 @@ import {
   listRemoteAccounts,
   listRemoteGroups,
   moveRemoteAccountsToGroup,
+  splitRemoteHotmailAccount,
   type MailGroup,
 } from '@/services/accountApi'
 import {
@@ -70,6 +71,8 @@ export const useAccountStore = defineStore('account', {
       state.selectedGroup
         ? state.accounts.filter((account) => account.group === state.selectedGroup)
         : state.accounts,
+
+    accountTree: (state): MailAccount[] => buildAccountTree(state.accounts),
   },
 
   actions: {
@@ -113,9 +116,12 @@ export const useAccountStore = defineStore('account', {
     },
 
     async deleteAccount(email: string): Promise<void> {
-      await deleteRemoteAccount(email)
-      await deleteLocalMailDataForAccount(email)
-      this.accounts = this.accounts.filter((account) => account.email !== email)
+      const deletedEmails = await deleteRemoteAccount(email)
+      const affectedEmails = deletedEmails.length > 0 ? deletedEmails : this.accounts
+        .filter((account) => account.email === email || account.parentEmail === email)
+        .map((account) => account.email)
+      await Promise.all(affectedEmails.map((accountEmail) => deleteLocalMailDataForAccount(accountEmail)))
+      this.accounts = this.accounts.filter((account) => !affectedEmails.includes(account.email))
 
       if (this.selectedGroup && !this.accounts.some((account) => account.group === this.selectedGroup)) {
         this.selectedGroup = ''
@@ -124,7 +130,12 @@ export const useAccountStore = defineStore('account', {
       await this.refreshStats()
     },
 
-    async clearAllData(): Promise<void> {
+    async splitHotmailAccount(email: string): Promise<void> {
+      await splitRemoteHotmailAccount(email)
+      await this.loadAccounts()
+    },
+
+    async clearLocalMailCache(): Promise<void> {
       await clearLocalMailData()
       this.stats = undefined
       this.importErrors = []
@@ -153,4 +164,52 @@ function normalizeRemoteAccount(account: MailAccount): MailAccount {
     displayName: account.displayName || account.email,
     provider: account.provider ?? 'microsoft',
   }
+}
+
+function buildAccountTree(accounts: MailAccount[]): MailAccount[] {
+  const childrenByParent = new Map<string, MailAccount[]>()
+  const syntheticParentEmails = new Set<string>()
+
+  for (const account of accounts) {
+    if (!account.parentEmail) {
+      continue
+    }
+    const children = childrenByParent.get(account.parentEmail) ?? []
+    children.push({ ...account, children: undefined })
+    childrenByParent.set(account.parentEmail, children)
+    syntheticParentEmails.add(account.parentEmail)
+  }
+
+  const roots = accounts
+    .filter((account) => !account.parentEmail)
+    .map((account) => ({
+      ...account,
+      children: (childrenByParent.get(account.email) ?? []).sort(sortSplitChildren),
+    }))
+
+  for (const parentEmail of syntheticParentEmails) {
+    if (roots.some((account) => account.email === parentEmail)) {
+      continue
+    }
+    const children = (childrenByParent.get(parentEmail) ?? []).sort(sortSplitChildren)
+    const firstChild = children[0]
+    if (!firstChild) {
+      continue
+    }
+    roots.push({
+      ...firstChild,
+      email: parentEmail,
+      displayName: parentEmail,
+      parentEmail: undefined,
+      splitIndex: undefined,
+      splitGeneratedAt: undefined,
+      children,
+    })
+  }
+
+  return roots.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.email.localeCompare(right.email))
+}
+
+function sortSplitChildren(left: MailAccount, right: MailAccount): number {
+  return (left.splitIndex ?? 0) - (right.splitIndex ?? 0) || left.email.localeCompare(right.email)
 }

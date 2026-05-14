@@ -72,6 +72,7 @@ async function readDroppedFile(event: DragEvent) {
         <template #title>导入提示</template>
         <div>每行一个账号；支持空格分隔或 "----" 分隔。</div>
         <div>格式不正确的行会被忽略；分组默认写入 "默认分组"。</div>
+        <div>Hotmail/Outlook 加号别名会自动使用主邮箱取信。</div>
         <div>覆盖导入 会先清空数据库账号，并清空浏览器邮件缓存。</div>
       </el-alert>
 

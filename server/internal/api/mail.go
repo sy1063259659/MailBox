@@ -124,7 +124,7 @@ func (api mailAPI) folders(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = api.store.UpdateRefreshToken(ctx, credentials.Email, token.RefreshToken)
-	folders, err := api.imap.ListFolders(ctx, credentials.Email, token.AccessToken)
+	folders, err := api.imap.ListFolders(ctx, credentials.AuthEmail, token.AccessToken)
 	if err != nil {
 		_ = api.store.UpdateAccountStatus(ctx, credentials.Email, statusForServiceError(err), err.Error(), false)
 		writeServiceError(w, err)
@@ -159,7 +159,7 @@ func (api mailAPI) messages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = api.store.UpdateRefreshToken(ctx, credentials.Email, token.RefreshToken)
-	result, err := api.imap.ListMessages(ctx, credentials.Email, token.AccessToken, folder, req.Limit, req.Cursor)
+	result, err := api.imap.ListMessages(ctx, credentials.AuthEmail, token.AccessToken, folder, req.Limit, req.Cursor)
 	if err != nil {
 		_ = api.store.UpdateAccountStatus(ctx, credentials.Email, statusForServiceError(err), err.Error(), false)
 		writeServiceError(w, err)
@@ -204,7 +204,7 @@ func (api mailAPI) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = api.store.UpdateRefreshToken(ctx, credentials.Email, token.RefreshToken)
-	detail, err := api.imap.GetMessage(ctx, credentials.Email, token.AccessToken, folder, uid)
+	detail, err := api.imap.GetMessage(ctx, credentials.AuthEmail, token.AccessToken, folder, uid)
 	if err != nil {
 		_ = api.store.UpdateAccountStatus(ctx, credentials.Email, statusForServiceError(err), err.Error(), false)
 		writeServiceError(w, err)
