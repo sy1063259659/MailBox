@@ -71,6 +71,7 @@ async function readDroppedFile(event: DragEvent) {
       <el-alert type="info" show-icon :closable="false" class="dialog-alert">
         <template #title>导入提示</template>
         <div>每行一个账号；支持空格分隔或 "----" 分隔。</div>
+        <div>使用 "----" 分隔时可在第 5 段填写备注。</div>
         <div>格式不正确的行会被忽略；分组默认写入 "默认分组"。</div>
         <div>Hotmail/Outlook 加号别名会自动使用主邮箱取信。</div>
         <div>覆盖导入 会先清空数据库账号，并清空浏览器邮件缓存。</div>
@@ -81,6 +82,7 @@ async function readDroppedFile(event: DragEvent) {
         <code># Outlook/其他邮箱（使用OAuth2）</code>
         <code>邮箱 密码 ClientID 刷新令牌</code>
         <code>邮箱----密码----ClientID----刷新令牌</code>
+        <code>邮箱----密码----ClientID----刷新令牌----备注</code>
         <p>当前版本使用本地 Go 后端通过 IMAP XOAUTH2 拉取 Outlook/Hotmail 邮件。</p>
       </div>
 

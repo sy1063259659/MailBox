@@ -37,6 +37,11 @@ export async function moveRemoteAccountsToGroup(emails: string[], group: string)
   await apiPost<{ ok: boolean }>('/accounts/move-group', { emails, group })
 }
 
+export async function updateRemoteAccountRemark(email: string, remark: string): Promise<MailAccount> {
+  const response = await apiPatch<{ ok: boolean; account: MailAccount }>('/accounts/remark', { email, remark })
+  return response.account
+}
+
 export async function splitRemoteHotmailAccount(email: string): Promise<SplitHotmailResult> {
   const response = await apiPost<{ ok: boolean; parentEmail: string; accounts: MailAccount[] }>(
     `/accounts/${encodeURIComponent(email)}/split-hotmail`,

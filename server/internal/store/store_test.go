@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestAuthEmailFor(t *testing.T) {
 	tests := []struct {
@@ -68,6 +71,37 @@ func TestIsHotmailPrimary(t *testing.T) {
 	}
 }
 
+func TestSplitIndexUniqueIndexStatement(t *testing.T) {
+	statements := migrationIndexStatements()
+	want := "CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index"
+	for _, statement := range statements {
+		if strings.Contains(statement, want) {
+			return
+		}
+	}
+	t.Fatalf("migrationIndexStatements() missing %q", want)
+}
+
+func TestMailAccountsMigrationCreatesRemarkColumn(t *testing.T) {
+	statements := migrationColumnStatements()
+	for _, statement := range statements {
+		if strings.Contains(statement, "ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''") {
+			return
+		}
+	}
+	t.Fatal("migrationColumnStatements() missing remark column")
+}
+
+func TestMailAccountsMigrationCreatesEncryptedPasswordColumn(t *testing.T) {
+	statements := migrationColumnStatements()
+	for _, statement := range statements {
+		if strings.Contains(statement, "ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''") {
+			return
+		}
+	}
+	t.Fatal("migrationColumnStatements() missing password_encrypted column")
+}
+
 func TestRandomLetters(t *testing.T) {
 	value, err := randomLetters(6)
 	if err != nil {
@@ -77,7 +111,7 @@ func TestRandomLetters(t *testing.T) {
 		t.Fatalf("len(randomLetters(6)) = %d", len(value))
 	}
 	for _, char := range value {
-		if (char < 'a' || char > 'z') && (char < 'A' || char > 'Z') {
+		if char < 'a' || char > 'z' {
 			t.Fatalf("unexpected random char %q", char)
 		}
 	}

@@ -18,6 +18,7 @@ type Config struct {
 	SessionSecret []byte
 	TokenKey      []byte
 	StaticDir     string
+	CookieSecure  bool
 }
 
 func Load() (Config, error) {
@@ -27,6 +28,7 @@ func Load() (Config, error) {
 		AdminUsername: strings.TrimSpace(getEnv("MAILBOX_ADMIN_USERNAME", "admin")),
 		AdminPassword: os.Getenv("MAILBOX_ADMIN_PASSWORD"),
 		StaticDir:     getEnv("MAILBOX_STATIC_DIR", "./dist"),
+		CookieSecure:  getBoolEnv("MAILBOX_COOKIE_SECURE", false),
 	}
 
 	if cfg.DatabaseURL == "" {
@@ -56,6 +58,14 @@ func getEnv(key string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func getBoolEnv(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
 func deriveKey(raw string) ([]byte, error) {

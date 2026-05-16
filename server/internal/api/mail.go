@@ -43,34 +43,26 @@ type messageRequest struct {
 }
 
 type checkResponse struct {
-	OK              bool   `json:"ok"`
-	Email           string `json:"email"`
-	NewRefreshToken string `json:"newRefreshToken,omitempty"`
-	ExpiresIn       int    `json:"expiresIn,omitempty"`
+	OK    bool   `json:"ok"`
+	Email string `json:"email"`
 }
 
 type foldersResponse struct {
-	OK              bool               `json:"ok"`
-	Folders         imapmail.FolderMap `json:"folders"`
-	NewRefreshToken string             `json:"newRefreshToken,omitempty"`
-	ExpiresIn       int                `json:"expiresIn,omitempty"`
+	OK      bool               `json:"ok"`
+	Folders imapmail.FolderMap `json:"folders"`
 }
 
 type messagesResponse struct {
-	OK              bool                      `json:"ok"`
-	Folder          string                    `json:"folder"`
-	Messages        []imapmail.MessageSummary `json:"messages"`
-	NextCursor      string                    `json:"nextCursor,omitempty"`
-	NewRefreshToken string                    `json:"newRefreshToken,omitempty"`
-	ExpiresIn       int                       `json:"expiresIn,omitempty"`
+	OK         bool                      `json:"ok"`
+	Folder     string                    `json:"folder"`
+	Messages   []imapmail.MessageSummary `json:"messages"`
+	NextCursor string                    `json:"nextCursor,omitempty"`
 }
 
 type messageResponse struct {
-	OK              bool                   `json:"ok"`
-	Message         imapmail.MessageDetail `json:"message"`
-	Body            messageBody            `json:"body"`
-	NewRefreshToken string                 `json:"newRefreshToken,omitempty"`
-	ExpiresIn       int                    `json:"expiresIn,omitempty"`
+	OK      bool                   `json:"ok"`
+	Message imapmail.MessageDetail `json:"message"`
+	Body    messageBody            `json:"body"`
 }
 
 type messageBody struct {
@@ -103,10 +95,8 @@ func (api mailAPI) check(w http.ResponseWriter, r *http.Request) {
 	_ = api.store.UpdateAccountStatus(ctx, credentials.Email, "success", "", false)
 
 	WriteJSON(w, http.StatusOK, checkResponse{
-		OK:              true,
-		Email:           strings.TrimSpace(credentials.Email),
-		NewRefreshToken: token.RefreshToken,
-		ExpiresIn:       token.ExpiresIn,
+		OK:    true,
+		Email: strings.TrimSpace(credentials.Email),
 	})
 }
 
@@ -133,10 +123,8 @@ func (api mailAPI) folders(w http.ResponseWriter, r *http.Request) {
 	_ = api.store.UpdateAccountStatus(ctx, credentials.Email, "success", "", false)
 
 	WriteJSON(w, http.StatusOK, foldersResponse{
-		OK:              true,
-		Folders:         folders,
-		NewRefreshToken: token.RefreshToken,
-		ExpiresIn:       token.ExpiresIn,
+		OK:      true,
+		Folders: folders,
 	})
 }
 
@@ -168,12 +156,10 @@ func (api mailAPI) messages(w http.ResponseWriter, r *http.Request) {
 	_ = api.store.UpdateAccountStatus(ctx, credentials.Email, "success", "", true)
 
 	WriteJSON(w, http.StatusOK, messagesResponse{
-		OK:              true,
-		Folder:          folder,
-		Messages:        result.Messages,
-		NextCursor:      result.NextCursor,
-		NewRefreshToken: token.RefreshToken,
-		ExpiresIn:       token.ExpiresIn,
+		OK:         true,
+		Folder:     folder,
+		Messages:   result.Messages,
+		NextCursor: result.NextCursor,
 	})
 }
 
@@ -219,8 +205,6 @@ func (api mailAPI) message(w http.ResponseWriter, r *http.Request) {
 			ContentType: detail.ContentType,
 			Content:     detail.Content,
 		},
-		NewRefreshToken: token.RefreshToken,
-		ExpiresIn:       token.ExpiresIn,
 	})
 }
 

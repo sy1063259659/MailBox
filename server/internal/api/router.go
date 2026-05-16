@@ -1,8 +1,10 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"strings"
+	"time"
 
 	"mailbox-server/internal/session"
 	"mailbox-server/internal/store"
@@ -28,6 +30,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/accounts/import", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.importAccounts)))
 	mux.HandleFunc("/api/accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.moveAccounts)))
 	mux.HandleFunc("/api/accounts/export", authRequired(sessions, methodHandler(http.MethodGet, accountAPI.exportAccounts)))
+	mux.HandleFunc("/api/accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, accountAPI.updateAccountRemark)))
 	mux.HandleFunc("/api/accounts/", authRequired(sessions, accountPathHandler(accountAPI)))
 	mux.HandleFunc("/api/groups", authRequired(sessions, groupsHandler(accountAPI)))
 	mux.HandleFunc("/api/groups/", authRequired(sessions, groupIDHandler(accountAPI)))
@@ -37,13 +40,17 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/mail/messages", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.messages)))
 	mux.HandleFunc("/api/mail/message", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.message)))
 
-	return withCORS(mux)
+	return withRequestLogging(withCORS(mux))
 }
 
 func accountPathHandler(api accountAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/split-hotmail") {
 			api.splitHotmail(w, r)
+			return
+		}
+		if r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/remark") {
+			api.updateAccountRemark(w, r)
 			return
 		}
 		if r.Method == http.MethodDelete {
@@ -117,6 +124,47 @@ func withCORS(next http.Handler) http.Handler {
 		}
 
 		next.ServeHTTP(w, r)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (recorder *statusRecorder) WriteHeader(status int) {
+	recorder.status = status
+	recorder.ResponseWriter.WriteHeader(status)
+}
+
+func (recorder *statusRecorder) Write(body []byte) (int, error) {
+	if recorder.status == 0 {
+		recorder.status = http.StatusOK
+	}
+	return recorder.ResponseWriter.Write(body)
+}
+
+func withRequestLogging(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		startedAt := time.Now()
+		recorder := &statusRecorder{ResponseWriter: w}
+		next.ServeHTTP(recorder, r)
+		status := recorder.status
+		if status == 0 {
+			status = http.StatusOK
+		}
+		errorCode := w.Header().Get("X-Mailbox-Error-Code")
+		if errorCode == "" {
+			errorCode = "-"
+		}
+		log.Printf(
+			"api method=%s path=%s status=%d duration_ms=%d error=%s",
+			r.Method,
+			r.URL.Path,
+			status,
+			time.Since(startedAt).Milliseconds(),
+			errorCode,
+		)
 	})
 }
 

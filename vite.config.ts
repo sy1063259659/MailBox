@@ -4,6 +4,17 @@ import vue from '@vitejs/plugin-vue'
 
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vue: ['vue', 'pinia'],
+          element: ['element-plus', '@element-plus/icons-vue'],
+          storage: ['idb'],
+        },
+      },
+    },
+  },
   server: {
     proxy: {
       '/api': {

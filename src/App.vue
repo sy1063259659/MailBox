@@ -14,6 +14,8 @@ const accountStore = useAccountStore()
 const mailStore = useMailStore()
 const importVisible = ref(false)
 const backendOnline = ref<boolean | undefined>(undefined)
+const exporting = ref(false)
+const clearingData = ref(false)
 
 onMounted(async () => {
   window.addEventListener('mailbox:unauthorized', handleUnauthorized)
@@ -39,22 +41,27 @@ async function checkBackend() {
 }
 
 async function exportData() {
-  const text = await accountStore.exportData()
-  if (!text.trim()) {
-    ElMessage.warning('没有可导出的账号')
-    return
-  }
+  exporting.value = true
+  try {
+    const text = await accountStore.exportData()
+    if (!text.trim()) {
+      ElMessage.warning('没有可导出的账号')
+      return
+    }
 
-  const blob = new Blob([text], {
-    type: 'text/plain;charset=utf-8',
-  })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
-  anchor.click()
-  URL.revokeObjectURL(url)
-  ElMessage.success('账号已导出')
+    const blob = new Blob([text], {
+      type: 'text/plain;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success('账号已导出')
+  } finally {
+    exporting.value = false
+  }
 }
 
 async function clearData() {
@@ -63,23 +70,33 @@ async function clearData() {
     cancelButtonText: '取消',
     type: 'warning',
   })
-  await accountStore.clearLocalMailCache()
-  await mailStore.loadMessages()
-  ElMessage.success('本地邮件缓存已清空')
+  clearingData.value = true
+  try {
+    await accountStore.clearLocalMailCache()
+    await mailStore.loadMessages()
+    ElMessage.success('本地邮件缓存已清空')
+  } finally {
+    clearingData.value = false
+  }
 }
 </script>
 
 <template>
   <el-container class="app-shell">
     <el-main class="app-main">
-      <LoginView v-if="authStore.checked && !authStore.isAuthenticated" />
-      <AccountWorkspaceView
-        v-else-if="authStore.checked"
-        @import-accounts="importVisible = true"
-        @export-data="exportData"
-        @clear-data="clearData"
-      />
-      <div v-else class="app-loading">正在检查登录状态...</div>
+      <Transition name="app-view" mode="out-in">
+        <LoginView v-if="authStore.checked && !authStore.isAuthenticated" key="login" />
+        <AccountWorkspaceView
+          v-else-if="authStore.checked"
+          key="workspace"
+          :exporting="exporting"
+          :clearing-data="clearingData"
+          @import-accounts="importVisible = true"
+          @export-data="exportData"
+          @clear-data="clearData"
+        />
+        <div v-else key="loading" class="app-loading">正在检查登录状态...</div>
+      </Transition>
     </el-main>
 
     <ImportAccountsDialog v-model="importVisible" />

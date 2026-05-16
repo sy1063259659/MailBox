@@ -2,7 +2,7 @@ services:
   mailbox:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.runtime
     container_name: mailbox
     restart: unless-stopped
     env_file:

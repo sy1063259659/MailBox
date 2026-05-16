@@ -21,6 +21,7 @@ func WriteJSON(w http.ResponseWriter, status int, value any) {
 }
 
 func WriteError(w http.ResponseWriter, status int, code string, message string) {
+	w.Header().Set("X-Mailbox-Error-Code", code)
 	WriteJSON(w, status, ErrorResponse{
 		OK:      false,
 		Error:   code,

@@ -63,14 +63,43 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
     window.clearTimeout(timeoutId)
   }
 
-  const data = (await response.json().catch(() => undefined)) as T | ErrorResponse | undefined
+  const data = await parseResponseBody<T | ErrorResponse>(response)
   if (!response.ok) {
     const error = data as ErrorResponse | undefined
-    if (response.status === 401 && error?.error === 'unauthorized') {
+    if (response.status === 401) {
       window.dispatchEvent(new CustomEvent('mailbox:unauthorized'))
     }
-    throw new ApiError(error?.error ?? 'internal_error', error?.message ?? response.statusText, response.status)
+    throw new ApiError(
+      error?.error ?? `http_${response.status}`,
+      error?.message ?? (response.statusText || '请求失败'),
+      response.status,
+    )
   }
 
   return data as T
+}
+
+async function parseResponseBody<T>(response: Response): Promise<T | undefined> {
+  if (response.status === 204) {
+    return undefined
+  }
+
+  const text = await response.text()
+  if (!text.trim()) {
+    return undefined
+  }
+
+  const contentType = response.headers.get('Content-Type') ?? ''
+  if (!contentType.toLowerCase().includes('application/json')) {
+    if (response.ok) {
+      throw new ApiError('invalid_response', '后端返回了无法识别的响应。', response.status)
+    }
+    return undefined
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiError('invalid_json', '后端返回的数据格式异常。', response.status)
+  }
 }

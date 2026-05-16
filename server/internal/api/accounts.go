@@ -11,6 +11,8 @@ import (
 
 var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)
 
+const maxAccountRemarkLength = 500
+
 type accountAPI struct {
 	store *store.Store
 }
@@ -39,6 +41,11 @@ type importAccountsRequest struct {
 type moveAccountsRequest struct {
 	Emails []string `json:"emails"`
 	Group  string   `json:"group"`
+}
+
+type updateAccountRemarkRequest struct {
+	Email  string `json:"email"`
+	Remark string `json:"remark"`
 }
 
 type groupRequest struct {
@@ -110,6 +117,32 @@ func (api accountAPI) splitHotmail(w http.ResponseWriter, r *http.Request) {
 		ParentEmail: result.ParentEmail,
 		Accounts:    result.Accounts,
 	})
+}
+
+func (api accountAPI) updateAccountRemark(w http.ResponseWriter, r *http.Request) {
+	var req updateAccountRemarkRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if email == "" && r.URL.Path != "/api/accounts/remark" {
+		email = strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/accounts/"), "/remark")
+	}
+	if email == "" || email == r.URL.Path {
+		WriteError(w, http.StatusBadRequest, "bad_request", "email is required")
+		return
+	}
+	remark := strings.TrimSpace(req.Remark)
+	if len([]rune(remark)) > maxAccountRemarkLength {
+		WriteError(w, http.StatusBadRequest, "bad_request", "备注最多 500 个字符")
+		return
+	}
+	account, err := api.store.UpdateAccountRemark(r.Context(), email, remark)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "account": account})
 }
 
 func (api accountAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {
@@ -230,8 +263,17 @@ func parseAccountImportText(text string) ([]store.AccountInput, []string) {
 			ClientID:     strings.TrimSpace(fields[2]),
 			RefreshToken: strings.TrimSpace(fields[3]),
 			Group:        store.DefaultGroupName,
+			Remark:       parseAccountRemark(fields),
+			RemarkSet:    len(fields) >= 5,
 		})
 	}
 
 	return inputs, errors
+}
+
+func parseAccountRemark(fields []string) string {
+	if len(fields) < 5 {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(fields[4:], "----"))
 }

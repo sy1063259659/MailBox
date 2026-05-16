@@ -33,6 +33,10 @@ const DEFAULT_BATCH_CONCURRENCY = 3
 
 type SyncKey = `${string}::${MailFolder}`
 
+interface SyncOptions {
+  refresh?: boolean
+}
+
 export interface MailStoreFilter {
   accountEmail: string
   group: string
@@ -47,6 +51,7 @@ export interface AccountSyncResult {
   folder: MailFolder
   synced: number
   nextLink?: string
+  errorCode?: string
   error?: string
 }
 
@@ -286,8 +291,11 @@ export const useMailStore = defineStore('mail', {
       accountEmail: string,
       folder?: MailFolder,
       nextLink?: string,
+      options: SyncOptions = {},
     ): Promise<AccountSyncResult> {
       const targetFolder = folder ?? this.filter.folder
+      const refresh = options.refresh ?? true
+      const syncKey = createSyncKey(accountEmail, targetFolder)
       const account = useAccountStore().accounts.find((item) => item.email === accountEmail)
 
       if (!account) {
@@ -295,12 +303,22 @@ export const useMailStore = defineStore('mail', {
           accountEmail,
           folder: targetFolder,
           synced: 0,
+          errorCode: 'not_found',
           error: '账号不存在',
         }
       }
 
-      const syncKey = createSyncKey(accountEmail, targetFolder)
-      this.syncingAccounts[accountEmail] = true
+      if (this.syncingAccounts[syncKey]) {
+        return {
+          accountEmail,
+          folder: targetFolder,
+          synced: 0,
+          errorCode: 'sync_in_progress',
+          error: '该账号正在同步，请稍后再试',
+        }
+      }
+
+      this.syncingAccounts[syncKey] = true
       delete this.syncErrors[accountEmail]
 
       try {
@@ -328,7 +346,10 @@ export const useMailStore = defineStore('mail', {
           lastSyncedAt: now,
           nextLink: listResult.nextCursor,
           cursor: listResult.nextCursor,
-          messageCount: existingMessages.length + messages.length,
+          messageCount: new Set([
+            ...existingMessages.map((message) => message.messageId),
+            ...messages.map((message) => message.messageId),
+          ]).size,
           updatedAt: now,
         }
         await saveSyncState(nextSyncState)
@@ -339,8 +360,10 @@ export const useMailStore = defineStore('mail', {
           delete this.nextLinks[syncKey]
         }
 
-        await useAccountStore().loadAccounts()
-        await this.loadMessages()
+        if (refresh) {
+          await useAccountStore().loadAccounts()
+          await this.loadMessages()
+        }
 
         return {
           accountEmail,
@@ -350,12 +373,14 @@ export const useMailStore = defineStore('mail', {
         }
       } catch (error) {
         const errorMessage = getErrorMessage(error)
+        const errorCode = error instanceof ImapApiError ? error.code : 'error'
         await saveSyncState({
           accountEmail,
           folder: targetFolder,
           status: error instanceof ImapApiError && ['oauth_error', 'imap_auth_error'].includes(error.code)
             ? 'token_expired'
             : 'error',
+          errorCode,
           errorMessage,
           messageCount: 0,
           updatedAt: new Date().toISOString(),
@@ -368,10 +393,11 @@ export const useMailStore = defineStore('mail', {
           accountEmail,
           folder: targetFolder,
           synced: 0,
+          errorCode,
           error: errorMessage,
         }
       } finally {
-        this.syncingAccounts[accountEmail] = false
+        delete this.syncingAccounts[syncKey]
       }
     },
 
@@ -381,10 +407,12 @@ export const useMailStore = defineStore('mail', {
 
       for (const accountEmail of accountEmails) {
         for (const folder of folders) {
-          const result = await this.syncAccountFolder(accountEmail, folder, undefined)
+          const result = await this.syncAccountFolder(accountEmail, folder, undefined, { refresh: false })
           results.push(result)
         }
       }
+      await useAccountStore().loadAccounts()
+      await this.loadMessages()
 
       return results
     },
@@ -409,13 +437,32 @@ export const useMailStore = defineStore('mail', {
 
       let nextIndex = 0
       const workerCount = Math.min(Math.max(1, concurrency), uniqueEmails.length)
+      const pendingEmails = uniqueEmails.filter((accountEmail) =>
+        !this.syncingAccounts[createSyncKey(accountEmail, folder)],
+      )
+      const skippedEmails = uniqueEmails.filter((accountEmail) =>
+        this.syncingAccounts[createSyncKey(accountEmail, folder)],
+      )
+      this.batchSyncTotal = pendingEmails.length + skippedEmails.length
+      for (const accountEmail of skippedEmails) {
+        this.batchSyncResults.push({
+          accountEmail,
+          folder,
+          synced: 0,
+          errorCode: 'sync_in_progress',
+          error: '该账号正在同步，请稍后再试',
+          status: 'failed',
+        })
+        this.batchSyncDone += 1
+        this.batchSyncFailed += 1
+      }
 
       const runNext = async (): Promise<void> => {
-        while (nextIndex < uniqueEmails.length) {
-          const accountEmail = uniqueEmails[nextIndex]
+        while (nextIndex < pendingEmails.length) {
+          const accountEmail = pendingEmails[nextIndex]
           nextIndex += 1
 
-          const result = await this.syncAccountFolder(accountEmail, folder)
+          const result = await this.syncAccountFolder(accountEmail, folder, undefined, { refresh: false })
           const batchResult: BatchSyncResult = {
             ...result,
             status: result.error ? 'failed' : 'success',
@@ -431,7 +478,9 @@ export const useMailStore = defineStore('mail', {
       }
 
       try {
-        await Promise.all(Array.from({ length: workerCount }, runNext))
+        await Promise.all(Array.from({ length: Math.min(workerCount, pendingEmails.length) }, runNext))
+        await useAccountStore().loadAccounts()
+        await this.loadMessages()
         await useAccountStore().refreshStats()
         return this.batchSyncResults
       } finally {

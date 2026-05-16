@@ -41,6 +41,7 @@ type MailAccount struct {
 	ClientID         string     `json:"clientId"`
 	RefreshToken     string     `json:"refreshToken,omitempty"`
 	Group            string     `json:"group"`
+	Remark           string     `json:"remark"`
 	DisplayName      string     `json:"displayName"`
 	Status           string     `json:"status"`
 	ErrorMessage     string     `json:"errorMessage,omitempty"`
@@ -58,6 +59,8 @@ type AccountInput struct {
 	ClientID     string
 	RefreshToken string
 	Group        string
+	Remark       string
+	RemarkSet    bool
 }
 
 type AccountCredentials struct {
@@ -115,9 +118,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 			split_index INTEGER,
 			split_generated_at TIMESTAMPTZ,
 			password TEXT NOT NULL,
+			password_encrypted TEXT NOT NULL DEFAULT '',
 			client_id TEXT NOT NULL,
 			refresh_token_encrypted TEXT NOT NULL,
 			group_id BIGINT NOT NULL REFERENCES groups(id),
+			remark TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'idle',
 			error_message TEXT NOT NULL DEFAULT '',
 			last_sync_at TIMESTAMPTZ,
@@ -132,19 +137,20 @@ func (s *Store) Migrate(ctx context.Context) error {
 		}
 	}
 
-	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS auth_email TEXT NOT NULL DEFAULT ''`); err != nil {
-		return fmt.Errorf("store: migrate auth email column: %w", err)
+	for _, statement := range migrationColumnStatements() {
+		if _, err := s.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("store: migrate column: %w", err)
+		}
 	}
-	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS parent_email TEXT`); err != nil {
-		return fmt.Errorf("store: migrate parent email column: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_index INTEGER`); err != nil {
-		return fmt.Errorf("store: migrate split index column: %w", err)
-	}
-	if _, err := s.pool.Exec(ctx, `ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`); err != nil {
-		return fmt.Errorf("store: migrate split generated column: %w", err)
+	for _, statement := range migrationIndexStatements() {
+		if _, err := s.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("store: migrate index: %w", err)
+		}
 	}
 	if err := s.backfillAuthEmails(ctx); err != nil {
+		return err
+	}
+	if err := s.backfillEncryptedPasswords(ctx); err != nil {
 		return err
 	}
 	if err := s.backfillSplitParents(ctx); err != nil {
@@ -153,6 +159,28 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 	_, err := s.ensureGroup(ctx, DefaultGroupName)
 	return err
+}
+
+func migrationColumnStatements() []string {
+	return []string{
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS auth_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS parent_email TEXT`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_index INTEGER`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
+	}
+}
+
+func migrationIndexStatements() []string {
+	return []string{
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_group_id ON mail_accounts(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_parent_email ON mail_accounts(parent_email)`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_created_at ON mail_accounts(created_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index
+			ON mail_accounts(parent_email, split_index)
+			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
+	}
 }
 
 func (s *Store) EnsureAdmin(ctx context.Context, username string, password string) error {
@@ -258,7 +286,7 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 
 func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.email, a.password, a.client_id, g.name, a.status, a.error_message,
+		SELECT a.email, a.password, a.password_encrypted, a.client_id, g.name, a.remark, a.status, a.error_message,
 			COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
 			a.last_sync_at, a.created_at, a.updated_at
 		FROM mail_accounts a
@@ -273,11 +301,14 @@ func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 	accounts := []MailAccount{}
 	for rows.Next() {
 		var account MailAccount
+		var legacyPassword, encryptedPassword string
 		if err := rows.Scan(
 			&account.Email,
-			&account.Password,
+			&legacyPassword,
+			&encryptedPassword,
 			&account.ClientID,
 			&account.Group,
+			&account.Remark,
 			&account.Status,
 			&account.ErrorMessage,
 			&account.ParentEmail,
@@ -289,6 +320,11 @@ func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 		); err != nil {
 			return nil, fmt.Errorf("store: scan account: %w", err)
 		}
+		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+		if err != nil {
+			return nil, fmt.Errorf("store: decrypt account password: %w", err)
+		}
+		account.Password = password
 		account.DisplayName = account.Email
 		accounts = append(accounts, account)
 	}
@@ -310,20 +346,26 @@ func (s *Store) ImportAccounts(ctx context.Context, inputs []AccountInput) (Impo
 		if err != nil {
 			return result, err
 		}
+		encryptedPassword, err := secure.EncryptString(s.tokenKey, input.Password)
+		if err != nil {
+			return result, err
+		}
 		authEmail := authEmailFor(input.Email)
 		tag, err := s.pool.Exec(ctx, `
 			INSERT INTO mail_accounts (
-				email, auth_email, password, client_id, refresh_token_encrypted, group_id, status, error_message
+				email, auth_email, password, password_encrypted, client_id, refresh_token_encrypted, group_id, remark, status, error_message
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, 'idle', '')
+			VALUES ($1, $2, '', $3, $4, $5, $6, $7, 'idle', '')
 			ON CONFLICT (email) DO UPDATE SET
 				auth_email = EXCLUDED.auth_email,
-				password = EXCLUDED.password,
+				password = '',
+				password_encrypted = EXCLUDED.password_encrypted,
 				client_id = EXCLUDED.client_id,
 				refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
 				group_id = EXCLUDED.group_id,
+				remark = CASE WHEN $8 THEN EXCLUDED.remark ELSE mail_accounts.remark END,
 				updated_at = now()
-		`, input.Email, authEmail, input.Password, input.ClientID, encrypted, groupID)
+		`, input.Email, authEmail, encryptedPassword, input.ClientID, encrypted, groupID, input.Remark, input.RemarkSet)
 		if err != nil {
 			return result, fmt.Errorf("store: import account: %w", err)
 		}
@@ -348,7 +390,7 @@ func (s *Store) ClearAccounts(ctx context.Context) error {
 
 func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT email, password, client_id, refresh_token_encrypted
+		SELECT email, password, password_encrypted, client_id, refresh_token_encrypted, remark
 		FROM mail_accounts
 		ORDER BY created_at ASC, email ASC
 	`)
@@ -359,22 +401,73 @@ func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
 
 	lines := []string{}
 	for rows.Next() {
-		var email, password, clientID, encrypted string
-		if err := rows.Scan(&email, &password, &clientID, &encrypted); err != nil {
+		var email, legacyPassword, encryptedPassword, clientID, encrypted, remark string
+		if err := rows.Scan(&email, &legacyPassword, &encryptedPassword, &clientID, &encrypted, &remark); err != nil {
 			return "", fmt.Errorf("store: scan export account: %w", err)
+		}
+		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+		if err != nil {
+			return "", fmt.Errorf("store: decrypt export password: %w", err)
 		}
 		refreshToken, err := secure.DecryptString(s.tokenKey, encrypted)
 		if err != nil {
 			return "", err
 		}
-		lines = append(lines, strings.Join([]string{email, password, clientID, refreshToken}, "----"))
+		fields := []string{email, password, clientID, refreshToken}
+		if strings.TrimSpace(remark) != "" {
+			fields = append(fields, remark)
+		}
+		lines = append(lines, strings.Join(fields, "----"))
 	}
 	return strings.Join(lines, "\n"), rows.Err()
 }
 
+func (s *Store) UpdateAccountRemark(ctx context.Context, email string, remark string) (MailAccount, error) {
+	normalized := normalizeEmail(email)
+	var account MailAccount
+	var legacyPassword, encryptedPassword string
+	err := s.pool.QueryRow(ctx, `
+		UPDATE mail_accounts a
+		SET remark = $2, updated_at = now()
+		FROM groups g
+		WHERE a.group_id = g.id AND lower(a.email) = $1
+		RETURNING a.email, a.password, a.password_encrypted, a.client_id, g.name, a.remark, a.status, a.error_message,
+			COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
+			a.last_sync_at, a.created_at, a.updated_at
+	`, normalized, strings.TrimSpace(remark)).Scan(
+		&account.Email,
+		&legacyPassword,
+		&encryptedPassword,
+		&account.ClientID,
+		&account.Group,
+		&account.Remark,
+		&account.Status,
+		&account.ErrorMessage,
+		&account.ParentEmail,
+		&account.SplitIndex,
+		&account.SplitGeneratedAt,
+		&account.LastSyncAt,
+		&account.CreatedAt,
+		&account.UpdatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MailAccount{}, errors.New("账号不存在")
+	}
+	if err != nil {
+		return MailAccount{}, fmt.Errorf("store: update account remark: %w", err)
+	}
+	password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+	if err != nil {
+		return MailAccount{}, fmt.Errorf("store: decrypt account password: %w", err)
+	}
+	account.Password = password
+	account.DisplayName = account.Email
+	return account, nil
+}
+
 func (s *Store) DeleteAccount(ctx context.Context, email string) ([]string, error) {
 	normalized := normalizeEmail(email)
-	rows, err := s.pool.Query(ctx, `DELETE FROM mail_accounts WHERE email = $1 OR parent_email = $1 RETURNING email`, normalized)
+	rows, err := s.pool.Query(ctx, `DELETE FROM mail_accounts WHERE lower(email) = $1 OR lower(parent_email) = $1 RETURNING email`, normalized)
 	if err != nil {
 		return nil, fmt.Errorf("store: delete account: %w", err)
 	}
@@ -409,19 +502,30 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 	}
 	defer tx.Rollback(ctx)
 
-	var password, clientID, encrypted, groupName string
+	var legacyPassword, encryptedPassword, clientID, encrypted, groupName, remark string
 	var groupID int64
 	err = tx.QueryRow(ctx, `
-		SELECT a.password, a.client_id, a.refresh_token_encrypted, a.group_id, g.name
+		SELECT a.password, a.password_encrypted, a.client_id, a.refresh_token_encrypted, a.group_id, g.name, a.remark
 		FROM mail_accounts a
 		JOIN groups g ON g.id = a.group_id
-		WHERE a.email = $1 AND COALESCE(a.parent_email, '') = ''
-	`, parentEmail).Scan(&password, &clientID, &encrypted, &groupID, &groupName)
+		WHERE lower(a.email) = $1 AND COALESCE(a.parent_email, '') = ''
+		FOR UPDATE
+	`, parentEmail).Scan(&legacyPassword, &encryptedPassword, &clientID, &encrypted, &groupID, &groupName, &remark)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SplitResult{}, errors.New("主账号不存在或不是主账号")
 	}
 	if err != nil {
 		return SplitResult{}, fmt.Errorf("store: get split parent: %w", err)
+	}
+	password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+	if err != nil {
+		return SplitResult{}, fmt.Errorf("store: decrypt split parent password: %w", err)
+	}
+	if strings.TrimSpace(encryptedPassword) == "" {
+		encryptedPassword, err = secure.EncryptString(s.tokenKey, password)
+		if err != nil {
+			return SplitResult{}, fmt.Errorf("store: encrypt split parent password: %w", err)
+		}
 	}
 
 	var childCount int
@@ -444,15 +548,17 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 		err = tx.QueryRow(ctx, `
 			INSERT INTO mail_accounts (
 				email, auth_email, parent_email, split_index, split_generated_at,
-				password, client_id, refresh_token_encrypted, group_id, status, error_message
+				password, password_encrypted, client_id, refresh_token_encrypted, group_id, remark, status, error_message
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'idle', '')
-			RETURNING email, password, client_id, status, error_message, parent_email, split_index,
+			VALUES ($1, $2, $3, $4, $5, '', $6, $7, $8, $9, $10, 'idle', '')
+			RETURNING email, password, password_encrypted, client_id, remark, status, error_message, parent_email, split_index,
 				split_generated_at, last_sync_at, created_at, updated_at
-		`, alias, parentEmail, parentEmail, splitIndex, generatedAt, password, clientID, encrypted, groupID).Scan(
+		`, alias, parentEmail, parentEmail, splitIndex, generatedAt, encryptedPassword, clientID, encrypted, groupID, remark).Scan(
 			&account.Email,
-			&account.Password,
+			&legacyPassword,
+			&encryptedPassword,
 			&account.ClientID,
+			&account.Remark,
 			&account.Status,
 			&account.ErrorMessage,
 			&account.ParentEmail,
@@ -465,6 +571,11 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 		if err != nil {
 			return SplitResult{}, fmt.Errorf("store: insert split child: %w", err)
 		}
+		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+		if err != nil {
+			return SplitResult{}, fmt.Errorf("store: decrypt split child password: %w", err)
+		}
+		account.Password = password
 		account.Group = groupName
 		account.DisplayName = account.Email
 		accounts = append(accounts, account)
@@ -492,7 +603,7 @@ func (s *Store) MoveAccountsToGroup(ctx context.Context, emails []string, group 
 	}
 	_, err = s.pool.Exec(ctx, `
 		UPDATE mail_accounts SET group_id = $1, updated_at = now()
-		WHERE email = ANY($2)
+		WHERE lower(email) = ANY($2)
 	`, groupID, normalized)
 	if err != nil {
 		return fmt.Errorf("store: move accounts: %w", err)
@@ -506,7 +617,7 @@ func (s *Store) GetCredentials(ctx context.Context, email string) (AccountCreden
 	err := s.pool.QueryRow(ctx, `
 		SELECT email, COALESCE(NULLIF(auth_email, ''), email), client_id, refresh_token_encrypted
 		FROM mail_accounts
-		WHERE email = $1
+		WHERE lower(email) = $1
 	`, normalizeEmail(email)).Scan(&credentials.Email, &credentials.AuthEmail, &credentials.ClientID, &encrypted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AccountCredentials{}, errors.New("账号不存在")
@@ -532,7 +643,7 @@ func (s *Store) UpdateRefreshToken(ctx context.Context, email string, refreshTok
 	}
 	_, err = s.pool.Exec(ctx, `
 		UPDATE mail_accounts SET refresh_token_encrypted = $1, updated_at = now()
-		WHERE email = $2
+		WHERE lower(email) = $2
 	`, encrypted, normalizeEmail(email))
 	if err != nil {
 		return fmt.Errorf("store: update refresh token: %w", err)
@@ -544,7 +655,7 @@ func (s *Store) UpdateAccountStatus(ctx context.Context, email string, status st
 	query := `
 		UPDATE mail_accounts
 		SET status = $1, error_message = $2, updated_at = now(), last_sync_at = CASE WHEN $3 THEN now() ELSE last_sync_at END
-		WHERE email = $4
+		WHERE lower(email) = $4
 	`
 	_, err := s.pool.Exec(ctx, query, status, errorMessage, synced, normalizeEmail(email))
 	if err != nil {
@@ -571,12 +682,23 @@ func (s *Store) ensureGroup(ctx context.Context, name string) (int64, error) {
 func (s *Store) accountExists(ctx context.Context, email string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE email = $1)
+		SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE lower(email) = $1)
 	`, normalizeEmail(email)).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: check account exists: %w", err)
 	}
 	return exists, nil
+}
+
+func (s *Store) decryptAccountPassword(encrypted string, legacy string) (string, error) {
+	if strings.TrimSpace(encrypted) == "" {
+		return legacy, nil
+	}
+	password, err := secure.DecryptString(s.tokenKey, encrypted)
+	if err != nil {
+		return "", err
+	}
+	return password, nil
 }
 
 func (s *Store) backfillAuthEmails(ctx context.Context) error {
@@ -609,6 +731,51 @@ func (s *Store) backfillAuthEmails(ctx context.Context) error {
 			WHERE email = $2
 		`, authEmailFor(email), normalizeEmail(email)); err != nil {
 			return fmt.Errorf("store: backfill auth email: %w", err)
+		}
+	}
+	return nil
+}
+
+func (s *Store) backfillEncryptedPasswords(ctx context.Context) error {
+	rows, err := s.pool.Query(ctx, `
+		SELECT email, password
+		FROM mail_accounts
+		WHERE password <> '' AND (password_encrypted = '' OR password_encrypted IS NULL)
+	`)
+	if err != nil {
+		return fmt.Errorf("store: query password backfill: %w", err)
+	}
+	defer rows.Close()
+
+	type accountPassword struct {
+		email    string
+		password string
+	}
+	passwords := []accountPassword{}
+	for rows.Next() {
+		var item accountPassword
+		if err := rows.Scan(&item.email, &item.password); err != nil {
+			return fmt.Errorf("store: scan password backfill: %w", err)
+		}
+		passwords = append(passwords, item)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("store: read password backfill: %w", err)
+	}
+
+	for _, item := range passwords {
+		encrypted, err := secure.EncryptString(s.tokenKey, item.password)
+		if err != nil {
+			return fmt.Errorf("store: encrypt password backfill: %w", err)
+		}
+		if _, err := s.pool.Exec(ctx, `
+			UPDATE mail_accounts
+			SET password_encrypted = $1,
+				password = '',
+				updated_at = now()
+			WHERE email = $2
+		`, encrypted, item.email); err != nil {
+			return fmt.Errorf("store: update password backfill: %w", err)
 		}
 	}
 	return nil
@@ -698,7 +865,7 @@ func (s *Store) uniqueHotmailAlias(ctx context.Context, tx pgx.Tx, parentEmail s
 		if err != nil {
 			return "", err
 		}
-		alias := local + "+" + suffix + "@" + domain
+		alias := strings.ToLower(local + "+" + suffix + "@" + domain)
 		var exists bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE email = $1)`, alias).Scan(&exists); err != nil {
 			return "", fmt.Errorf("store: check split alias: %w", err)
@@ -711,7 +878,7 @@ func (s *Store) uniqueHotmailAlias(ctx context.Context, tx pgx.Tx, parentEmail s
 }
 
 func randomLetters(length int) (string, error) {
-	const letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	const letters = "abcdefghijklmnopqrstuvwxyz"
 	var builder strings.Builder
 	builder.Grow(length)
 	for index := 0; index < length; index++ {

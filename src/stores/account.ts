@@ -8,6 +8,7 @@ import {
   listRemoteGroups,
   moveRemoteAccountsToGroup,
   splitRemoteHotmailAccount,
+  updateRemoteAccountRemark,
   type MailGroup,
 } from '@/services/accountApi'
 import {
@@ -115,6 +116,11 @@ export const useAccountStore = defineStore('account', {
       }
     },
 
+    async updateAccountRemark(email: string, remark: string): Promise<void> {
+      await updateRemoteAccountRemark(email, remark)
+      await this.loadAccounts()
+    },
+
     async deleteAccount(email: string): Promise<void> {
       const deletedEmails = await deleteRemoteAccount(email)
       const affectedEmails = deletedEmails.length > 0 ? deletedEmails : this.accounts
@@ -161,6 +167,7 @@ function normalizeRemoteAccount(account: MailAccount): MailAccount {
     ...account,
     refreshToken: account.refreshToken ?? '',
     group: account.group || DEFAULT_GROUP,
+    remark: account.remark ?? '',
     displayName: account.displayName || account.email,
     provider: account.provider ?? 'microsoft',
   }
@@ -207,7 +214,7 @@ function buildAccountTree(accounts: MailAccount[]): MailAccount[] {
     })
   }
 
-  return roots.sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.email.localeCompare(right.email))
+  return roots.sort((left, right) => right.createdAt.localeCompare(left.createdAt) || left.email.localeCompare(right.email))
 }
 
 function sortSplitChildren(left: MailAccount, right: MailAccount): number {

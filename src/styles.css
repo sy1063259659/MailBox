@@ -1,6 +1,8 @@
 :root {
   color: #1f2937;
   background: #f4f6fb;
+  --motion-fast: 160ms ease;
+  --motion-normal: 220ms ease;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
@@ -25,6 +27,78 @@ button,
 input,
 textarea {
   font: inherit;
+}
+
+.app-view-enter-active,
+.app-view-leave-active,
+.workspace-view-enter-active,
+.workspace-view-leave-active,
+.content-fade-enter-active,
+.content-fade-leave-active {
+  transition:
+    opacity var(--motion-normal),
+    transform var(--motion-normal);
+}
+
+.app-view-enter-from,
+.app-view-leave-to,
+.workspace-view-enter-from,
+.workspace-view-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.content-fade-enter-from,
+.content-fade-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.panel-slide-enter-active,
+.panel-slide-leave-active {
+  overflow: hidden;
+  transition:
+    opacity var(--motion-normal),
+    transform var(--motion-normal),
+    max-height var(--motion-normal),
+    margin-bottom var(--motion-normal),
+    padding-top var(--motion-normal),
+    padding-bottom var(--motion-normal);
+}
+
+.panel-slide-enter-from,
+.panel-slide-leave-to {
+  max-height: 0;
+  margin-bottom: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+  transform: translateY(-6px);
+}
+
+.panel-slide-enter-to,
+.panel-slide-leave-from {
+  max-height: 260px;
+}
+
+.mail-item-enter-active,
+.mail-item-leave-active,
+.mail-item-move {
+  transition:
+    opacity var(--motion-normal),
+    transform var(--motion-normal),
+    background-color var(--motion-fast);
+}
+
+.mail-item-enter-from,
+.mail-item-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.mail-item-leave-active {
+  position: absolute;
+  width: 100%;
 }
 
 .app-shell {
@@ -104,6 +178,11 @@ textarea {
   gap: 9px;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast),
+    box-shadow var(--motion-fast);
 }
 
 .faka-nav-title {
@@ -123,6 +202,19 @@ textarea {
 .faka-nav-item.active {
   background: #f0f5ff;
   color: #1d4ed8;
+}
+
+.faka-nav-item:hover {
+  transform: translateX(2px);
+}
+
+.faka-nav-item:active {
+  transform: translateX(1px) scale(0.99);
+}
+
+.faka-nav-item:disabled {
+  cursor: wait;
+  opacity: 0.72;
 }
 
 .faka-nav-item span {
@@ -261,12 +353,38 @@ textarea {
   border-radius: 7px;
 }
 
+.faka-main .el-button,
+.faka-import-dialog .el-button,
+.login-submit {
+  transition:
+    background-color var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.faka-main .el-button:not(.is-disabled):hover,
+.faka-import-dialog .el-button:not(.is-disabled):hover,
+.login-submit:not(.is-disabled):hover {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.08);
+}
+
+.faka-main .el-button:not(.is-disabled):active,
+.faka-import-dialog .el-button:not(.is-disabled):active,
+.login-submit:not(.is-disabled):active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
 .batch-sync-panel {
   margin-bottom: 12px;
   padding: 12px;
   border: 1px solid #e8eef7;
   border-radius: 8px;
   background: #f8fbff;
+  will-change: transform, opacity, max-height;
 }
 
 .batch-sync-head {
@@ -316,6 +434,9 @@ textarea {
   border: 1px solid #edf1f7;
   border-radius: 8px;
   overflow: hidden;
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast);
 }
 
 .faka-account-table .el-table__header th {
@@ -375,6 +496,34 @@ textarea {
   color: #64748b;
 }
 
+.copy-cell.copied .el-button {
+  color: #16a34a;
+}
+
+.remark-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.remark-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remark-cell .muted {
+  color: #94a3b8;
+}
+
+.remark-cell .el-button {
+  flex: 0 0 auto;
+  color: #64748b;
+}
+
 .mail-count {
   display: inline-flex;
   min-width: 32px;
@@ -387,6 +536,10 @@ textarea {
   color: #1d4ed8;
   font-weight: 650;
   line-height: 24px;
+  transition:
+    background-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
 }
 
 .row-actions {
@@ -397,11 +550,6 @@ textarea {
 
 .row-actions .el-button + .el-button {
   margin-left: 0;
-}
-
-.split-action-placeholder {
-  color: #94a3b8;
-  font-size: 12px;
 }
 
 .faka-pagination {
@@ -460,15 +608,30 @@ textarea {
   width: 100%;
   padding: 12px 10px;
   border: 0;
+  border-left: 3px solid transparent;
   border-bottom: 1px solid #edf1f7;
   background: transparent;
   text-align: left;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast),
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    transform var(--motion-fast);
 }
 
 .faka-mail-item:hover,
 .faka-mail-item.active {
   background: #f6faff;
+}
+
+.faka-mail-item:hover {
+  transform: translateX(2px);
+}
+
+.faka-mail-item.active {
+  border-left-color: #2563eb;
+  box-shadow: inset 0 0 0 1px #dbeafe;
 }
 
 .mail-item-line {
@@ -525,6 +688,13 @@ textarea {
   flex-direction: column;
 }
 
+.reader-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .reader-empty-icon {
   font-size: 36px;
   color: #94a3b8;
@@ -568,6 +738,9 @@ textarea {
   border: 1px solid #edf1f7;
   border-radius: 7px;
   background: #ffffff;
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast);
 }
 
 .mail-body.plain {
@@ -636,12 +809,18 @@ textarea {
   justify-content: center;
   gap: 4px;
   cursor: pointer;
+  transition:
+    background-color var(--motion-fast),
+    border-color var(--motion-fast),
+    color var(--motion-fast),
+    transform var(--motion-fast);
 }
 
 .upload-drop:hover {
   border-color: #2563eb;
   color: #2563eb;
   background: #f6faff;
+  transform: translateY(-1px);
 }
 
 .upload-drop .el-icon {
@@ -773,5 +952,25 @@ textarea {
 
   .faka-card {
     height: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .faka-nav-item:hover,
+  .faka-main .el-button:not(.is-disabled):hover,
+  .faka-import-dialog .el-button:not(.is-disabled):hover,
+  .login-submit:not(.is-disabled):hover,
+  .faka-mail-item:hover,
+  .upload-drop:hover {
+    transform: none;
   }
 }

@@ -60,8 +60,6 @@ export interface ListMessagesResult {
   folder: MailFolder
   messages: ImapMessageSummary[]
   nextCursor?: string
-  newRefreshToken?: string
-  expiresIn?: number
 }
 
 export interface GetMessageResult {
@@ -71,8 +69,6 @@ export interface GetMessageResult {
     contentType: 'text' | 'html'
     content: string
   }
-  newRefreshToken?: string
-  expiresIn?: number
 }
 
 export async function listImapMessages(params: {

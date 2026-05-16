@@ -14,6 +14,7 @@ export interface MailAccount {
   clientId: string
   refreshToken: string
   group: string
+  remark: string
   displayName: string
   status: AccountStatus
   parentEmail?: string
@@ -85,6 +86,7 @@ export interface SyncState {
   nextLink?: string
   deltaLink?: string
   cursor?: string
+  errorCode?: string
   errorMessage?: string
   retryAfterSeconds?: number
   messageCount: number

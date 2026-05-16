@@ -13,10 +13,11 @@ const CookieName = "mailbox_session"
 
 type Manager struct {
 	secret []byte
+	secure bool
 }
 
-func NewManager(secret []byte) Manager {
-	return Manager{secret: secret}
+func NewManager(secret []byte, secure bool) Manager {
+	return Manager{secret: secret, secure: secure}
 }
 
 func (m Manager) Set(w http.ResponseWriter, username string) {
@@ -28,6 +29,7 @@ func (m Manager) Set(w http.ResponseWriter, username string) {
 		MaxAge:   int((24 * time.Hour).Seconds()),
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   m.secure,
 	})
 }
 
@@ -39,6 +41,7 @@ func (m Manager) Clear(w http.ResponseWriter) {
 		MaxAge:   -1,
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   m.secure,
 	})
 }
 

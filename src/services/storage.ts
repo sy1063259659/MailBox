@@ -10,14 +10,17 @@ import type {
 
 const DB_NAME = 'mailbox-cache'
 const LEGACY_DB_NAME = 'mailbox-graph-manager'
-const DB_VERSION = 2
+const DB_VERSION = 3
+const MAX_MESSAGE_BODY_CACHE = 2000
 
 type MessageStorageKey = `${string}::${MailFolder}::${string}`
 type MessageBodyStorageKey = `${string}::${string}`
 type SyncStateStorageKey = `${string}::${MailFolder}`
+type MessageIndexName = 'by-account' | 'by-folder' | 'by-account-folder' | 'by-received-at'
 
 interface StoredMailMessage extends MailMessage {
   storageKey: MessageStorageKey
+  accountFolderKey: [string, MailFolder]
 }
 
 interface StoredMailBody extends MailBody {
@@ -35,6 +38,7 @@ interface MailboxDatabase extends DBSchema {
     indexes: {
       'by-account': string
       'by-folder': MailFolder
+      'by-account-folder': [string, MailFolder]
       'by-received-at': string
     }
   }
@@ -59,20 +63,21 @@ let legacyMigrationPromise: Promise<void> | undefined
 
 const getDatabase = (): Promise<IDBPDatabase<MailboxDatabase>> => {
   databasePromise ??= openDB<MailboxDatabase>(DB_NAME, DB_VERSION, {
-    upgrade(database) {
+    upgrade(database, _oldVersion, _newVersion, transaction) {
       const rawDatabase = database as unknown as IDBDatabase
       if (rawDatabase.objectStoreNames.contains('accounts')) {
         rawDatabase.deleteObjectStore('accounts')
       }
 
       const messages = database.objectStoreNames.contains('messages')
-        ? undefined
+        ? transaction.objectStore('messages')
         : database.createObjectStore('messages', {
             keyPath: 'storageKey',
           })
-      messages?.createIndex('by-account', 'accountEmail')
-      messages?.createIndex('by-folder', 'folder')
-      messages?.createIndex('by-received-at', 'receivedAt')
+      ensureIndex(messages, 'by-account', 'accountEmail')
+      ensureIndex(messages, 'by-folder', 'folder')
+      ensureIndex(messages, 'by-account-folder', 'accountFolderKey')
+      ensureIndex(messages, 'by-received-at', 'receivedAt')
 
       const messageBodies = database.objectStoreNames.contains('messageBodies')
         ? undefined
@@ -91,6 +96,19 @@ const getDatabase = (): Promise<IDBPDatabase<MailboxDatabase>> => {
   })
 
   return databasePromise
+}
+
+const ensureIndex = (
+  store: {
+    indexNames: DOMStringList
+    createIndex: (name: MessageIndexName, keyPath: string | string[]) => unknown
+  },
+  name: MessageIndexName,
+  keyPath: string | string[],
+): void => {
+  if (!store.indexNames.contains(name)) {
+    store.createIndex(name, keyPath)
+  }
 }
 
 const ensureLegacyMigration = async (): Promise<void> => {
@@ -160,10 +178,14 @@ export const createSyncStateKey = (
 const toStoredMessage = (message: MailMessage): StoredMailMessage => ({
   ...message,
   storageKey: createMessageKey(message.accountEmail, message.folder, message.messageId),
+  accountFolderKey: [message.accountEmail, message.folder],
 })
 
-const fromStoredMessage = ({ storageKey: _storageKey, ...message }: StoredMailMessage): MailMessage =>
-  message
+const fromStoredMessage = ({
+  storageKey: _storageKey,
+  accountFolderKey: _accountFolderKey,
+  ...message
+}: StoredMailMessage): MailMessage => message
 
 const toStoredBody = (body: MailBody): StoredMailBody => ({
   ...body,
@@ -234,9 +256,7 @@ export const listMessages = async (
 export const filterMessages = async (filter: MessageFilter): Promise<MailMessage[]> => {
   await ensureLegacyMigration()
   const database = await getDatabase()
-  const source = filter.accountEmail
-    ? await database.getAllFromIndex('messages', 'by-account', filter.accountEmail)
-    : await database.getAll('messages')
+  const source = await getMessagesForFilter(database, filter)
 
   const query = filter.query?.trim().toLocaleLowerCase()
   const filtered = source.filter((message) => {
@@ -264,6 +284,23 @@ export const filterMessages = async (filter: MessageFilter): Promise<MailMessage
   return limited.map(fromStoredMessage)
 }
 
+const getMessagesForFilter = async (
+  database: IDBPDatabase<MailboxDatabase>,
+  filter: MessageFilter,
+): Promise<StoredMailMessage[]> => {
+  if (filter.accountEmail && filter.folder) {
+    const messages = await database.getAllFromIndex('messages', 'by-account-folder', [filter.accountEmail, filter.folder])
+    return messages.length > 0 ? messages : database.getAllFromIndex('messages', 'by-account', filter.accountEmail)
+  }
+  if (filter.accountEmail) {
+    return database.getAllFromIndex('messages', 'by-account', filter.accountEmail)
+  }
+  if (filter.folder) {
+    return database.getAllFromIndex('messages', 'by-folder', filter.folder)
+  }
+  return database.getAll('messages')
+}
+
 export const getMessageBody = async (
   accountEmail: string,
   messageId: string,
@@ -278,6 +315,7 @@ export const saveMessageBody = async (body: MailBody): Promise<void> => {
   await ensureLegacyMigration()
   const database = await getDatabase()
   await database.put('messageBodies', toStoredBody(body))
+  await pruneMessageBodyCache(database)
 }
 
 export const getSyncState = async (
@@ -337,6 +375,21 @@ export const getStats = async (): Promise<StorageStats> => {
 export const deleteStorageDatabase = async (): Promise<void> => {
   databasePromise = undefined
   await deleteDB(DB_NAME)
+}
+
+const pruneMessageBodyCache = async (database: IDBPDatabase<MailboxDatabase>): Promise<void> => {
+  const count = await database.count('messageBodies')
+  if (count <= MAX_MESSAGE_BODY_CACHE) {
+    return
+  }
+
+  const bodies = await database.getAll('messageBodies')
+  const staleBodies = bodies
+    .sort((left, right) => left.fetchedAt.localeCompare(right.fetchedAt))
+    .slice(0, count - MAX_MESSAGE_BODY_CACHE)
+  const transaction = database.transaction('messageBodies', 'readwrite')
+  await Promise.all(staleBodies.map((body) => transaction.objectStore('messageBodies').delete(body.storageKey)))
+  await transaction.done
 }
 
 type DeleteTransactionStores = ['messages', 'messageBodies', 'syncStates']

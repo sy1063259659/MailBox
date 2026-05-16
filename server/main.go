@@ -33,10 +33,10 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:    cfg.Addr,
+		Addr: cfg.Addr,
 		Handler: staticfiles.Handler(
 			cfg.StaticDir,
-			api.NewRouter(database, session.NewManager(cfg.SessionSecret)),
+			api.NewRouter(database, session.NewManager(cfg.SessionSecret, cfg.CookieSecure)),
 		),
 	}
 
