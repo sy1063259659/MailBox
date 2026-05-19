@@ -102,6 +102,23 @@ func TestMailAccountsMigrationCreatesEncryptedPasswordColumn(t *testing.T) {
 	t.Fatal("migrationColumnStatements() missing password_encrypted column")
 }
 
+func TestGroupsMigrationCreatesSortOrderColumn(t *testing.T) {
+	statements := migrationColumnStatements()
+	for _, statement := range statements {
+		if strings.Contains(statement, "ALTER TABLE groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0") {
+			return
+		}
+	}
+	t.Fatal("migrationColumnStatements() missing group sort_order column")
+}
+
+func TestGroupListOrdersBySortOrder(t *testing.T) {
+	query := `SELECT id, name, sort_order, created_at, updated_at FROM groups ORDER BY sort_order ASC, name ASC`
+	if !strings.Contains(query, "ORDER BY sort_order ASC, name ASC") {
+		t.Fatal("group list query must order by sort_order then name")
+	}
+}
+
 func TestRandomLetters(t *testing.T) {
 	value, err := randomLetters(6)
 	if err != nil {

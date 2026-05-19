@@ -40,6 +40,29 @@ func TestAccountPathHandlerRejectsUnauthenticatedRemarkPatch(t *testing.T) {
 	}
 }
 
+func TestGroupOrderRejectsMissingSession(t *testing.T) {
+	handler := authRequired(session.NewManager([]byte("test-secret"), false), groupIDHandler(accountAPI{}))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/api/groups/order", strings.NewReader(`{"ids":[1,2]}`))
+
+	handler(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestReorderGroupsRejectsEmptyIDs(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPatch, "/api/groups/order", strings.NewReader(`{"ids":[]}`))
+
+	accountAPI{}.reorderGroups(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
 func TestUpdateAccountRemarkRejectsTooLongRemark(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(

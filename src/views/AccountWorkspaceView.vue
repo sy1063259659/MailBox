@@ -19,7 +19,8 @@ import {
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
 import { useMailStore } from '@/stores/mail'
-import type { AccountStatus, MailAccount, MailFolder, MailMessage } from '@/types'
+import type { AccountStatus, MailAccount, MailAddress, MailFolder, MailMessage } from '@/types'
+import type { MailGroup } from '@/services/accountApi'
 
 const accountStore = useAccountStore()
 const authStore = useAuthStore()
@@ -41,6 +42,8 @@ const loggingOut = ref(false)
 const copying = ref(false)
 const copiedValues = ref<Set<string>>(new Set())
 const editingRemarkEmail = ref('')
+const draggingGroupId = ref<number>()
+const deletingGroupId = ref<number>()
 
 defineProps<{
   exporting?: boolean
@@ -138,6 +141,14 @@ const visibleFlatAccounts = computed(() => flattenAccounts(visibleAccounts.value
 
 const sidebarRootAccounts = computed(() => accountTree.value)
 
+const groupCountByName = computed(() => {
+  const counts = new Map<string, number>()
+  for (const account of accountStore.accounts) {
+    counts.set(account.group, (counts.get(account.group) ?? 0) + 1)
+  }
+  return counts
+})
+
 const parentRowIndexMap = computed(() => {
   const map = new Map<string, number>()
   visibleAccounts.value.forEach((account, index) => {
@@ -181,6 +192,14 @@ const visibleMessages = computed(() => {
   return messages
 })
 
+const currentSyncKey = computed(() =>
+  mailStore.filter.accountEmail ? `${mailStore.filter.accountEmail}::${mailStore.filter.folder}` : '',
+)
+
+const currentAccountSyncing = computed(() =>
+  currentSyncKey.value ? Boolean(mailStore.syncingAccounts[currentSyncKey.value]) : false,
+)
+
 function looksLikeHtml(value: string): boolean {
   return /<(?:!doctype|html|head|body|div|table|style|meta|title|p|br|span)\b/i.test(value)
 }
@@ -194,6 +213,21 @@ function formatDateTime(value?: string): string {
     return value
   }
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatAddress(address: MailAddress): string {
+  if (address.name && address.email) {
+    return `${address.name} <${address.email}>`
+  }
+  return address.email || address.name || ''
+}
+
+function formatAddressList(addresses?: MailAddress[], emptyText = '未知收件人'): string {
+  const text = (addresses ?? [])
+    .map(formatAddress)
+    .filter(Boolean)
+    .join(', ')
+  return text || emptyText
 }
 
 function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' | 'updatedAt' | 'lastSyncAt'): number {
@@ -247,6 +281,79 @@ function setGroup(group: string) {
   accountStore.setSelectedGroup(group)
   mailStore.setFilter({ group, accountEmail: '' })
   workspaceMode.value = 'accounts'
+}
+
+function groupAccountCount(group: MailGroup): number {
+  return groupCountByName.value.get(group.name) ?? 0
+}
+
+function canDeleteGroup(group: MailGroup): boolean {
+  return group.name !== '默认分组' && groupAccountCount(group) === 0
+}
+
+function handleGroupDragStart(group: MailGroup, event: DragEvent) {
+  draggingGroupId.value = group.id
+  event.dataTransfer?.setData('text/plain', String(group.id))
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+  }
+}
+
+function handleGroupDragOver(event: DragEvent) {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+}
+
+async function handleGroupDrop(targetGroup: MailGroup, event: DragEvent) {
+  event.preventDefault()
+  const sourceId = draggingGroupId.value
+    ?? Number(event.dataTransfer?.getData('text/plain'))
+  draggingGroupId.value = undefined
+  if (!sourceId || sourceId === targetGroup.id) {
+    return
+  }
+
+  const groups = [...accountStore.remoteGroups]
+  const sourceIndex = groups.findIndex((group) => group.id === sourceId)
+  const targetIndex = groups.findIndex((group) => group.id === targetGroup.id)
+  if (sourceIndex < 0 || targetIndex < 0) {
+    return
+  }
+  const [sourceGroup] = groups.splice(sourceIndex, 1)
+  groups.splice(targetIndex, 0, sourceGroup)
+  accountStore.remoteGroups = groups
+  try {
+    await accountStore.reorderGroups(groups.map((group) => group.id))
+  } catch (error) {
+    await accountStore.loadAccounts()
+    ElMessage.error(error instanceof Error ? error.message : '分组排序失败')
+  }
+}
+
+function handleGroupDragEnd() {
+  draggingGroupId.value = undefined
+}
+
+async function deleteEmptyGroup(group: MailGroup) {
+  if (!canDeleteGroup(group) || deletingGroupId.value) {
+    return
+  }
+  await ElMessageBox.confirm(`确定删除空分组「${group.name}」吗？`, '删除分组', {
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+  deletingGroupId.value = group.id
+  try {
+    await accountStore.deleteGroup(group.id, group.name)
+    ElMessage.success('分组已删除')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '删除分组失败')
+  } finally {
+    deletingGroupId.value = undefined
+  }
 }
 
 function isViewingAccount(account: MailAccount): boolean {
@@ -328,8 +435,15 @@ async function viewAccountInbox(account: MailAccount) {
   try {
     currentViewedAccount.value = targetAccount
     workspaceMode.value = 'mail'
-    await mailStore.viewInbox(targetAccount.email)
+    const result = await mailStore.viewInbox(targetAccount.email)
     await accountStore.refreshStats()
+    if (result?.error) {
+      ElMessage.error(result.error)
+      return
+    }
+    if (result) {
+      ElMessage.success(`已获取 ${result.synced} 封邮件`)
+    }
   } finally {
     viewingEmail.value = ''
   }
@@ -560,15 +674,31 @@ onMounted(() => {
           <span>全部</span>
         </button>
         <button
-          v-for="group in accountStore.groups"
-          :key="group"
-          class="faka-nav-item"
-          :class="{ active: accountStore.selectedGroup === group }"
+          v-for="group in accountStore.remoteGroups"
+          :key="group.id"
+          class="faka-nav-item group-nav-item"
+          :class="{ active: accountStore.selectedGroup === group.name, dragging: draggingGroupId === group.id }"
           type="button"
-          @click="setGroup(group)"
+          draggable="true"
+          @click="setGroup(group.name)"
+          @dragstart="handleGroupDragStart(group, $event)"
+          @dragover="handleGroupDragOver"
+          @drop="handleGroupDrop(group, $event)"
+          @dragend="handleGroupDragEnd"
         >
+          <span class="drag-handle" aria-hidden="true">⋮⋮</span>
           <el-icon><FolderOpened /></el-icon>
-          <span>{{ group }}</span>
+          <span>{{ group.name }}</span>
+          <small>{{ groupAccountCount(group) }}</small>
+          <el-button
+            v-if="canDeleteGroup(group)"
+            class="group-delete-button"
+            link
+            :icon="Delete"
+            :loading="deletingGroupId === group.id"
+            :disabled="deletingGroupId === group.id"
+            @click.stop="deleteEmptyGroup(group)"
+          />
         </button>
         <div class="sidebar-account-list">
           <div
@@ -833,9 +963,14 @@ onMounted(() => {
               <el-button :icon="Sort" @click="mailSortDesc = !mailSortDesc">排序</el-button>
             </div>
           </div>
+          <Transition name="content-fade">
+            <div v-if="currentAccountSyncing" class="mail-sync-hint">
+              正在获取新邮件，本地邮件可先查看
+            </div>
+          </Transition>
           <Transition name="content-fade" mode="out-in">
             <el-empty v-if="!mailStore.loading && visibleMessages.length === 0" key="empty" description="暂无邮件" />
-            <el-scrollbar v-else key="list" v-loading="mailStore.loading" class="mail-list-scrollbar">
+            <el-scrollbar v-else key="list" v-loading="mailStore.loading || currentAccountSyncing" class="mail-list-scrollbar">
               <TransitionGroup name="mail-item" tag="div">
                 <button
                   v-for="message in visibleMessages"
@@ -849,7 +984,6 @@ onMounted(() => {
                     <span>{{ formatDateTime(message.receivedAt) }}</span>
                   </div>
                   <h3>{{ message.subject || '无主题' }}</h3>
-                  <p>{{ message.preview || '暂无预览' }}</p>
                 </button>
               </TransitionGroup>
               <div class="load-more-row">
@@ -869,7 +1003,8 @@ onMounted(() => {
                 <div>
                   <h2>{{ mailStore.selectedMessage.subject || '无主题' }}</h2>
                   <p>发件人：{{ mailStore.selectedMessage.from?.email || '未知' }}</p>
-                  <p>收件账号：{{ mailStore.selectedMessage.accountEmail }}</p>
+                  <p>收件人：{{ formatAddressList(mailStore.selectedMessage.to) }}</p>
+                  <p>查看账号：{{ mailStore.selectedMessage.accountEmail }}</p>
                   <p>时间：{{ formatDateTime(mailStore.selectedMessage.receivedAt) }}</p>
                 </div>
                 <el-tag :type="mailStore.selectedMessage.isRead ? 'info' : 'success'">
@@ -886,7 +1021,7 @@ onMounted(() => {
                   :srcdoc="selectedHtml"
                   title="邮件正文"
                 />
-                <pre v-else key="plain-body" class="mail-body plain">{{ mailStore.selectedBody?.content || mailStore.selectedMessage.preview }}</pre>
+                <pre v-else key="plain-body" class="mail-body plain">{{ mailStore.selectedBody?.content || '暂无正文内容' }}</pre>
               </Transition>
             </div>
           </Transition>

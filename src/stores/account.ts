@@ -1,12 +1,14 @@
 import { defineStore } from 'pinia'
 import type { MailAccount, StorageStats } from '@/types'
 import {
+  deleteRemoteGroup,
   deleteRemoteAccount,
   exportRemoteAccounts,
   importRemoteAccounts,
   listRemoteAccounts,
   listRemoteGroups,
   moveRemoteAccountsToGroup,
+  reorderRemoteGroups,
   splitRemoteHotmailAccount,
   updateRemoteAccountRemark,
   type MailGroup,
@@ -113,6 +115,18 @@ export const useAccountStore = defineStore('account', {
 
       if (this.selectedGroup && !this.accounts.some((account) => account.group === this.selectedGroup)) {
         this.selectedGroup = normalizedGroup
+      }
+    },
+
+    async reorderGroups(ids: number[]): Promise<void> {
+      this.remoteGroups = await reorderRemoteGroups(ids)
+    },
+
+    async deleteGroup(id: number, name: string): Promise<void> {
+      await deleteRemoteGroup(id)
+      this.remoteGroups = this.remoteGroups.filter((group) => group.id !== id)
+      if (this.selectedGroup === name) {
+        this.selectedGroup = ''
       }
     },
 

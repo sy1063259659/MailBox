@@ -16,7 +16,6 @@ type MessageSummary struct {
 	To             []Address `json:"to"`
 	Cc             []Address `json:"cc"`
 	ReceivedAt     time.Time `json:"receivedAt"`
-	Preview        string    `json:"preview"`
 	IsRead         bool      `json:"isRead"`
 	HasAttachments bool      `json:"hasAttachments"`
 }

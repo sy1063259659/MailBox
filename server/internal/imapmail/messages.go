@@ -2,18 +2,12 @@ package imapmail
 
 import (
 	"fmt"
-	"html"
-	"io"
-	"mime/quotedprintable"
-	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 )
-
-var htmlTagRE = regexp.MustCompile(`(?s)<[^>]*>`)
 
 func searchPageUIDs(client *imapclient.Client, limit int, cursor string) ([]imap.UID, error) {
 	var criteria imap.SearchCriteria
@@ -156,27 +150,4 @@ func parseUID(uid string) (imap.UID, error) {
 		return 0, fmt.Errorf("imapmail: invalid uid %q", uid)
 	}
 	return imap.UID(value), nil
-}
-
-func previewText(value string) string {
-	value = stripHTML(decodeQuotedPrintable(value))
-	value = strings.Join(strings.Fields(value), " ")
-	const maxRunes = 180
-	runes := []rune(value)
-	if len(runes) <= maxRunes {
-		return value
-	}
-	return string(runes[:maxRunes])
-}
-
-func stripHTML(value string) string {
-	return html.UnescapeString(htmlTagRE.ReplaceAllString(value, " "))
-}
-
-func decodeQuotedPrintable(value string) string {
-	decoded, err := io.ReadAll(quotedprintable.NewReader(strings.NewReader(value)))
-	if err != nil {
-		return value
-	}
-	return string(decoded)
 }

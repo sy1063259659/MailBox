@@ -96,6 +96,14 @@ func groupsHandler(api accountAPI) http.HandlerFunc {
 
 func groupIDHandler(api accountAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSuffix(r.URL.Path, "/") == "/api/groups/order" {
+			if r.Method != http.MethodPatch {
+				WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+				return
+			}
+			api.reorderGroups(w, r)
+			return
+		}
 		switch r.Method {
 		case http.MethodPatch:
 			api.updateGroup(w, r)

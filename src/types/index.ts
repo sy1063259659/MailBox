@@ -56,7 +56,6 @@ export interface MailMessage {
   bcc?: MailAddress[]
   receivedAt: string
   sentAt?: string
-  preview?: string
   isRead: boolean
   hasAttachments: boolean
   attachments?: MailAttachmentSummary[]

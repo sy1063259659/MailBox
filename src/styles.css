@@ -225,6 +225,35 @@ textarea {
   line-height: 1.35;
 }
 
+.group-nav-item {
+  cursor: grab;
+}
+
+.group-nav-item.dragging {
+  opacity: 0.58;
+}
+
+.group-nav-item small {
+  margin-left: auto;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.drag-handle {
+  width: auto;
+  min-width: auto;
+  color: #94a3b8;
+  letter-spacing: 0;
+  cursor: grab;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.group-delete-button {
+  flex: 0 0 auto;
+  margin-left: 2px;
+}
+
 .sidebar-account-list {
   flex: 1 1 auto;
   min-height: 0;
@@ -602,6 +631,17 @@ textarea {
   align-items: center;
   gap: 9px;
   flex-wrap: wrap;
+}
+
+.mail-sync-hint {
+  flex: 0 0 auto;
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid #dbeafe;
+  border-radius: 7px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-size: 12px;
 }
 
 .faka-mail-item {

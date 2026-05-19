@@ -52,6 +52,10 @@ type groupRequest struct {
 	Name string `json:"name"`
 }
 
+type reorderGroupsRequest struct {
+	IDs []int64 `json:"ids"`
+}
+
 func (api accountAPI) listAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := api.store.ListAccounts(r.Context())
 	if err != nil {
@@ -186,6 +190,19 @@ func (api accountAPI) createGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group})
+}
+
+func (api accountAPI) reorderGroups(w http.ResponseWriter, r *http.Request) {
+	var req reorderGroupsRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	groups, err := api.store.ReorderGroups(r.Context(), req.IDs)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, groupsResponse{OK: true, Groups: groups})
 }
 
 func (api accountAPI) updateGroup(w http.ResponseWriter, r *http.Request) {

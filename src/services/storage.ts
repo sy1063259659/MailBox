@@ -10,7 +10,7 @@ import type {
 
 const DB_NAME = 'mailbox-cache'
 const LEGACY_DB_NAME = 'mailbox-graph-manager'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const MAX_MESSAGE_BODY_CACHE = 2000
 
 type MessageStorageKey = `${string}::${MailFolder}::${string}`
@@ -78,6 +78,9 @@ const getDatabase = (): Promise<IDBPDatabase<MailboxDatabase>> => {
       ensureIndex(messages, 'by-folder', 'folder')
       ensureIndex(messages, 'by-account-folder', 'accountFolderKey')
       ensureIndex(messages, 'by-received-at', 'receivedAt')
+      if (_oldVersion < 4) {
+        void removeLegacyMessageSummaries(messages)
+      }
 
       const messageBodies = database.objectStoreNames.contains('messageBodies')
         ? undefined
@@ -175,17 +178,20 @@ export const createSyncStateKey = (
   folder: MailFolder,
 ): SyncStateStorageKey => `${accountEmail}::${folder}`
 
-const toStoredMessage = (message: MailMessage): StoredMailMessage => ({
-  ...message,
-  storageKey: createMessageKey(message.accountEmail, message.folder, message.messageId),
-  accountFolderKey: [message.accountEmail, message.folder],
-})
+const toStoredMessage = (message: MailMessage): StoredMailMessage => {
+  const cleanMessage = withoutLegacyMessageSummary(message)
+  return {
+    ...cleanMessage,
+    storageKey: createMessageKey(cleanMessage.accountEmail, cleanMessage.folder, cleanMessage.messageId),
+    accountFolderKey: [cleanMessage.accountEmail, cleanMessage.folder],
+  }
+}
 
 const fromStoredMessage = ({
   storageKey: _storageKey,
   accountFolderKey: _accountFolderKey,
   ...message
-}: StoredMailMessage): MailMessage => message
+}: StoredMailMessage): MailMessage => withoutLegacyMessageSummary(message)
 
 const toStoredBody = (body: MailBody): StoredMailBody => ({
   ...body,
@@ -238,6 +244,10 @@ export const bulkUpsertMessages = async (messages: MailMessage[]): Promise<void>
 
   await Promise.all(messages.map((message) => store.put(toStoredMessage(message))))
   await transaction.done
+}
+
+export const upsertMessage = async (message: MailMessage): Promise<void> => {
+  await bulkUpsertMessages([message])
 }
 
 export const listMessages = async (
@@ -445,7 +455,6 @@ const sortByReceivedAtDesc = (left: StoredMailMessage, right: StoredMailMessage)
 const matchesMessageQuery = (message: StoredMailMessage, query: string): boolean => {
   const searchableValues = [
     message.subject,
-    message.preview,
     message.from?.name,
     message.from?.email,
     ...message.to.flatMap((address) => [address.name, address.email]),
@@ -455,4 +464,22 @@ const matchesMessageQuery = (message: StoredMailMessage, query: string): boolean
   return searchableValues.some(
     (value) => value !== undefined && value.toLocaleLowerCase().includes(query),
   )
+}
+
+const withoutLegacyMessageSummary = <T extends object>(message: T): T => {
+  const { ['preview']: _legacySummary, ...cleanMessage } = message as T & { preview?: unknown }
+  return cleanMessage as T
+}
+
+const removeLegacyMessageSummaries = async (
+  store: IDBPObjectStore<MailboxDatabase, Array<'messages' | 'messageBodies' | 'syncStates'>, 'messages', 'versionchange'>,
+): Promise<void> => {
+  let cursor = await store.openCursor()
+  while (cursor) {
+    const value = withoutLegacyMessageSummary(cursor.value)
+    if (value !== cursor.value) {
+      await cursor.update(value)
+    }
+    cursor = await cursor.continue()
+  }
 }

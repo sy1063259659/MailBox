@@ -10,6 +10,7 @@ export interface AccountImportResult {
 export interface MailGroup {
   id: number
   name: string
+  sortOrder: number
   createdAt: string
   updatedAt: string
 }
@@ -70,6 +71,11 @@ export async function createRemoteGroup(name: string): Promise<MailGroup> {
 export async function renameRemoteGroup(id: number, name: string): Promise<MailGroup> {
   const response = await apiPatch<{ ok: boolean; group: MailGroup }>(`/groups/${id}`, { name })
   return response.group
+}
+
+export async function reorderRemoteGroups(ids: number[]): Promise<MailGroup[]> {
+  const response = await apiPatch<{ ok: boolean; groups: MailGroup[] }>('/groups/order', { ids })
+  return response.groups
 }
 
 export async function deleteRemoteGroup(id: number): Promise<void> {

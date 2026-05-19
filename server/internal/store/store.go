@@ -31,6 +31,7 @@ type Admin struct {
 type Group struct {
 	ID        int64     `json:"id"`
 	Name      string    `json:"name"`
+	SortOrder int       `json:"sortOrder"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -108,6 +109,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS groups (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE,
+			sort_order INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -156,6 +158,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if err := s.backfillSplitParents(ctx); err != nil {
 		return err
 	}
+	if err := s.backfillGroupSortOrder(ctx); err != nil {
+		return err
+	}
 
 	_, err := s.ensureGroup(ctx, DefaultGroupName)
 	return err
@@ -163,6 +168,7 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 func migrationColumnStatements() []string {
 	return []string{
+		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS auth_email TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS parent_email TEXT`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_index INTEGER`,
@@ -217,7 +223,7 @@ func (s *Store) ValidateAdmin(ctx context.Context, username string, password str
 }
 
 func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id, name, created_at, updated_at FROM groups ORDER BY name ASC`)
+	rows, err := s.pool.Query(ctx, `SELECT id, name, sort_order, created_at, updated_at FROM groups ORDER BY sort_order ASC, name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list groups: %w", err)
 	}
@@ -226,7 +232,7 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	groups := []Group{}
 	for rows.Next() {
 		var group Group
-		if err := rows.Scan(&group.ID, &group.Name, &group.CreatedAt, &group.UpdatedAt); err != nil {
+		if err := rows.Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan group: %w", err)
 		}
 		groups = append(groups, group)
@@ -238,11 +244,11 @@ func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
 	name = normalizeGroup(name)
 	var group Group
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO groups (name)
-		VALUES ($1)
+		INSERT INTO groups (name, sort_order)
+		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM groups), 0))
 		ON CONFLICT (name) DO UPDATE SET updated_at = groups.updated_at
-		RETURNING id, name, created_at, updated_at
-	`, name).Scan(&group.ID, &group.Name, &group.CreatedAt, &group.UpdatedAt)
+		RETURNING id, name, sort_order, created_at, updated_at
+	`, name).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return Group{}, fmt.Errorf("store: create group: %w", err)
 	}
@@ -255,8 +261,8 @@ func (s *Store) RenameGroup(ctx context.Context, id int64, name string) (Group, 
 	err := s.pool.QueryRow(ctx, `
 		UPDATE groups SET name = $1, updated_at = now()
 		WHERE id = $2
-		RETURNING id, name, created_at, updated_at
-	`, name, id).Scan(&group.ID, &group.Name, &group.CreatedAt, &group.UpdatedAt)
+		RETURNING id, name, sort_order, created_at, updated_at
+	`, name, id).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Group{}, errors.New("分组不存在")
 	}
@@ -264,6 +270,42 @@ func (s *Store) RenameGroup(ctx context.Context, id int64, name string) (Group, 
 		return Group{}, fmt.Errorf("store: rename group: %w", err)
 	}
 	return group, nil
+}
+
+func (s *Store) ReorderGroups(ctx context.Context, ids []int64) ([]Group, error) {
+	if len(ids) == 0 {
+		return nil, errors.New("分组排序不能为空")
+	}
+	seen := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, errors.New("分组 id 非法")
+		}
+		if seen[id] {
+			return nil, errors.New("分组 id 不能重复")
+		}
+		seen[id] = true
+	}
+
+	transaction, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin reorder groups: %w", err)
+	}
+	defer transaction.Rollback(ctx)
+
+	for index, id := range ids {
+		result, err := transaction.Exec(ctx, `UPDATE groups SET sort_order = $1, updated_at = now() WHERE id = $2`, index, id)
+		if err != nil {
+			return nil, fmt.Errorf("store: reorder group: %w", err)
+		}
+		if result.RowsAffected() == 0 {
+			return nil, errors.New("分组不存在")
+		}
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit reorder groups: %w", err)
+	}
+	return s.ListGroups(ctx)
 }
 
 func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
@@ -668,8 +710,8 @@ func (s *Store) ensureGroup(ctx context.Context, name string) (int64, error) {
 	name = normalizeGroup(name)
 	var id int64
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO groups (name)
-		VALUES ($1)
+		INSERT INTO groups (name, sort_order)
+		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM groups), 0))
 		ON CONFLICT (name) DO UPDATE SET updated_at = groups.updated_at
 		RETURNING id
 	`, name).Scan(&id)
@@ -777,6 +819,25 @@ func (s *Store) backfillEncryptedPasswords(ctx context.Context) error {
 		`, encrypted, item.email); err != nil {
 			return fmt.Errorf("store: update password backfill: %w", err)
 		}
+	}
+	return nil
+}
+
+func (s *Store) backfillGroupSortOrder(ctx context.Context) error {
+	_, err := s.pool.Exec(ctx, `
+		WITH ordered AS (
+			SELECT id, row_number() OVER (ORDER BY name ASC) - 1 AS next_order
+			FROM groups
+		)
+		UPDATE groups
+		SET sort_order = ordered.next_order
+		FROM ordered
+		WHERE groups.id = ordered.id
+			AND groups.sort_order = 0
+			AND NOT EXISTS (SELECT 1 FROM groups WHERE sort_order <> 0)
+	`)
+	if err != nil {
+		return fmt.Errorf("store: backfill group sort order: %w", err)
 	}
 	return nil
 }

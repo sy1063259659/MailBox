@@ -38,7 +38,6 @@ export interface ImapMessageSummary {
   to: ImapAddress[]
   cc: ImapAddress[]
   receivedAt: string
-  preview: string
   isRead: boolean
   hasAttachments: boolean
 }

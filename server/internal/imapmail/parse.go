@@ -3,6 +3,7 @@ package imapmail
 import (
 	"bytes"
 	"io"
+	"mime/quotedprintable"
 	"regexp"
 	"strings"
 
@@ -69,4 +70,12 @@ func parseMessageBody(raw []byte) parsedBody {
 	}
 
 	return body
+}
+
+func decodeQuotedPrintable(value string) string {
+	decoded, err := io.ReadAll(quotedprintable.NewReader(strings.NewReader(value)))
+	if err != nil {
+		return value
+	}
+	return string(decoded)
 }

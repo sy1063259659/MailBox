@@ -23,6 +23,7 @@ import {
   getSyncState,
   saveMessageBody,
   saveSyncState,
+  upsertMessage,
 } from '@/services/storage'
 import { useAccountStore } from './account'
 
@@ -110,7 +111,6 @@ const imapSummaryToMailMessage = (
     to: toAddressList(summary.to),
     cc: toAddressList(summary.cc),
     receivedAt: summary.receivedAt || now,
-    preview: sanitizePreview(summary.preview),
     isRead: summary.isRead,
     hasAttachments: summary.hasAttachments,
     createdAt: existingMessage?.createdAt ?? now,
@@ -146,32 +146,6 @@ const getAccountEmailsForFilter = (
   return accounts
     .filter((account) => !filter.group || account.group === filter.group)
     .map((account) => account.email)
-}
-
-const sanitizePreview = (value: string | undefined): string => {
-  if (!value) {
-    return ''
-  }
-
-  let text = decodeQuotedPrintable(value)
-  text = text.replace(/<\/?[^>]+>/g, ' ')
-  text = text.replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
-  text = text.replace(/\s+/g, ' ').trim()
-
-  const maxLength = 180
-  if (text.length > maxLength) {
-    return `${text.slice(0, maxLength).trimEnd()}…`
-  }
-
-  return text
-}
-
-const decodeQuotedPrintable = (value: string): string => {
-  return value
-    .replace(/=\r?\n/g, '')
-    .replace(/=([A-Fa-f0-9]{2})/g, (_match, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    )
 }
 
 export const useMailStore = defineStore('mail', {
@@ -229,10 +203,10 @@ export const useMailStore = defineStore('mail', {
         }
 
         if (this.filter.accountEmail) {
-          this.messages = (await filterMessages({
+          this.messages = await filterMessages({
             ...messageFilter,
             accountEmail: this.filter.accountEmail,
-          })).map(sanitizeStoredMessage)
+          })
           return
         }
 
@@ -245,11 +219,11 @@ export const useMailStore = defineStore('mail', {
               }),
             ),
           )
-          this.messages = messageLists.flat().map(sanitizeStoredMessage).sort(sortByReceivedAtDesc)
+          this.messages = messageLists.flat().sort(sortByReceivedAtDesc)
           return
         }
 
-        this.messages = (await filterMessages(messageFilter)).map(sanitizeStoredMessage)
+        this.messages = await filterMessages(messageFilter)
       } finally {
         this.loading = false
       }
@@ -277,9 +251,13 @@ export const useMailStore = defineStore('mail', {
         hasAttachments: undefined,
       })
       this.viewingAccountEmail = accountEmail
+      await this.loadMessages()
+
+      if (this.messages.length > 0 && (!this.selectedMessage || this.selectedMessage.accountEmail !== accountEmail)) {
+        void this.selectMessage(this.messages[0])
+      }
 
       const result = await this.syncAccountFolder(accountEmail, 'inbox')
-      await this.loadMessages()
       if (this.messages.length > 0 && (!this.selectedMessage || this.selectedMessage.accountEmail !== accountEmail)) {
         await this.selectMessage(this.messages[0])
       }
@@ -542,9 +520,28 @@ export const useMailStore = defineStore('mail', {
           contentType: detailResult.body.contentType,
           content: detailResult.body.content,
         })
+        const updatedMessage: MailMessage = {
+          ...targetMessage,
+          subject: detailResult.message.subject || targetMessage.subject,
+          from: detailResult.message.from?.[0] ? toMailAddress(detailResult.message.from[0]) : targetMessage.from,
+          to: toAddressList(detailResult.message.to),
+          cc: toAddressList(detailResult.message.cc),
+          receivedAt: detailResult.message.receivedAt || targetMessage.receivedAt,
+          isRead: detailResult.message.isRead,
+          updatedAt: new Date().toISOString(),
+        }
         await saveMessageBody(body)
+        await upsertMessage(updatedMessage)
 
         this.selectedBody = body
+        this.selectedMessage = updatedMessage
+        this.messages = this.messages.map((message) =>
+          message.accountEmail === updatedMessage.accountEmail
+          && message.folder === updatedMessage.folder
+          && message.messageId === updatedMessage.messageId
+            ? updatedMessage
+            : message,
+        )
         await useAccountStore().loadAccounts()
       } catch (error) {
         this.errorMessage = getErrorMessage(error)
@@ -558,11 +555,4 @@ export const useMailStore = defineStore('mail', {
 
 function sortByReceivedAtDesc(left: MailMessage, right: MailMessage): number {
   return right.receivedAt.localeCompare(left.receivedAt)
-}
-
-function sanitizeStoredMessage(message: MailMessage): MailMessage {
-  return {
-    ...message,
-    preview: sanitizePreview(message.preview),
-  }
 }
