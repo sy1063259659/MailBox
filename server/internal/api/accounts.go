@@ -36,6 +36,11 @@ type splitHotmailResponse struct {
 type importAccountsRequest struct {
 	Text      string `json:"text"`
 	Overwrite bool   `json:"overwrite"`
+	Group     string `json:"group"`
+}
+
+type exportAccountsRequest struct {
+	Emails []string `json:"emails"`
 }
 
 type moveAccountsRequest struct {
@@ -72,6 +77,7 @@ func (api accountAPI) importAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 
 	inputs, errors := parseAccountImportText(req.Text)
+	applyImportGroup(inputs, req.Group)
 	if len(inputs) == 0 && len(errors) == 0 {
 		errors = append(errors, "没有可导入的账号")
 	}
@@ -162,7 +168,13 @@ func (api accountAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (api accountAPI) exportAccounts(w http.ResponseWriter, r *http.Request) {
-	text, err := api.store.ExportAccounts(r.Context())
+	var req exportAccountsRequest
+	if r.Method == http.MethodPost {
+		if !decodeJSON(w, r, &req) {
+			return
+		}
+	}
+	text, err := api.store.ExportAccounts(r.Context(), req.Emails)
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "internal_error", err.Error())
 		return
@@ -245,7 +257,7 @@ func parseGroupID(w http.ResponseWriter, path string) (int64, bool) {
 }
 
 func parseAccountImportText(text string) ([]store.AccountInput, []string) {
-	lines := strings.Split(text, "\n")
+	lines := splitAccountImportRecords(text)
 	inputs := []store.AccountInput{}
 	errors := []string{}
 
@@ -254,15 +266,12 @@ func parseAccountImportText(text string) ([]store.AccountInput, []string) {
 		if line == "" {
 			continue
 		}
-		fields := strings.Fields(line)
-		if strings.Contains(line, "----") {
-			fields = strings.Split(line, "----")
-			for index, field := range fields {
-				fields[index] = strings.TrimSpace(field)
-			}
+		fields := strings.Split(line, "----")
+		for index, field := range fields {
+			fields[index] = strings.TrimSpace(field)
 		}
-		if len(fields) < 4 {
-			errors = append(errors, "第 "+strconv.Itoa(index+1)+" 行字段不足")
+		if len(fields) != 4 {
+			errors = append(errors, "第 "+strconv.Itoa(index+1)+" 行格式必须为：邮箱----密码----ClientID----刷新令牌")
 			continue
 		}
 		email := strings.ToLower(strings.TrimSpace(fields[0]))
@@ -280,17 +289,30 @@ func parseAccountImportText(text string) ([]store.AccountInput, []string) {
 			ClientID:     strings.TrimSpace(fields[2]),
 			RefreshToken: strings.TrimSpace(fields[3]),
 			Group:        store.DefaultGroupName,
-			Remark:       parseAccountRemark(fields),
-			RemarkSet:    len(fields) >= 5,
+			Remark:       "",
+			RemarkSet:    false,
 		})
 	}
 
 	return inputs, errors
 }
 
-func parseAccountRemark(fields []string) string {
-	if len(fields) < 5 {
-		return ""
+func splitAccountImportRecords(text string) []string {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	if strings.Contains(text, "----") {
+		pattern := regexp.MustCompile(`\s+([^\s@]+@[^\s@]+\.[^\s@]+----)`)
+		text = pattern.ReplaceAllString(text, "\n$1")
 	}
-	return strings.TrimSpace(strings.Join(fields[4:], "----"))
+	return strings.Split(text, "\n")
+}
+
+func applyImportGroup(inputs []store.AccountInput, group string) {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		group = store.DefaultGroupName
+	}
+	for index := range inputs {
+		inputs[index].Group = group
+	}
 }

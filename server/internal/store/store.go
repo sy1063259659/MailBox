@@ -99,40 +99,7 @@ func (s *Store) Close() {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	statements := []string{
-		`CREATE TABLE IF NOT EXISTS admins (
-			username TEXT PRIMARY KEY,
-			password_hash TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
-		`CREATE TABLE IF NOT EXISTS groups (
-			id BIGSERIAL PRIMARY KEY,
-			name TEXT NOT NULL UNIQUE,
-			sort_order INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
-		`CREATE TABLE IF NOT EXISTS mail_accounts (
-			email TEXT PRIMARY KEY,
-			auth_email TEXT NOT NULL DEFAULT '',
-			parent_email TEXT,
-			split_index INTEGER,
-			split_generated_at TIMESTAMPTZ,
-			password TEXT NOT NULL,
-			password_encrypted TEXT NOT NULL DEFAULT '',
-			client_id TEXT NOT NULL,
-			refresh_token_encrypted TEXT NOT NULL,
-			group_id BIGINT NOT NULL REFERENCES groups(id),
-			remark TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT 'idle',
-			error_message TEXT NOT NULL DEFAULT '',
-			last_sync_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-		)`,
-	}
-
+	statements := migrationCreateStatements()
 	for _, statement := range statements {
 		if _, err := s.pool.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
@@ -166,6 +133,80 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return err
 }
 
+func migrationCreateStatements() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS admins (
+			username TEXT PRIMARY KEY,
+			password_hash TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS groups (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS mail_accounts (
+			email TEXT PRIMARY KEY,
+			auth_email TEXT NOT NULL DEFAULT '',
+			parent_email TEXT,
+			split_index INTEGER,
+			split_generated_at TIMESTAMPTZ,
+			password TEXT NOT NULL,
+			password_encrypted TEXT NOT NULL DEFAULT '',
+			client_id TEXT NOT NULL,
+			refresh_token_encrypted TEXT NOT NULL,
+			group_id BIGINT NOT NULL REFERENCES groups(id),
+			remark TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'idle',
+			error_message TEXT NOT NULL DEFAULT '',
+			last_sync_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS gpt_accounts (
+			id BIGSERIAL PRIMARY KEY,
+			mail_account_email TEXT NOT NULL UNIQUE,
+			gpt_email TEXT NOT NULL DEFAULT '',
+			account_id TEXT NOT NULL DEFAULT '',
+			organization_id TEXT NOT NULL DEFAULT '',
+			account_name TEXT NOT NULL DEFAULT '',
+			account_structure TEXT NOT NULL DEFAULT '',
+			plan_type TEXT NOT NULL DEFAULT '',
+			auth_file_plan_type TEXT NOT NULL DEFAULT '',
+			subscription_active_until TIMESTAMPTZ,
+			hourly_percentage INTEGER,
+			hourly_reset_time TIMESTAMPTZ,
+			hourly_window_minutes INTEGER,
+			hourly_window_present BOOLEAN,
+			weekly_percentage INTEGER,
+			weekly_reset_time TIMESTAMPTZ,
+			weekly_window_minutes INTEGER,
+			weekly_window_present BOOLEAN,
+			quota_raw_json JSONB,
+			status TEXT NOT NULL DEFAULT 'unknown',
+			status_reason TEXT NOT NULL DEFAULT '',
+			requires_reauth BOOLEAN NOT NULL DEFAULT false,
+			reauth_reason TEXT NOT NULL DEFAULT '',
+			quota_error_code TEXT NOT NULL DEFAULT '',
+			quota_error_message TEXT NOT NULL DEFAULT '',
+			quota_error_at TIMESTAMPTZ,
+			id_token_encrypted TEXT NOT NULL DEFAULT '',
+			access_token_encrypted TEXT NOT NULL DEFAULT '',
+			refresh_token_encrypted TEXT NOT NULL DEFAULT '',
+			token_expires_at TIMESTAMPTZ,
+			token_updated_at TIMESTAMPTZ,
+			last_refresh_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			CONSTRAINT fk_gpt_accounts_mail_account_email
+				FOREIGN KEY (mail_account_email) REFERENCES mail_accounts(email) ON DELETE CASCADE
+		)`,
+	}
+}
+
 func migrationColumnStatements() []string {
 	return []string{
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
@@ -175,6 +216,47 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS mail_account_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS gpt_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_structure TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS plan_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS auth_file_plan_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS subscription_active_until TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_percentage INTEGER`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_reset_time TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_window_minutes INTEGER`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_window_present BOOLEAN`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_percentage INTEGER`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_reset_time TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_window_minutes INTEGER`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_window_present BOOLEAN`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_raw_json JSONB`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unknown'`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS status_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS requires_reauth BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS reauth_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_code TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_message TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_at TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS id_token_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS access_token_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS refresh_token_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS token_updated_at TIMESTAMPTZ`,
+		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS last_refresh_at TIMESTAMPTZ`,
+		`DO $$
+		BEGIN
+			IF NOT EXISTS (
+				SELECT 1 FROM pg_constraint WHERE conname = 'fk_gpt_accounts_mail_account_email'
+			) THEN
+				ALTER TABLE gpt_accounts
+					ADD CONSTRAINT fk_gpt_accounts_mail_account_email
+					FOREIGN KEY (mail_account_email) REFERENCES mail_accounts(email) ON DELETE CASCADE NOT VALID;
+			END IF;
+		END $$`,
 	}
 }
 
@@ -186,6 +268,9 @@ func migrationIndexStatements() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index
 			ON mail_accounts(parent_email, split_index)
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_gpt_accounts_mail_account_email ON gpt_accounts(mail_account_email)`,
+		`CREATE INDEX IF NOT EXISTS idx_gpt_accounts_status ON gpt_accounts(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_gpt_accounts_updated_at ON gpt_accounts(updated_at)`,
 	}
 }
 
@@ -260,9 +345,9 @@ func (s *Store) RenameGroup(ctx context.Context, id int64, name string) (Group, 
 	var group Group
 	err := s.pool.QueryRow(ctx, `
 		UPDATE groups SET name = $1, updated_at = now()
-		WHERE id = $2
+		WHERE id = $2 AND name <> $3
 		RETURNING id, name, sort_order, created_at, updated_at
-	`, name, id).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
+	`, name, id, DefaultGroupName).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Group{}, errors.New("分组不存在")
 	}
@@ -430,12 +515,20 @@ func (s *Store) ClearAccounts(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT email, password, password_encrypted, client_id, refresh_token_encrypted, remark
+func (s *Store) ExportAccounts(ctx context.Context, emails []string) (string, error) {
+	normalizedEmails := uniqueNormalizedEmails(emails)
+	query := `
+		SELECT email, password, password_encrypted, client_id, refresh_token_encrypted
 		FROM mail_accounts
-		ORDER BY created_at ASC, email ASC
-	`)
+	`
+	args := []any{}
+	if len(normalizedEmails) > 0 {
+		query += `WHERE lower(email) = ANY($1) `
+		args = append(args, normalizedEmails)
+	}
+	query += `ORDER BY created_at ASC, email ASC`
+
+	rows, err := s.pool.Query(ctx, query, args...)
 	if err != nil {
 		return "", fmt.Errorf("store: export accounts: %w", err)
 	}
@@ -443,8 +536,8 @@ func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
 
 	lines := []string{}
 	for rows.Next() {
-		var email, legacyPassword, encryptedPassword, clientID, encrypted, remark string
-		if err := rows.Scan(&email, &legacyPassword, &encryptedPassword, &clientID, &encrypted, &remark); err != nil {
+		var email, legacyPassword, encryptedPassword, clientID, encrypted string
+		if err := rows.Scan(&email, &legacyPassword, &encryptedPassword, &clientID, &encrypted); err != nil {
 			return "", fmt.Errorf("store: scan export account: %w", err)
 		}
 		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
@@ -455,13 +548,23 @@ func (s *Store) ExportAccounts(ctx context.Context) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		fields := []string{email, password, clientID, refreshToken}
-		if strings.TrimSpace(remark) != "" {
-			fields = append(fields, remark)
-		}
-		lines = append(lines, strings.Join(fields, "----"))
+		lines = append(lines, strings.Join([]string{email, password, clientID, refreshToken}, "----"))
 	}
 	return strings.Join(lines, "\n"), rows.Err()
+}
+
+func uniqueNormalizedEmails(emails []string) []string {
+	seen := make(map[string]bool, len(emails))
+	normalized := []string{}
+	for _, email := range emails {
+		value := normalizeEmail(email)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		normalized = append(normalized, value)
+	}
+	return normalized
 }
 
 func (s *Store) UpdateAccountRemark(ctx context.Context, email string, remark string) (MailAccount, error) {

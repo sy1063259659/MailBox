@@ -1,17 +1,28 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useMailStore } from '@/stores/mail'
 
+const DEFAULT_GROUP = '默认分组'
 const visible = defineModel<boolean>({ required: true })
 const accountStore = useAccountStore()
 const mailStore = useMailStore()
 const text = ref('')
+const selectedGroup = ref(DEFAULT_GROUP)
 const importing = ref(false)
 const lastResult = ref<{ imported: number; updated: number; errors: string[] }>()
 const fileInput = ref<HTMLInputElement>()
+
+watch(
+  visible,
+  (isVisible) => {
+    if (isVisible) {
+      selectedGroup.value = accountStore.selectedGroup || DEFAULT_GROUP
+    }
+  },
+)
 
 async function submit(mode: 'append' | 'overwrite') {
   if (mode === 'overwrite') {
@@ -24,9 +35,10 @@ async function submit(mode: 'append' | 'overwrite') {
 
   importing.value = true
   try {
+    const group = selectedGroup.value.trim() || DEFAULT_GROUP
     const result = mode === 'overwrite'
-      ? await accountStore.overwriteAccountsFromText(text.value)
-      : await accountStore.importAccountsFromText(text.value)
+      ? await accountStore.overwriteAccountsFromText(text.value, group)
+      : await accountStore.importAccountsFromText(text.value, group)
     lastResult.value = result
     await mailStore.loadMessages()
 
@@ -70,9 +82,9 @@ async function readDroppedFile(event: DragEvent) {
     <div class="import-layout">
       <el-alert type="info" show-icon :closable="false" class="dialog-alert">
         <template #title>导入提示</template>
-        <div>每行一个账号；支持空格分隔或 "----" 分隔。</div>
-        <div>使用 "----" 分隔时可在第 5 段填写备注。</div>
-        <div>格式不正确的行会被忽略；分组默认写入 "默认分组"。</div>
+        <div>每行一个账号；仅支持 "----" 分隔。</div>
+        <div>固定格式：邮箱----密码----ClientID----刷新令牌。</div>
+        <div>格式不正确的行会被忽略；分组使用下方选择，也可以直接输入新分组。</div>
         <div>Hotmail/Outlook 加号别名会自动使用主邮箱取信。</div>
         <div>覆盖导入 会先清空数据库账号，并清空浏览器邮件缓存。</div>
       </el-alert>
@@ -80,11 +92,26 @@ async function readDroppedFile(event: DragEvent) {
       <div class="format-box">
         <strong>支持格式</strong>
         <code># Outlook/其他邮箱（使用OAuth2）</code>
-        <code>邮箱 密码 ClientID 刷新令牌</code>
         <code>邮箱----密码----ClientID----刷新令牌</code>
-        <code>邮箱----密码----ClientID----刷新令牌----备注</code>
         <p>当前版本使用本地 Go 后端通过 IMAP XOAUTH2 拉取 Outlook/Hotmail 邮件。</p>
       </div>
+
+      <div class="import-label">导入分组</div>
+      <el-select
+        v-model="selectedGroup"
+        filterable
+        allow-create
+        default-first-option
+        class="import-group-select"
+        placeholder="选择或输入分组"
+      >
+        <el-option
+          v-for="group in accountStore.remoteGroups"
+          :key="group.id"
+          :label="group.name"
+          :value="group.name"
+        />
+      </el-select>
 
       <div class="import-label">账号内容</div>
       <button

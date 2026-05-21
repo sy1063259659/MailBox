@@ -8,6 +8,7 @@ import {
   listRemoteAccounts,
   listRemoteGroups,
   moveRemoteAccountsToGroup,
+  renameRemoteGroup,
   reorderRemoteGroups,
   splitRemoteHotmailAccount,
   updateRemoteAccountRemark,
@@ -91,16 +92,16 @@ export const useAccountStore = defineStore('account', {
       }
     },
 
-    async importAccountsFromText(text: string): Promise<AccountImportResult> {
-      const result = await importRemoteAccounts(text, false)
+    async importAccountsFromText(text: string, group = DEFAULT_GROUP): Promise<AccountImportResult> {
+      const result = await importRemoteAccounts(text, false, group.trim() || DEFAULT_GROUP)
       this.importErrors = result.errors
       await this.loadAccounts()
       await this.refreshStats()
       return result
     },
 
-    async overwriteAccountsFromText(text: string): Promise<AccountImportResult> {
-      const result = await importRemoteAccounts(text, true)
+    async overwriteAccountsFromText(text: string, group = DEFAULT_GROUP): Promise<AccountImportResult> {
+      const result = await importRemoteAccounts(text, true, group.trim() || DEFAULT_GROUP)
       await clearLocalMailData()
       this.importErrors = result.errors
       await this.loadAccounts()
@@ -127,6 +128,15 @@ export const useAccountStore = defineStore('account', {
       this.remoteGroups = this.remoteGroups.filter((group) => group.id !== id)
       if (this.selectedGroup === name) {
         this.selectedGroup = ''
+      }
+    },
+
+    async renameGroup(id: number, oldName: string, newName: string): Promise<void> {
+      const normalizedName = newName.trim()
+      await renameRemoteGroup(id, normalizedName)
+      await this.loadAccounts()
+      if (this.selectedGroup === oldName) {
+        this.selectedGroup = normalizedName
       }
     },
 
@@ -162,8 +172,8 @@ export const useAccountStore = defineStore('account', {
       await this.refreshStats()
     },
 
-    async exportData(): Promise<string> {
-      return exportRemoteAccounts()
+    async exportData(emails: string[] = []): Promise<string> {
+      return exportRemoteAccounts(emails)
     },
 
     async refreshStats(): Promise<void> {

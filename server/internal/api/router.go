@@ -19,6 +19,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux := http.NewServeMux()
 	authAPI := authAPI{store: store, sessions: sessions}
 	accountAPI := accountAPI{store: store}
+	gptAccountAPI := newGPTAccountAPI(store)
 	mailAPI := newMailAPI(store)
 	mux.HandleFunc("/api/health", methodHandler(http.MethodGet, healthHandler))
 
@@ -29,11 +30,17 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/accounts", authRequired(sessions, methodHandler(http.MethodGet, accountAPI.listAccounts)))
 	mux.HandleFunc("/api/accounts/import", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.importAccounts)))
 	mux.HandleFunc("/api/accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.moveAccounts)))
-	mux.HandleFunc("/api/accounts/export", authRequired(sessions, methodHandler(http.MethodGet, accountAPI.exportAccounts)))
+	mux.HandleFunc("/api/accounts/export", authRequired(sessions, exportAccountsHandler(accountAPI)))
 	mux.HandleFunc("/api/accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, accountAPI.updateAccountRemark)))
 	mux.HandleFunc("/api/accounts/", authRequired(sessions, accountPathHandler(accountAPI)))
 	mux.HandleFunc("/api/groups", authRequired(sessions, groupsHandler(accountAPI)))
 	mux.HandleFunc("/api/groups/", authRequired(sessions, groupIDHandler(accountAPI)))
+	mux.HandleFunc("/api/gpt-accounts", authRequired(sessions, methodHandler(http.MethodGet, gptAccountAPI.list)))
+	mux.HandleFunc("/api/gpt-accounts/import-token", authRequired(sessions, methodHandler(http.MethodPost, gptAccountAPI.importToken)))
+	mux.HandleFunc("/api/gpt-accounts/oauth/start", authRequired(sessions, methodHandler(http.MethodPost, gptAccountAPI.oauthStart)))
+	mux.HandleFunc("/api/gpt-accounts/oauth/complete", authRequired(sessions, methodHandler(http.MethodPost, gptAccountAPI.oauthComplete)))
+	mux.HandleFunc("/api/gpt-accounts/refresh-all", authRequired(sessions, methodHandler(http.MethodPost, gptAccountAPI.refreshAll)))
+	mux.HandleFunc("/api/gpt-accounts/", authRequired(sessions, gptAccountPathHandler(gptAccountAPI)))
 
 	mux.HandleFunc("/api/mail/check", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.check)))
 	mux.HandleFunc("/api/mail/folders", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.folders)))
@@ -41,6 +48,25 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/mail/message", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.message)))
 
 	return withRequestLogging(withCORS(mux))
+}
+
+func gptAccountPathHandler(api *gptAccountAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		raw := strings.TrimPrefix(r.URL.Path, "/api/gpt-accounts/")
+		if strings.HasSuffix(raw, "/refresh") {
+			if r.Method != http.MethodPost {
+				WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+				return
+			}
+			api.refresh(w, r, strings.TrimSuffix(raw, "/refresh"))
+			return
+		}
+		if r.Method == http.MethodDelete {
+			api.delete(w, r, raw)
+			return
+		}
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
 }
 
 func accountPathHandler(api accountAPI) http.HandlerFunc {
@@ -88,6 +114,17 @@ func groupsHandler(api accountAPI) http.HandlerFunc {
 			api.listGroups(w, r)
 		case http.MethodPost:
 			api.createGroup(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}
+}
+
+func exportAccountsHandler(api accountAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodPost:
+			api.exportAccounts(w, r)
 		default:
 			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}

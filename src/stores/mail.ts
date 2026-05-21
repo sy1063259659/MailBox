@@ -207,6 +207,7 @@ export const useMailStore = defineStore('mail', {
             ...messageFilter,
             accountEmail: this.filter.accountEmail,
           })
+          this.messages.sort(sortByReceivedAtDesc)
           return
         }
 
@@ -224,6 +225,7 @@ export const useMailStore = defineStore('mail', {
         }
 
         this.messages = await filterMessages(messageFilter)
+        this.messages.sort(sortByReceivedAtDesc)
       } finally {
         this.loading = false
       }
@@ -258,8 +260,9 @@ export const useMailStore = defineStore('mail', {
       }
 
       const result = await this.syncAccountFolder(accountEmail, 'inbox')
-      if (this.messages.length > 0 && (!this.selectedMessage || this.selectedMessage.accountEmail !== accountEmail)) {
-        await this.selectMessage(this.messages[0])
+      const latestMessage = this.messages[0]
+      if (latestMessage) {
+        await this.selectMessage(latestMessage)
       }
 
       return result

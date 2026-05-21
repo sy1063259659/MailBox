@@ -52,6 +52,18 @@ func TestGroupOrderRejectsMissingSession(t *testing.T) {
 	}
 }
 
+func TestGPTAccountsRejectMissingSession(t *testing.T) {
+	handler := authRequired(session.NewManager([]byte("test-secret"), false), methodHandler(http.MethodGet, newGPTAccountAPI(nil).list))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/gpt-accounts", nil)
+
+	handler(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
 func TestReorderGroupsRejectsEmptyIDs(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPatch, "/api/groups/order", strings.NewReader(`{"ids":[]}`))
@@ -142,19 +154,16 @@ func (authFailureError) Error() string {
 	return "AUTHENTICATE failed"
 }
 
-func TestParseAccountImportTextSupportsOptionalRemark(t *testing.T) {
+func TestParseAccountImportTextRejectsOptionalRemark(t *testing.T) {
 	inputs, errors := parseAccountImportText("user@example.com----pass----client----refresh----  VIP 客户  ")
-	if len(errors) > 0 {
-		t.Fatalf("errors = %v, want none", errors)
+	if len(inputs) != 0 {
+		t.Fatalf("len(inputs) = %d, want 0", len(inputs))
 	}
-	if len(inputs) != 1 {
-		t.Fatalf("len(inputs) = %d, want 1", len(inputs))
+	if len(errors) != 1 {
+		t.Fatalf("len(errors) = %d, want 1", len(errors))
 	}
-	if !inputs[0].RemarkSet {
-		t.Fatal("RemarkSet = false, want true")
-	}
-	if inputs[0].Remark != "VIP 客户" {
-		t.Fatalf("Remark = %q, want %q", inputs[0].Remark, "VIP 客户")
+	if !strings.Contains(errors[0], "格式必须为") {
+		t.Fatalf("error = %q, want format error", errors[0])
 	}
 }
 
@@ -174,6 +183,60 @@ func TestParseAccountImportTextKeepsOldFormatWithoutRemark(t *testing.T) {
 	}
 }
 
+func TestParseAccountImportTextRejectsSpaceSeparatedFormat(t *testing.T) {
+	inputs, errors := parseAccountImportText("user@example.com pass client refresh")
+	if len(inputs) != 0 {
+		t.Fatalf("len(inputs) = %d, want 0", len(inputs))
+	}
+	if len(errors) != 1 {
+		t.Fatalf("len(errors) = %d, want 1", len(errors))
+	}
+	if !strings.Contains(errors[0], "格式必须为") {
+		t.Fatalf("error = %q, want format error", errors[0])
+	}
+}
+
+func TestParseAccountImportTextSplitsDashSeparatedRecordsOnOneLine(t *testing.T) {
+	inputs, errors := parseAccountImportText(
+		"one@outlook.com----pass1----client1----refresh1 two@outlook.com----pass2----client2----refresh2",
+	)
+	if len(errors) > 0 {
+		t.Fatalf("errors = %v, want none", errors)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("len(inputs) = %d, want 2", len(inputs))
+	}
+	if inputs[0].Email != "one@outlook.com" || inputs[1].Email != "two@outlook.com" {
+		t.Fatalf("emails = %q, %q; want split records", inputs[0].Email, inputs[1].Email)
+	}
+}
+
+func TestApplyImportGroupUsesRequestGroup(t *testing.T) {
+	inputs, errors := parseAccountImportText("user@example.com----pass----client----refresh")
+	if len(errors) > 0 {
+		t.Fatalf("errors = %v, want none", errors)
+	}
+
+	applyImportGroup(inputs, "  客户A  ")
+
+	if inputs[0].Group != "客户A" {
+		t.Fatalf("Group = %q, want %q", inputs[0].Group, "客户A")
+	}
+}
+
+func TestApplyImportGroupDefaultsEmptyGroup(t *testing.T) {
+	inputs, errors := parseAccountImportText("user@example.com----pass----client----refresh")
+	if len(errors) > 0 {
+		t.Fatalf("errors = %v, want none", errors)
+	}
+
+	applyImportGroup(inputs, "  ")
+
+	if inputs[0].Group != store.DefaultGroupName {
+		t.Fatalf("Group = %q, want %q", inputs[0].Group, store.DefaultGroupName)
+	}
+}
+
 func TestMailAccountJSONOmitsEmptyRefreshToken(t *testing.T) {
 	payload, err := json.Marshal(store.MailAccount{
 		Email:    "user@example.com",
@@ -184,5 +247,23 @@ func TestMailAccountJSONOmitsEmptyRefreshToken(t *testing.T) {
 	}
 	if strings.Contains(string(payload), "refreshToken") {
 		t.Fatalf("payload = %s, want refreshToken omitted", string(payload))
+	}
+}
+
+func TestGPTAccountJSONDoesNotExposeTokensOrRawQuota(t *testing.T) {
+	payload, err := json.Marshal(store.GPTAccount{
+		MailAccountEmail: "user@example.com",
+		GPTEmail:         "user@example.com",
+		QuotaRawJSON:     json.RawMessage(`{"detail":"server-only"}`),
+		Status:           "active",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(payload)
+	for _, forbidden := range []string{"idToken", "accessToken", "refreshToken", "quotaRawJson", "server-only"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("payload = %s, want %q omitted", text, forbidden)
+		}
 	}
 }

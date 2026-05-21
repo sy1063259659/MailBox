@@ -124,16 +124,20 @@ textarea {
   background: #f4f6fb;
 }
 
+.faka-shell.gpt-module-active {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .faka-sidebar {
   height: 100vh;
   min-height: 0;
   overflow: hidden;
-  padding: 18px 14px;
+  padding: 16px 12px;
   background: #ffffff;
   border-right: 1px solid #e6ebf2;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
 }
 
 .faka-brand {
@@ -157,11 +161,79 @@ textarea {
 .faka-nav {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   min-height: 0;
   flex: 1;
   overflow: hidden;
-  padding-right: 2px;
+}
+
+.sidebar-panel {
+  min-height: 0;
+  border: 1px solid #e8eef7;
+  border-radius: 9px;
+  background: #fbfdff;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.group-panel {
+  flex: 0 1 42%;
+}
+
+.account-panel {
+  flex: 1 1 58%;
+}
+
+.sidebar-panel-head {
+  min-height: 38px;
+  padding: 0 10px;
+  border-bottom: 1px solid #edf2f7;
+  background: #ffffff;
+  color: #334155;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sidebar-panel-head span {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-panel-head .el-icon {
+  color: #2563eb;
+}
+
+.sidebar-panel-head strong {
+  min-width: 24px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #eef4ff;
+  color: #1d4ed8;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.sidebar-panel-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 7px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .faka-nav-item,
@@ -183,6 +255,42 @@ textarea {
     color var(--motion-fast),
     transform var(--motion-fast),
     box-shadow var(--motion-fast);
+}
+
+.sidebar-list-row {
+  position: relative;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+}
+
+.sidebar-list-row::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.sidebar-list-row:hover,
+.sidebar-list-row.active {
+  border-color: #dbeafe;
+  background: #f6faff;
+}
+
+.sidebar-list-row.active::before {
+  background: #2563eb;
+}
+
+.pinned-row {
+  background: #ffffff;
+  font-weight: 650;
 }
 
 .faka-nav-title {
@@ -233,10 +341,30 @@ textarea {
   opacity: 0.58;
 }
 
-.group-nav-item small {
+.group-actions {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.group-actions small {
   color: #94a3b8;
   font-size: 12px;
+}
+
+.group-nav-item .group-action-button {
+  opacity: 0.28;
+  transition:
+    opacity var(--motion-fast),
+    color var(--motion-fast);
+}
+
+.group-nav-item:hover .group-action-button,
+.group-nav-item.active .group-action-button,
+.group-action-button.is-loading {
+  opacity: 1;
 }
 
 .drag-handle {
@@ -249,32 +377,23 @@ textarea {
   line-height: 1;
 }
 
-.group-delete-button {
+.group-action-button {
   flex: 0 0 auto;
-  margin-left: 2px;
 }
 
 .sidebar-account-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-right: 2px;
+  padding-top: 6px;
 }
 
 .sidebar-account-group {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding-left: 2px;
 }
 
 .account-shortcut {
   color: #475569;
-  font-size: 13px;
-  min-height: 44px;
+  font-size: 12px;
+  min-height: 30px;
   align-items: center;
 }
 
@@ -291,31 +410,31 @@ textarea {
 }
 
 .faka-total-card {
-  min-height: 70px;
-  padding: 12px;
-  border-radius: 10px;
-  background: #f8fbff;
+  min-height: 54px;
+  padding: 10px;
+  border-radius: 9px;
+  background: #fbfdff;
   border: 1px solid #e8eef7;
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 6px 10px;
+  gap: 3px 9px;
   align-items: center;
 }
 
 .faka-total-card .el-icon {
   color: #2563eb;
-  font-size: 22px;
+  font-size: 18px;
 }
 
 .faka-total-card span {
   color: #667085;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .faka-total-card strong {
   grid-column: 2;
   color: #1d4ed8;
-  font-size: 22px;
+  font-size: 18px;
   line-height: 1;
 }
 
@@ -331,14 +450,80 @@ textarea {
 }
 
 .faka-topbar {
-  min-height: 42px;
+  min-height: 46px;
   display: flex;
   justify-content: space-between;
-  align-items: center;
+  align-items: flex-start;
   gap: 14px;
 }
 
+.topbar-left {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.module-tabs {
+  padding: 3px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.04);
+}
+
+.module-tab {
+  min-height: 34px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #526072;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  cursor: pointer;
+  transition:
+    background-color var(--motion-fast),
+    color var(--motion-fast),
+    box-shadow var(--motion-fast);
+}
+
+.module-tab:hover,
+.module-tab.active {
+  color: #1d4ed8;
+  background: #eef4ff;
+}
+
+.module-tab.active {
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);
+}
+
+.module-tab strong {
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.module-tab.active strong {
+  color: #1d4ed8;
+}
+
 .topbar-actions {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -571,6 +756,59 @@ textarea {
     transform var(--motion-fast);
 }
 
+.gpt-account-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.gpt-compact-cell {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.gpt-compact-cell small {
+  max-width: 110px;
+  color: #64748b;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpt-account-head,
+.gpt-quota-row,
+.gpt-account-actions,
+.gpt-empty-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.gpt-quota-row {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.gpt-quota-row span {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #e8eef7;
+}
+
+.gpt-empty-cell {
+  color: #94a3b8;
+}
+
 .row-actions {
   width: 100%;
   justify-content: center;
@@ -797,6 +1035,256 @@ textarea {
   padding-top: 10px;
 }
 
+.gpt-account-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+.gpt-bind-mode-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid #e8eef7;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.gpt-bind-mode-hints div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.gpt-bind-mode-hints .el-icon {
+  color: #2563eb;
+  flex: 0 0 auto;
+}
+
+.gpt-oauth-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gpt-management-view {
+  height: calc(100vh - 72px);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gpt-management-toolbar {
+  flex: 0 0 auto;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gpt-management-search {
+  max-width: 360px;
+}
+
+.gpt-filter-select {
+  width: 140px;
+}
+
+.gpt-card-grid,
+.gpt-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.gpt-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(330px, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+
+.gpt-status-card,
+.gpt-table-wrap {
+  border: 1px solid #e5eaf2;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+}
+
+.gpt-status-card {
+  min-width: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition:
+    border-color var(--motion-fast),
+    box-shadow var(--motion-fast),
+    transform var(--motion-fast);
+}
+
+.gpt-status-card:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
+}
+
+.gpt-status-card.status-reauth_required,
+.gpt-status-card.status-quota_limited,
+.gpt-status-card.status-expired {
+  border-color: #fed7aa;
+}
+
+.gpt-status-card.status-banned_or_disabled,
+.gpt-status-card.status-error {
+  border-color: #fecaca;
+}
+
+.gpt-card-head,
+.gpt-card-title,
+.gpt-card-tags,
+.gpt-card-footer,
+.gpt-quota-line > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.gpt-card-head,
+.gpt-card-footer {
+  justify-content: space-between;
+}
+
+.gpt-card-head {
+  align-items: flex-start;
+}
+
+.gpt-card-head > div {
+  min-width: 0;
+}
+
+.gpt-card-title strong,
+.gpt-card-head p,
+.gpt-card-remark,
+.gpt-card-error {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpt-card-title strong {
+  color: #111827;
+  font-size: 15px;
+}
+
+.gpt-card-title .el-icon {
+  color: #2563eb;
+}
+
+.gpt-card-head p {
+  margin: 5px 0 0;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.gpt-card-tags {
+  flex-wrap: wrap;
+}
+
+.gpt-quota-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gpt-quota-line {
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #f8fbff;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gpt-quota-line > div {
+  justify-content: space-between;
+}
+
+.gpt-quota-line span,
+.gpt-quota-line small,
+.gpt-card-footer span,
+.gpt-card-remark {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.gpt-quota-line strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.gpt-card-remark {
+  margin: 0;
+}
+
+.gpt-card-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #fff7ed;
+  color: #9a3412;
+  font-size: 12px;
+}
+
+.gpt-card-footer {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.gpt-card-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.gpt-table-wrap {
+  padding: 0;
+}
+
+.gpt-account-table {
+  height: 100%;
+}
+
+.gpt-table-quota {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.gpt-table-quota strong {
+  color: #111827;
+  font-size: 13px;
+}
+
+.gpt-table-quota small {
+  color: #64748b;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .import-layout {
   display: flex;
   flex-direction: column;
@@ -976,9 +1464,19 @@ textarea {
   }
 
   .faka-topbar,
+  .topbar-left,
   .mail-command-row {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .module-tabs {
+    width: 100%;
+  }
+
+  .module-tab {
+    flex: 1;
+    justify-content: center;
   }
 
   .faka-search {

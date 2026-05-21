@@ -8,7 +8,7 @@ import {
   EditPen,
   Files,
   FolderOpened,
-  House,
+  Grid,
   Message,
   Reading,
   Refresh,
@@ -16,20 +16,39 @@ import {
   Sort,
   UploadFilled,
 } from '@element-plus/icons-vue'
+import GptAccountDialog from '@/components/GptAccountDialog.vue'
+import GptAccountManagementView from '@/views/GptAccountManagementView.vue'
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
+import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
-import type { AccountStatus, MailAccount, MailAddress, MailFolder, MailMessage } from '@/types'
+import type {
+  AccountStatus,
+  GptAccount,
+  MailAccount,
+  MailAddress,
+  MailFolder,
+  MailMessage,
+} from '@/types'
 import type { MailGroup } from '@/services/accountApi'
+import {
+  compactGptStatus,
+  formatDateTime,
+  planText,
+} from '@/utils/gptDisplay'
 
 const accountStore = useAccountStore()
 const authStore = useAuthStore()
+const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const selectedAccountRows = ref<MailAccount[]>([])
 const globalKeyword = ref('')
 const groupDialogVisible = ref(false)
+const gptDialogVisible = ref(false)
 const targetGroupName = ref('')
+const gptDialogAccount = ref<MailAccount>()
 const currentViewedAccount = ref<MailAccount>()
+const activeModule = ref<'mailboxes' | 'gptAccounts'>('mailboxes')
 const workspaceMode = ref<'accounts' | 'mail'>('accounts')
 const mailSortDesc = ref(true)
 const lastBatchFailedResults = ref<{ accountEmail: string; folder: MailFolder }[]>([])
@@ -40,19 +59,19 @@ const movingGroup = ref(false)
 const refreshingFolder = ref(false)
 const loggingOut = ref(false)
 const copying = ref(false)
+const exportingAccounts = ref(false)
 const copiedValues = ref<Set<string>>(new Set())
 const editingRemarkEmail = ref('')
 const draggingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
+const renamingGroupId = ref<number>()
 
 defineProps<{
-  exporting?: boolean
   clearingData?: boolean
 }>()
 
 const emit = defineEmits<{
   importAccounts: []
-  exportData: []
 }>()
 
 const statusType: Record<AccountStatus, 'info' | 'primary' | 'success' | 'warning' | 'danger'> = {
@@ -141,6 +160,8 @@ const visibleFlatAccounts = computed(() => flattenAccounts(visibleAccounts.value
 
 const sidebarRootAccounts = computed(() => accountTree.value)
 
+const gptAccountByEmail = computed(() => gptAccountStore.accountByMailEmail)
+
 const groupCountByName = computed(() => {
   const counts = new Map<string, number>()
   for (const account of accountStore.accounts) {
@@ -204,15 +225,20 @@ function looksLikeHtml(value: string): boolean {
   return /<(?:!doctype|html|head|body|div|table|style|meta|title|p|br|span)\b/i.test(value)
 }
 
-function formatDateTime(value?: string): string {
-  if (!value) {
-    return '未同步'
-  }
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  return date.toLocaleString('zh-CN', { hour12: false })
+function gptForAccount(account: MailAccount): GptAccount | undefined {
+  return gptAccountByEmail.value.get(resolveMailboxAccount(account).email.toLowerCase())
+}
+
+function isGptBusy(account: MailAccount): boolean {
+  const email = resolveMailboxAccount(account).email.toLowerCase()
+  return gptAccountStore.bindingEmails.includes(email)
+    || gptAccountStore.refreshingEmails.includes(email)
+    || gptAccountStore.unlinkingEmails.includes(email)
+}
+
+function openGptDialog(account: MailAccount) {
+  gptDialogAccount.value = resolveMailboxAccount(account)
+  gptDialogVisible.value = true
 }
 
 function formatAddress(address: MailAddress): string {
@@ -278,9 +304,14 @@ function isSplitAccount(account: MailAccount): boolean {
 }
 
 function setGroup(group: string) {
+  activeModule.value = 'mailboxes'
   accountStore.setSelectedGroup(group)
   mailStore.setFilter({ group, accountEmail: '' })
   workspaceMode.value = 'accounts'
+}
+
+function setActiveModule(module: 'mailboxes' | 'gptAccounts') {
+  activeModule.value = module
 }
 
 function groupAccountCount(group: MailGroup): number {
@@ -289,6 +320,10 @@ function groupAccountCount(group: MailGroup): number {
 
 function canDeleteGroup(group: MailGroup): boolean {
   return group.name !== '默认分组' && groupAccountCount(group) === 0
+}
+
+function canRenameGroup(group: MailGroup): boolean {
+  return group.name !== '默认分组'
 }
 
 function handleGroupDragStart(group: MailGroup, event: DragEvent) {
@@ -353,6 +388,40 @@ async function deleteEmptyGroup(group: MailGroup) {
     ElMessage.error(error instanceof Error ? error.message : '删除分组失败')
   } finally {
     deletingGroupId.value = undefined
+  }
+}
+
+async function renameGroup(group: MailGroup) {
+  if (!canRenameGroup(group) || renamingGroupId.value) {
+    return
+  }
+  const result = await ElMessageBox.prompt('请输入新的分组名称。', `重命名分组：${group.name}`, {
+    confirmButtonText: '保存',
+    cancelButtonText: '取消',
+    inputValue: group.name,
+    inputValidator: (value) => {
+      if (!value.trim()) {
+        return '分组名称不能为空'
+      }
+      return true
+    },
+  })
+  const nextName = result.value.trim()
+  if (nextName === group.name) {
+    return
+  }
+
+  renamingGroupId.value = group.id
+  try {
+    await accountStore.renameGroup(group.id, group.name, nextName)
+    if (mailStore.filter.group === group.name) {
+      mailStore.setFilter({ group: nextName, accountEmail: '' })
+    }
+    ElMessage.success('分组已重命名')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '重命名分组失败')
+  } finally {
+    renamingGroupId.value = undefined
   }
 }
 
@@ -429,10 +498,70 @@ async function copyAccounts(format: 'email' | 'password' | 'emailPassword') {
   }
 }
 
+function exportTargets(): MailAccount[] {
+  return selectedAccountRows.value.length > 0 ? selectedAccountRows.value : visibleFlatAccounts.value
+}
+
+async function copyExportText() {
+  if (exportingAccounts.value) {
+    return
+  }
+  const targets = exportTargets()
+  if (targets.length === 0) {
+    ElMessage.warning('没有可导出的账号')
+    return
+  }
+
+  exportingAccounts.value = true
+  try {
+    const text = await accountStore.exportData(targets.map((account) => account.email))
+    if (!text.trim()) {
+      ElMessage.warning('没有可导出的账号')
+      return
+    }
+    await navigator.clipboard.writeText(text)
+    ElMessage.success(`已复制 ${targets.length} 个账号导出文本`)
+  } catch {
+    ElMessage.error('复制导出文本失败')
+  } finally {
+    exportingAccounts.value = false
+  }
+}
+
+async function downloadExportText() {
+  const targets = exportTargets()
+  if (targets.length === 0) {
+    ElMessage.warning('没有可导出的账号')
+    return
+  }
+
+  exportingAccounts.value = true
+  try {
+    const text = await accountStore.exportData(targets.map((account) => account.email))
+    if (!text.trim()) {
+      ElMessage.warning('没有可导出的账号')
+      return
+    }
+    const blob = new Blob([text], {
+      type: 'text/plain;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${targets.length} 个账号`)
+  } finally {
+    exportingAccounts.value = false
+  }
+}
+
 async function viewAccountInbox(account: MailAccount) {
   const targetAccount = resolveMailboxAccount(account)
   viewingEmail.value = targetAccount.email
   try {
+    activeModule.value = 'mailboxes'
     currentViewedAccount.value = targetAccount
     workspaceMode.value = 'mail'
     const result = await mailStore.viewInbox(targetAccount.email)
@@ -622,6 +751,7 @@ async function logout() {
 }
 
 function backToAccounts() {
+  activeModule.value = 'mailboxes'
   workspaceMode.value = 'accounts'
   currentViewedAccount.value = undefined
   mailStore.setFilter({ accountEmail: '', query: '' })
@@ -646,105 +776,162 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="faka-shell">
-    <aside class="faka-sidebar">
+  <section class="faka-shell" :class="{ 'gpt-module-active': activeModule === 'gptAccounts' }">
+    <aside v-if="activeModule === 'mailboxes'" class="faka-sidebar">
       <div class="faka-brand">
         <el-icon><Message /></el-icon>
         <span>MailBox</span>
       </div>
 
       <nav class="faka-nav">
-        <button class="faka-nav-item active" type="button" @click="backToAccounts">
-          <el-icon><House /></el-icon>
-          <span>账号</span>
-        </button>
-        <div class="faka-nav-title">
-          <span>
-            <el-icon><FolderOpened /></el-icon>
-            分组列表
-          </span>
-        </div>
-        <button
-          class="faka-nav-item"
-          :class="{ active: !accountStore.selectedGroup }"
-          type="button"
-          @click="setGroup('')"
-        >
-          <el-icon><FolderOpened /></el-icon>
-          <span>全部</span>
-        </button>
-        <button
-          v-for="group in accountStore.remoteGroups"
-          :key="group.id"
-          class="faka-nav-item group-nav-item"
-          :class="{ active: accountStore.selectedGroup === group.name, dragging: draggingGroupId === group.id }"
-          type="button"
-          draggable="true"
-          @click="setGroup(group.name)"
-          @dragstart="handleGroupDragStart(group, $event)"
-          @dragover="handleGroupDragOver"
-          @drop="handleGroupDrop(group, $event)"
-          @dragend="handleGroupDragEnd"
-        >
-          <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-          <el-icon><FolderOpened /></el-icon>
-          <span>{{ group.name }}</span>
-          <small>{{ groupAccountCount(group) }}</small>
-          <el-button
-            v-if="canDeleteGroup(group)"
-            class="group-delete-button"
-            link
-            :icon="Delete"
-            :loading="deletingGroupId === group.id"
-            :disabled="deletingGroupId === group.id"
-            @click.stop="deleteEmptyGroup(group)"
-          />
-        </button>
-        <div class="sidebar-account-list">
-          <div
-            v-for="account in sidebarRootAccounts"
-            :key="account.email"
-            class="sidebar-account-group"
-          >
+        <section class="sidebar-panel group-panel">
+          <div class="sidebar-panel-head">
+            <span>
+              <el-icon><FolderOpened /></el-icon>
+              分组
+            </span>
+            <strong>{{ accountStore.remoteGroups.length }}</strong>
+          </div>
+          <div class="sidebar-panel-body group-panel-body">
             <button
-              class="faka-nav-item account-shortcut parent-shortcut"
-              :class="{ active: currentViewedAccount?.email === account.email && workspaceMode === 'mail' }"
+              class="faka-nav-item sidebar-list-row pinned-row"
+              :class="{ active: workspaceMode === 'accounts' }"
               type="button"
-              :disabled="isViewingAccount(account)"
-              @click="viewAccountInbox(account)"
+              @click="backToAccounts"
             >
-              <el-icon><Message /></el-icon>
-              <span class="shortcut-email">{{ account.email }}</span>
+              <el-icon><Files /></el-icon>
+              <span>账号列表</span>
+            </button>
+            <button
+              class="faka-nav-item sidebar-list-row pinned-row"
+              :class="{ active: !accountStore.selectedGroup }"
+              type="button"
+              @click="setGroup('')"
+            >
+              <el-icon><FolderOpened /></el-icon>
+              <span>全部</span>
+            </button>
+            <button
+              v-for="group in accountStore.remoteGroups"
+              :key="group.id"
+              class="faka-nav-item sidebar-list-row group-nav-item"
+              :class="{ active: accountStore.selectedGroup === group.name, dragging: draggingGroupId === group.id }"
+              type="button"
+              draggable="true"
+              @click="setGroup(group.name)"
+              @dragstart="handleGroupDragStart(group, $event)"
+              @dragover="handleGroupDragOver"
+              @drop="handleGroupDrop(group, $event)"
+              @dragend="handleGroupDragEnd"
+            >
+              <span class="drag-handle" aria-hidden="true">⋮⋮</span>
+              <el-icon><FolderOpened /></el-icon>
+              <span>{{ group.name }}</span>
+              <div class="group-actions">
+                <small>{{ groupAccountCount(group) }}</small>
+                <el-button
+                  v-if="canRenameGroup(group)"
+                  class="group-action-button"
+                  link
+                  :icon="EditPen"
+                  :loading="renamingGroupId === group.id"
+                  :disabled="renamingGroupId === group.id"
+                  @click.stop="renameGroup(group)"
+                />
+                <el-button
+                  v-if="canDeleteGroup(group)"
+                  class="group-action-button"
+                  link
+                  :icon="Delete"
+                  :loading="deletingGroupId === group.id"
+                  :disabled="deletingGroupId === group.id"
+                  @click.stop="deleteEmptyGroup(group)"
+                />
+              </div>
             </button>
           </div>
-        </div>
+        </section>
+
+        <section class="sidebar-panel account-panel">
+          <div class="sidebar-panel-head">
+            <span>
+              <el-icon><Message /></el-icon>
+              账号快捷
+            </span>
+            <strong>{{ sidebarRootAccounts.length }}</strong>
+          </div>
+          <div class="sidebar-panel-body sidebar-account-list">
+            <div
+              v-for="account in sidebarRootAccounts"
+              :key="account.email"
+              class="sidebar-account-group"
+            >
+              <button
+                class="faka-nav-item sidebar-list-row account-shortcut parent-shortcut"
+                :class="{ active: currentViewedAccount?.email === account.email && workspaceMode === 'mail' }"
+                type="button"
+                :disabled="isViewingAccount(account)"
+                @click="viewAccountInbox(account)"
+              >
+                <el-icon><Message /></el-icon>
+                <span class="shortcut-email">{{ account.email }}</span>
+              </button>
+            </div>
+          </div>
+        </section>
       </nav>
 
       <div class="faka-total-card">
         <el-icon><Files /></el-icon>
-        <span>账号</span>
+        <span>邮箱账号</span>
         <strong>{{ accountStore.accounts.length }}</strong>
       </div>
     </aside>
 
     <main class="faka-main">
       <header class="faka-topbar">
-        <el-input
-          :model-value="topSearchValue"
-          class="faka-search"
-          :prefix-icon="Search"
-          clearable
-          :placeholder="workspaceMode === 'mail' ? '搜索主题/发件人...' : '搜索邮件或账号...'"
-          @update:model-value="handleTopSearchInput"
-        />
+        <div class="topbar-left">
+          <div class="module-tabs" aria-label="主菜单">
+            <button
+              class="module-tab"
+              :class="{ active: activeModule === 'mailboxes' }"
+              type="button"
+              @click="setActiveModule('mailboxes')"
+            >
+              <el-icon><Message /></el-icon>
+              <span>邮箱管理</span>
+              <strong>{{ accountStore.accounts.length }}</strong>
+            </button>
+            <button
+              class="module-tab"
+              :class="{ active: activeModule === 'gptAccounts' }"
+              type="button"
+              @click="setActiveModule('gptAccounts')"
+            >
+              <el-icon><Grid /></el-icon>
+              <span>GPT账号管理</span>
+              <strong>{{ gptAccountStore.accounts.length }}</strong>
+            </button>
+          </div>
+          <el-input
+            v-if="activeModule === 'mailboxes'"
+            :model-value="topSearchValue"
+            class="faka-search"
+            :prefix-icon="Search"
+            clearable
+            :placeholder="workspaceMode === 'mail' ? '搜索主题/发件人...' : '搜索邮件或账号...'"
+            @update:model-value="handleTopSearchInput"
+          />
+        </div>
         <div class="topbar-actions">
-          <el-button v-if="workspaceMode === 'mail'" plain @click="backToAccounts">返回账号</el-button>
+          <el-button v-if="activeModule === 'mailboxes' && workspaceMode === 'mail'" plain @click="backToAccounts">返回账号</el-button>
           <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
         </div>
       </header>
 
       <Transition name="workspace-view" mode="out-in">
-      <section v-if="workspaceMode === 'accounts'" key="accounts" class="faka-card">
+      <GptAccountManagementView v-if="activeModule === 'gptAccounts'" key="gpt-accounts" />
+      <section v-else-if="workspaceMode === 'accounts'" key="accounts" class="faka-card">
         <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="emit('importAccounts')">导入账号</el-button>
           <el-button
@@ -766,7 +953,15 @@ onMounted(() => {
           </el-dropdown>
           <el-button :icon="FolderOpened" :disabled="movingGroup || deleting" @click="openMoveGroupDialog">分组</el-button>
           <el-button type="danger" :icon="Delete" :loading="deleting" :disabled="deleting" @click="batchDeleteSelected">删除</el-button>
-          <el-button :icon="Download" :loading="exporting" :disabled="exporting" @click="emit('exportData')">导出</el-button>
+          <el-dropdown trigger="click">
+            <el-button :icon="Download" :loading="exportingAccounts" :disabled="exportingAccounts">导出</el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="copyExportText">复制导出文本</el-dropdown-item>
+                <el-dropdown-item divided @click="downloadExportText">下载 TXT 文件</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
 
         <Transition name="panel-slide">
@@ -859,6 +1054,23 @@ onMounted(() => {
           <el-table-column label="邮件" width="90" align="center" header-align="center">
             <template #default="{ row }">
               <span class="mail-count">{{ messageCountByEmail.get(resolveMailboxAccount(row).email) ?? 0 }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="GPT" width="150" align="center" header-align="center">
+            <template #default="{ row }">
+              <div class="gpt-compact-cell">
+                <el-tag
+                  size="small"
+                  :type="compactGptStatus(gptForAccount(row)).type"
+                  effect="light"
+                >
+                  {{ compactGptStatus(gptForAccount(row)).text }}
+                </el-tag>
+                <small v-if="gptForAccount(row)">{{ planText(gptForAccount(row)) }}</small>
+                <el-button link size="small" :disabled="isGptBusy(row)" @click.stop="openGptDialog(row)">
+                  {{ gptForAccount(row) ? '重绑' : '绑定' }}
+                </el-button>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="状态" width="100" align="center" header-align="center">
@@ -1052,6 +1264,12 @@ onMounted(() => {
           </el-button>
         </template>
       </el-dialog>
+
+      <GptAccountDialog
+        v-model="gptDialogVisible"
+        :account="gptDialogAccount"
+        @bound="gptDialogAccount = undefined"
+      />
     </main>
   </section>
 </template>

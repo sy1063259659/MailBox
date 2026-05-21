@@ -102,6 +102,33 @@ func TestMailAccountsMigrationCreatesEncryptedPasswordColumn(t *testing.T) {
 	t.Fatal("migrationColumnStatements() missing password_encrypted column")
 }
 
+func TestGPTAccountsMigrationCreatesTable(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	if !strings.Contains(statements, "CREATE TABLE IF NOT EXISTS gpt_accounts") {
+		t.Fatal("migration missing gpt_accounts table")
+	}
+	if !strings.Contains(statements, "access_token_encrypted TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("gpt_accounts migration missing encrypted access token column")
+	}
+}
+
+func TestGPTAccountsMigrationCascadesWithMailAccount(t *testing.T) {
+	statements := strings.Join(append(migrationCreateStatements(), migrationColumnStatements()...), "\n")
+	if !strings.Contains(statements, "fk_gpt_accounts_mail_account_email") {
+		t.Fatal("migration missing gpt account mail account foreign key")
+	}
+	if !strings.Contains(statements, "ON DELETE CASCADE") {
+		t.Fatal("gpt account foreign key must cascade when mail account is deleted")
+	}
+}
+
+func TestGPTAccountsMigrationCreatesIndexes(t *testing.T) {
+	statements := strings.Join(migrationIndexStatements(), "\n")
+	if !strings.Contains(statements, "idx_gpt_accounts_mail_account_email") {
+		t.Fatal("migrationIndexStatements() missing gpt account mail email index")
+	}
+}
+
 func TestGroupsMigrationCreatesSortOrderColumn(t *testing.T) {
 	statements := migrationColumnStatements()
 	for _, statement := range statements {
@@ -116,6 +143,25 @@ func TestGroupListOrdersBySortOrder(t *testing.T) {
 	query := `SELECT id, name, sort_order, created_at, updated_at FROM groups ORDER BY sort_order ASC, name ASC`
 	if !strings.Contains(query, "ORDER BY sort_order ASC, name ASC") {
 		t.Fatal("group list query must order by sort_order then name")
+	}
+}
+
+func TestRenameGroupQueryProtectsDefaultGroup(t *testing.T) {
+	query := `
+		UPDATE groups SET name = $1, updated_at = now()
+		WHERE id = $2 AND name <> $3
+		RETURNING id, name, sort_order, created_at, updated_at
+	`
+	if !strings.Contains(query, "name <> $3") {
+		t.Fatal("rename group query must protect the default group")
+	}
+}
+
+func TestUniqueNormalizedEmails(t *testing.T) {
+	got := uniqueNormalizedEmails([]string{" User@Example.com ", "user@example.com", "", "Other@Example.com"})
+	want := []string{"user@example.com", "other@example.com"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("uniqueNormalizedEmails() = %v, want %v", got, want)
 	}
 }
 

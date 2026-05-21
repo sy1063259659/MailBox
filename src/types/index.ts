@@ -8,6 +8,58 @@ export type AccountStatus =
   | 'token_expired'
   | 'rate_limited'
 
+export type GptAccountStatus =
+  | 'active'
+  | 'expired'
+  | 'quota_limited'
+  | 'reauth_required'
+  | 'banned_or_disabled'
+  | 'error'
+  | 'unknown'
+
+export type GptSubscriptionExpiryBucket =
+  | 'active'
+  | 'within_24h'
+  | 'within_7d'
+  | 'within_30d'
+  | 'expired'
+  | 'unknown'
+
+export interface GptQuotaSnapshot {
+  percentage?: number
+  resetAt?: string
+  windowMinutes?: number
+  present?: boolean
+}
+
+export interface GptAccount {
+  id: number
+  mailAccountEmail: string
+  gptEmail: string
+  accountId?: string
+  organizationId?: string
+  accountName?: string
+  accountStructure?: string
+  planType?: string
+  planLabel?: string
+  authFilePlanType?: string
+  subscriptionActiveUntil?: string
+  subscriptionExpiryBucket: GptSubscriptionExpiryBucket
+  hourlyQuota?: GptQuotaSnapshot
+  weeklyQuota?: GptQuotaSnapshot
+  status: GptAccountStatus
+  statusReason?: string
+  requiresReauth?: boolean
+  reauthReason?: string
+  quotaErrorCode?: string
+  quotaErrorMessage?: string
+  tokenExpiresAt?: string
+  usageUpdatedAt?: string
+  lastRefreshAt?: string
+  createdAt?: string
+  updatedAt?: string
+}
+
 export interface MailAccount {
   email: string
   password: string

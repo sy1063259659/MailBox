@@ -25,8 +25,8 @@ export async function listRemoteAccounts(): Promise<MailAccount[]> {
   return response.accounts
 }
 
-export async function importRemoteAccounts(text: string, overwrite: boolean): Promise<AccountImportResult> {
-  return apiPost<AccountImportResult>('/accounts/import', { text, overwrite })
+export async function importRemoteAccounts(text: string, overwrite: boolean, group: string): Promise<AccountImportResult> {
+  return apiPost<AccountImportResult>('/accounts/import', { text, overwrite, group })
 }
 
 export async function deleteRemoteAccount(email: string): Promise<string[]> {
@@ -53,8 +53,10 @@ export async function splitRemoteHotmailAccount(email: string): Promise<SplitHot
   }
 }
 
-export async function exportRemoteAccounts(): Promise<string> {
-  const response = await apiGet<{ ok: boolean; text: string }>('/accounts/export')
+export async function exportRemoteAccounts(emails: string[] = []): Promise<string> {
+  const response = emails.length > 0
+    ? await apiPost<{ ok: boolean; text: string }>('/accounts/export', { emails })
+    : await apiGet<{ ok: boolean; text: string }>('/accounts/export')
   return response.text
 }
 

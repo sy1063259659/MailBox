@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import ImportAccountsDialog from '@/components/ImportAccountsDialog.vue'
 import AccountWorkspaceView from '@/views/AccountWorkspaceView.vue'
@@ -7,25 +7,47 @@ import LoginView from '@/views/LoginView.vue'
 import { getImapHealth } from '@/services/imapApi'
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
+import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
 
 const authStore = useAuthStore()
 const accountStore = useAccountStore()
+const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const importVisible = ref(false)
 const backendOnline = ref<boolean | undefined>(undefined)
-const exporting = ref(false)
 const clearingData = ref(false)
+let workspaceLoadPromise: Promise<void> | undefined
 
 onMounted(async () => {
   window.addEventListener('mailbox:unauthorized', handleUnauthorized)
   await Promise.all([authStore.checkSession(), checkBackend()])
+  await loadWorkspaceData()
+})
+
+watch(
+  () => authStore.isAuthenticated,
+  async (isAuthenticated, wasAuthenticated) => {
+    if (isAuthenticated && !wasAuthenticated) {
+      await loadWorkspaceData()
+    }
+  },
+)
+
+async function loadWorkspaceData() {
   if (!authStore.isAuthenticated) {
     return
   }
-  await Promise.all([accountStore.loadAccounts(), accountStore.refreshStats()])
-  await mailStore.loadMessages()
-})
+
+  workspaceLoadPromise ??= (async () => {
+    await Promise.all([accountStore.loadAccounts(), accountStore.refreshStats(), gptAccountStore.loadAccounts()])
+    await mailStore.loadMessages()
+  })().finally(() => {
+    workspaceLoadPromise = undefined
+  })
+
+  await workspaceLoadPromise
+}
 
 function handleUnauthorized() {
   authStore.markLoggedOut()
@@ -37,30 +59,6 @@ async function checkBackend() {
     backendOnline.value = result.ok
   } catch {
     backendOnline.value = false
-  }
-}
-
-async function exportData() {
-  exporting.value = true
-  try {
-    const text = await accountStore.exportData()
-    if (!text.trim()) {
-      ElMessage.warning('没有可导出的账号')
-      return
-    }
-
-    const blob = new Blob([text], {
-      type: 'text/plain;charset=utf-8',
-    })
-    const url = URL.createObjectURL(blob)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
-    anchor.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success('账号已导出')
-  } finally {
-    exporting.value = false
   }
 }
 
@@ -89,10 +87,8 @@ async function clearData() {
         <AccountWorkspaceView
           v-else-if="authStore.checked"
           key="workspace"
-          :exporting="exporting"
           :clearing-data="clearingData"
           @import-accounts="importVisible = true"
-          @export-data="exportData"
           @clear-data="clearData"
         />
         <div v-else key="loading" class="app-loading">正在检查登录状态...</div>
