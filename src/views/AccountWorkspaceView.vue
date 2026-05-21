@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CopyDocument,
@@ -16,8 +16,7 @@ import {
   Sort,
   UploadFilled,
 } from '@element-plus/icons-vue'
-import GptAccountDialog from '@/components/GptAccountDialog.vue'
-import GptAccountManagementView from '@/views/GptAccountManagementView.vue'
+import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
 import { useGptAccountStore } from '@/stores/gptAccount'
@@ -37,20 +36,38 @@ import {
   planText,
 } from '@/utils/gptDisplay'
 
+const GptAccountDialog = defineAsyncComponent(() => import('@/components/GptAccountDialog.vue'))
+const GptAccountManagementView = defineAsyncComponent(() => import('@/views/GptAccountManagementView.vue'))
+
+type ActiveModule = 'mailboxes' | 'gptAccounts'
+type WorkspaceMode = 'accounts' | 'mail'
+
 const accountStore = useAccountStore()
 const authStore = useAuthStore()
 const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const selectedAccountRows = ref<MailAccount[]>([])
-const globalKeyword = ref('')
+const globalKeyword = useLocalUiState('mailbox.ui.globalKeyword', '', {
+  validate: isString,
+})
 const groupDialogVisible = ref(false)
 const gptDialogVisible = ref(false)
 const targetGroupName = ref('')
 const gptDialogAccount = ref<MailAccount>()
+const focusedGptEmail = ref('')
 const currentViewedAccount = ref<MailAccount>()
-const activeModule = ref<'mailboxes' | 'gptAccounts'>('mailboxes')
-const workspaceMode = ref<'accounts' | 'mail'>('accounts')
-const mailSortDesc = ref(true)
+const currentViewedAccountEmail = useLocalUiState('mailbox.ui.currentViewedAccount.email', '', {
+  validate: isString,
+})
+const activeModule = useLocalUiState<ActiveModule>('mailbox.ui.activeModule', 'mailboxes', {
+  validate: isActiveModule,
+})
+const workspaceMode = useLocalUiState<WorkspaceMode>('mailbox.ui.workspaceMode', 'accounts', {
+  validate: isWorkspaceMode,
+})
+const mailSortDesc = useLocalUiState('mailbox.ui.mailSortDesc', true, {
+  validate: (value): value is boolean => typeof value === 'boolean',
+})
 const lastBatchFailedResults = ref<{ accountEmail: string; folder: MailFolder }[]>([])
 const viewingEmail = ref('')
 const splittingEmail = ref('')
@@ -90,6 +107,18 @@ const statusText: Record<AccountStatus, string> = {
   error: '失败',
   token_expired: '令牌失效',
   rate_limited: '限流',
+}
+
+function isActiveModule(value: unknown): value is ActiveModule {
+  return value === 'mailboxes' || value === 'gptAccounts'
+}
+
+function isWorkspaceMode(value: unknown): value is WorkspaceMode {
+  return value === 'accounts' || value === 'mail'
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
 }
 
 const selectedHtml = computed(() => {
@@ -161,6 +190,17 @@ const visibleFlatAccounts = computed(() => flattenAccounts(visibleAccounts.value
 const sidebarRootAccounts = computed(() => accountTree.value)
 
 const gptAccountByEmail = computed(() => gptAccountStore.accountByMailEmail)
+
+const accountByEmail = computed(() => {
+  const map = new Map<string, MailAccount>()
+  for (const account of accountStore.accounts) {
+    map.set(account.email.toLowerCase(), account)
+    for (const child of account.children ?? []) {
+      map.set(child.email.toLowerCase(), child)
+    }
+  }
+  return map
+})
 
 const groupCountByName = computed(() => {
   const counts = new Map<string, number>()
@@ -239,6 +279,18 @@ function isGptBusy(account: MailAccount): boolean {
 function openGptDialog(account: MailAccount) {
   gptDialogAccount.value = resolveMailboxAccount(account)
   gptDialogVisible.value = true
+}
+
+function openGptDetails(account: MailAccount) {
+  const targetAccount = resolveMailboxAccount(account)
+  focusedGptEmail.value = targetAccount.email
+  activeModule.value = 'gptAccounts'
+}
+
+function handleGptBound(payload: { mailAccountEmail: string }) {
+  gptDialogAccount.value = undefined
+  focusedGptEmail.value = payload.mailAccountEmail
+  activeModule.value = 'gptAccounts'
 }
 
 function formatAddress(address: MailAddress): string {
@@ -563,6 +615,7 @@ async function viewAccountInbox(account: MailAccount) {
   try {
     activeModule.value = 'mailboxes'
     currentViewedAccount.value = targetAccount
+    currentViewedAccountEmail.value = targetAccount.email
     workspaceMode.value = 'mail'
     const result = await mailStore.viewInbox(targetAccount.email)
     await accountStore.refreshStats()
@@ -754,6 +807,7 @@ function backToAccounts() {
   activeModule.value = 'mailboxes'
   workspaceMode.value = 'accounts'
   currentViewedAccount.value = undefined
+  currentViewedAccountEmail.value = ''
   mailStore.setFilter({ accountEmail: '', query: '' })
 }
 
@@ -770,9 +824,47 @@ watch(
   },
 )
 
-onMounted(() => {
-  void mailStore.loadMessages()
-})
+watch(
+  [accountByEmail, currentViewedAccountEmail],
+  ([accounts, email]) => {
+    if (!email) {
+      if (workspaceMode.value === 'mail') {
+        workspaceMode.value = 'accounts'
+      }
+      currentViewedAccount.value = undefined
+      return
+    }
+
+    const restoredAccount = accounts.get(email.toLowerCase())
+    if (!restoredAccount && accounts.size === 0) {
+      return
+    }
+
+    if (!restoredAccount) {
+      workspaceMode.value = 'accounts'
+      currentViewedAccount.value = undefined
+      currentViewedAccountEmail.value = ''
+      if (mailStore.filter.accountEmail) {
+        mailStore.setFilter({ accountEmail: '', query: '' })
+      }
+      return
+    }
+
+    const targetAccount = resolveMailboxAccount(restoredAccount)
+    currentViewedAccount.value = targetAccount
+    if (workspaceMode.value === 'mail' && mailStore.filter.accountEmail !== targetAccount.email) {
+      mailStore.setFilter({
+        accountEmail: targetAccount.email,
+        group: '',
+        folder: 'inbox',
+        query: '',
+        isRead: undefined,
+        hasAttachments: undefined,
+      })
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -930,7 +1022,11 @@ onMounted(() => {
       </header>
 
       <Transition name="workspace-view" mode="out-in">
-      <GptAccountManagementView v-if="activeModule === 'gptAccounts'" key="gpt-accounts" />
+      <GptAccountManagementView
+        v-if="activeModule === 'gptAccounts'"
+        key="gpt-accounts"
+        :focus-email="focusedGptEmail"
+      />
       <section v-else-if="workspaceMode === 'accounts'" key="accounts" class="faka-card">
         <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="emit('importAccounts')">导入账号</el-button>
@@ -1067,9 +1163,19 @@ onMounted(() => {
                   {{ compactGptStatus(gptForAccount(row)).text }}
                 </el-tag>
                 <small v-if="gptForAccount(row)">{{ planText(gptForAccount(row)) }}</small>
-                <el-button link size="small" :disabled="isGptBusy(row)" @click.stop="openGptDialog(row)">
-                  {{ gptForAccount(row) ? '重绑' : '绑定' }}
-                </el-button>
+                <div class="gpt-compact-actions">
+                  <el-button
+                    v-if="gptForAccount(row)"
+                    link
+                    size="small"
+                    @click.stop="openGptDetails(row)"
+                  >
+                    详情
+                  </el-button>
+                  <el-button link size="small" :disabled="isGptBusy(row)" @click.stop="openGptDialog(row)">
+                    {{ gptForAccount(row) ? '重绑' : '绑定' }}
+                  </el-button>
+                </div>
               </div>
             </template>
           </el-table-column>
@@ -1268,7 +1374,7 @@ onMounted(() => {
       <GptAccountDialog
         v-model="gptDialogVisible"
         :account="gptDialogAccount"
-        @bound="gptDialogAccount = undefined"
+        @bound="handleGptBound"
       />
     </main>
   </section>

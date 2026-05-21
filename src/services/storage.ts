@@ -78,9 +78,6 @@ const getDatabase = (): Promise<IDBPDatabase<MailboxDatabase>> => {
       ensureIndex(messages, 'by-folder', 'folder')
       ensureIndex(messages, 'by-account-folder', 'accountFolderKey')
       ensureIndex(messages, 'by-received-at', 'receivedAt')
-      if (_oldVersion < 4) {
-        void removeLegacyMessageSummaries(messages)
-      }
 
       const messageBodies = database.objectStoreNames.contains('messageBodies')
         ? undefined
@@ -179,11 +176,10 @@ export const createSyncStateKey = (
 ): SyncStateStorageKey => `${accountEmail}::${folder}`
 
 const toStoredMessage = (message: MailMessage): StoredMailMessage => {
-  const cleanMessage = withoutLegacyMessageSummary(message)
   return {
-    ...cleanMessage,
-    storageKey: createMessageKey(cleanMessage.accountEmail, cleanMessage.folder, cleanMessage.messageId),
-    accountFolderKey: [cleanMessage.accountEmail, cleanMessage.folder],
+    ...message,
+    storageKey: createMessageKey(message.accountEmail, message.folder, message.messageId),
+    accountFolderKey: [message.accountEmail, message.folder],
   }
 }
 
@@ -191,7 +187,7 @@ const fromStoredMessage = ({
   storageKey: _storageKey,
   accountFolderKey: _accountFolderKey,
   ...message
-}: StoredMailMessage): MailMessage => withoutLegacyMessageSummary(message)
+}: StoredMailMessage): MailMessage => message
 
 const toStoredBody = (body: MailBody): StoredMailBody => ({
   ...body,
@@ -464,22 +460,4 @@ const matchesMessageQuery = (message: StoredMailMessage, query: string): boolean
   return searchableValues.some(
     (value) => value !== undefined && value.toLocaleLowerCase().includes(query),
   )
-}
-
-const withoutLegacyMessageSummary = <T extends object>(message: T): T => {
-  const { ['preview']: _legacySummary, ...cleanMessage } = message as T & { preview?: unknown }
-  return cleanMessage as T
-}
-
-const removeLegacyMessageSummaries = async (
-  store: IDBPObjectStore<MailboxDatabase, Array<'messages' | 'messageBodies' | 'syncStates'>, 'messages', 'versionchange'>,
-): Promise<void> => {
-  let cursor = await store.openCursor()
-  while (cursor) {
-    const value = withoutLegacyMessageSummary(cursor.value)
-    if (value !== cursor.value) {
-      await cursor.update(value)
-    }
-    cursor = await cursor.continue()
-  }
 }

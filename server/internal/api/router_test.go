@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"mailbox-server/internal/codexauth"
 	"mailbox-server/internal/session"
 	"mailbox-server/internal/store"
 )
@@ -61,6 +63,78 @@ func TestGPTAccountsRejectMissingSession(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestGPTAccountOAuthStartRejectsMissingMailAccountEmail(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/start", strings.NewReader(`{}`))
+
+	newGPTAccountAPI(nil).oauthStart(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "mailAccountEmail is required") {
+		t.Fatalf("body = %s, want mailAccountEmail error", recorder.Body.String())
+	}
+}
+
+func TestGPTAccountOAuthCompleteRejectsMissingState(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"missing","callbackUrl":"http://localhost/callback?code=abc&state=state"}`))
+
+	newGPTAccountAPI(nil).oauthComplete(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "OAuth 登录会话不存在或已过期") {
+		t.Fatalf("body = %s, want missing state error", recorder.Body.String())
+	}
+}
+
+func TestGPTAccountOAuthCompleteRejectsExpiredState(t *testing.T) {
+	api := newGPTAccountAPI(nil)
+	api.oauthState["login-1"] = codexauth.OAuthState{
+		LoginID:      "login-1",
+		State:        "state-1",
+		RedirectURI:  "http://localhost/callback",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"login-1","callbackUrl":"http://localhost/callback?code=abc&state=state-1"}`))
+
+	api.oauthComplete(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "OAuth 登录已过期") {
+		t.Fatalf("body = %s, want expired state error", recorder.Body.String())
+	}
+}
+
+func TestGPTAccountOAuthCompleteRejectsWrongCallbackState(t *testing.T) {
+	api := newGPTAccountAPI(nil)
+	api.oauthState["login-1"] = codexauth.OAuthState{
+		LoginID:      "login-1",
+		State:        "state-1",
+		RedirectURI:  "http://localhost/callback",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(time.Minute).Unix(),
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"login-1","callbackUrl":"http://localhost/callback?code=abc&state=wrong"}`))
+
+	api.oauthComplete(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "OAuth state 校验失败") {
+		t.Fatalf("body = %s, want wrong state error", recorder.Body.String())
 	}
 }
 

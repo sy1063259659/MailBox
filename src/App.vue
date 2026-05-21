@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import ImportAccountsDialog from '@/components/ImportAccountsDialog.vue'
-import AccountWorkspaceView from '@/views/AccountWorkspaceView.vue'
 import LoginView from '@/views/LoginView.vue'
 import { getImapHealth } from '@/services/imapApi'
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
 import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
+
+const AccountWorkspaceView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
+const ImportAccountsDialog = defineAsyncComponent(() => import('@/components/ImportAccountsDialog.vue'))
 
 const authStore = useAuthStore()
 const accountStore = useAccountStore()

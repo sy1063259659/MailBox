@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Link,
@@ -8,7 +8,7 @@ import {
   Search,
   User,
 } from '@element-plus/icons-vue'
-import GptAccountDialog from '@/components/GptAccountDialog.vue'
+import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
 import { useGptAccountStore } from '@/stores/gptAccount'
 import type { GptAccount, GptAccountStatus, MailAccount } from '@/types'
@@ -29,14 +29,51 @@ interface GptAccountRow {
   mailbox?: MailAccount
 }
 
+type GptViewMode = 'cards' | 'table'
+type GptStatusFilter = 'all' | GptAccountStatus
+
+const GptAccountDialog = defineAsyncComponent(() => import('@/components/GptAccountDialog.vue'))
+
+const props = defineProps<{
+  focusEmail?: string
+}>()
+
 const accountStore = useAccountStore()
 const gptAccountStore = useGptAccountStore()
-const gptViewMode = ref<'cards' | 'table'>('cards')
-const gptKeyword = ref('')
-const gptStatusFilter = ref<'all' | GptAccountStatus>('all')
-const gptPlanFilter = ref('all')
+const gptViewMode = useLocalUiState<GptViewMode>('mailbox.ui.gptViewMode', 'cards', {
+  validate: isGptViewMode,
+})
+const gptKeyword = useLocalUiState('mailbox.ui.gptKeyword', '', {
+  validate: isString,
+})
+const gptStatusFilter = useLocalUiState<GptStatusFilter>('mailbox.ui.gptStatusFilter', 'all', {
+  validate: isGptStatusFilter,
+})
+const gptPlanFilter = useLocalUiState('mailbox.ui.gptPlanFilter', 'all', {
+  validate: isString,
+})
 const gptDialogVisible = ref(false)
 const gptDialogAccount = ref<MailAccount>()
+const focusedEmail = ref('')
+
+function isGptViewMode(value: unknown): value is GptViewMode {
+  return value === 'cards' || value === 'table'
+}
+
+function isGptStatusFilter(value: unknown): value is GptStatusFilter {
+  return value === 'all'
+    || value === 'active'
+    || value === 'expired'
+    || value === 'quota_limited'
+    || value === 'reauth_required'
+    || value === 'banned_or_disabled'
+    || value === 'error'
+    || value === 'unknown'
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string'
+}
 
 const mailboxByEmail = computed(() => {
   const map = new Map<string, MailAccount>()
@@ -86,6 +123,12 @@ const filteredRows = computed(() => {
   })
 })
 
+const focusExists = computed(() =>
+  focusedEmail.value
+    ? rows.value.some((row) => row.account.mailAccountEmail.toLowerCase() === focusedEmail.value)
+    : true,
+)
+
 function statusReason(account: GptAccount): string {
   return account.reauthReason || account.quotaErrorMessage || account.statusReason || ''
 }
@@ -113,6 +156,16 @@ function openGptDialog(row: GptAccountRow) {
   const mailbox = row.mailbox ?? fallbackMailbox(row.account)
   gptDialogAccount.value = mailbox
   gptDialogVisible.value = true
+}
+
+function handleGptBound(payload: { mailAccountEmail: string }) {
+  gptDialogAccount.value = undefined
+  focusAccount(payload.mailAccountEmail)
+}
+
+function isFocusedRow(row: GptAccountRow): boolean {
+  return Boolean(focusedEmail.value)
+    && row.account.mailAccountEmail.toLowerCase() === focusedEmail.value
 }
 
 function fallbackMailbox(account: GptAccount): MailAccount {
@@ -161,6 +214,27 @@ async function unlinkGptAccount(account: GptAccount) {
     ElMessage.error(error instanceof Error ? error.message : '解除 GPT/Codex 绑定失败')
   }
 }
+
+function focusAccount(email: string) {
+  const normalizedEmail = email.trim().toLowerCase()
+  if (!normalizedEmail) {
+    return
+  }
+  focusedEmail.value = normalizedEmail
+  gptKeyword.value = normalizedEmail
+  gptStatusFilter.value = 'all'
+  gptPlanFilter.value = 'all'
+}
+
+watch(
+  () => props.focusEmail,
+  (email) => {
+    if (email) {
+      focusAccount(email)
+    }
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -202,6 +276,9 @@ async function unlinkGptAccount(account: GptAccount) {
       >
         刷新全部
       </el-button>
+      <el-tag v-if="focusedEmail && !focusExists" type="warning" effect="plain">
+        该邮箱尚未绑定 GPT/Codex
+      </el-tag>
     </div>
 
     <Transition name="workspace-view" mode="out-in">
@@ -212,7 +289,7 @@ async function unlinkGptAccount(account: GptAccount) {
           v-else
           :key="row.account.mailAccountEmail"
           class="gpt-status-card"
-          :class="`status-${row.account.status}`"
+          :class="[`status-${row.account.status}`, { focused: isFocusedRow(row) }]"
         >
           <header class="gpt-card-head">
             <div>
@@ -301,6 +378,7 @@ async function unlinkGptAccount(account: GptAccount) {
           height="100%"
           class="gpt-account-table"
           row-key="account.mailAccountEmail"
+          :row-class-name="({ row }: { row: GptAccountRow }) => (isFocusedRow(row) ? 'focused-gpt-row' : '')"
         >
           <el-table-column label="邮箱" min-width="220" show-overflow-tooltip>
             <template #default="{ row }">{{ row.account.mailAccountEmail }}</template>
@@ -393,7 +471,7 @@ async function unlinkGptAccount(account: GptAccount) {
     <GptAccountDialog
       v-model="gptDialogVisible"
       :account="gptDialogAccount"
-      @bound="gptDialogAccount = undefined"
+      @bound="handleGptBound"
     />
   </section>
 </template>
