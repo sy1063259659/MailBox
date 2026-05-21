@@ -33,6 +33,7 @@ import type { MailGroup } from '@/services/accountApi'
 import {
   compactGptStatus,
   formatDateTime,
+  formatShortDate,
   planText,
 } from '@/utils/gptDisplay'
 
@@ -287,10 +288,8 @@ function openGptDetails(account: MailAccount) {
   activeModule.value = 'gptAccounts'
 }
 
-function handleGptBound(payload: { mailAccountEmail: string }) {
+function handleGptBound(_payload: { mailAccountEmail: string }) {
   gptDialogAccount.value = undefined
-  focusedGptEmail.value = payload.mailAccountEmail
-  activeModule.value = 'gptAccounts'
 }
 
 function formatAddress(address: MailAddress): string {
@@ -1152,17 +1151,29 @@ watch(
               <span class="mail-count">{{ messageCountByEmail.get(resolveMailboxAccount(row).email) ?? 0 }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="GPT" width="150" align="center" header-align="center">
+          <el-table-column label="GPT" width="220" align="center" header-align="center">
             <template #default="{ row }">
               <div class="gpt-compact-cell">
-                <el-tag
-                  size="small"
-                  :type="compactGptStatus(gptForAccount(row)).type"
-                  effect="light"
-                >
-                  {{ compactGptStatus(gptForAccount(row)).text }}
-                </el-tag>
-                <small v-if="gptForAccount(row)">{{ planText(gptForAccount(row)) }}</small>
+                <div class="gpt-compact-tags">
+                  <el-tag
+                    size="small"
+                    :type="compactGptStatus(gptForAccount(row)).type"
+                    effect="light"
+                  >
+                    {{ compactGptStatus(gptForAccount(row)).text }}
+                  </el-tag>
+                  <el-tag
+                    v-if="gptForAccount(row)"
+                    size="small"
+                    type="primary"
+                    effect="plain"
+                  >
+                    {{ planText(gptForAccount(row)) }}
+                  </el-tag>
+                </div>
+                <small v-if="gptForAccount(row)" class="gpt-compact-meta">
+                  到期 {{ formatShortDate(gptForAccount(row)?.subscriptionActiveUntil) }}
+                </small>
                 <div class="gpt-compact-actions">
                   <el-button
                     v-if="gptForAccount(row)"

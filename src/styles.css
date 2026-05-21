@@ -765,15 +765,38 @@ textarea {
 }
 
 .gpt-compact-cell {
+  width: 100%;
   min-width: 0;
+  padding: 5px 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
-.gpt-compact-cell small {
-  max-width: 110px;
+.gpt-compact-tags {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.gpt-compact-tags .el-tag {
+  max-width: 94px;
+}
+
+.gpt-compact-tags .el-tag__content {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gpt-compact-meta {
+  max-width: 180px;
   color: #64748b;
   font-size: 11px;
   overflow: hidden;
@@ -782,6 +805,7 @@ textarea {
 }
 
 .gpt-compact-actions {
+  width: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
