@@ -567,6 +567,34 @@ textarea {
   border-radius: 7px;
 }
 
+.account-selection-hint {
+  margin: -2px 0 12px;
+  padding: 9px 12px;
+  border: 1px solid #e8eef7;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.account-selection-hint strong {
+  color: #334155;
+  font-weight: 650;
+}
+
+.account-selection-hint.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #2563eb;
+}
+
+.account-selection-hint.active strong {
+  color: #1d4ed8;
+}
+
 .faka-main .el-button,
 .faka-import-dialog .el-button,
 .login-submit {
@@ -1174,7 +1202,7 @@ textarea {
   border-radius: 7px;
   background: transparent;
   text-align: left;
-  cursor: pointer;
+  cursor: default;
   display: flex;
   flex-direction: column;
   gap: 3px;
@@ -1191,7 +1219,7 @@ textarea {
 }
 
 .gpt-verification-item:hover {
-  transform: translateX(2px);
+  transform: none;
 }
 
 .gpt-verification-item span,
@@ -1234,23 +1262,33 @@ textarea {
 
 .verification-code {
   margin: 0;
-  padding: 8px 10px;
+  padding: 12px 14px;
   border-radius: 7px;
   background: #eef4ff;
   color: #1d4ed8;
-  font-size: 18px;
+  font-size: 24px;
   font-weight: 750;
   letter-spacing: 0;
+  text-align: center;
 }
 
 .verification-body-text {
   min-height: 0;
-  max-height: 86px;
   margin: 0;
-  overflow: auto;
   color: #475569;
   font-size: 12px;
   line-height: 1.55;
+}
+
+.verification-source {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .gpt-management-view {
@@ -1558,8 +1596,33 @@ textarea {
 
 .import-result {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 12px;
+}
+
+.import-summary {
+  margin: 12px 0;
+  padding: 10px 12px;
+  border: 1px solid #e8eef7;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.import-summary strong {
+  color: #334155;
+  font-size: 13px;
+}
+
+.import-summary.active {
+  border-color: #bfdbfe;
+  background: #eff6ff;
 }
 
 .error-list {

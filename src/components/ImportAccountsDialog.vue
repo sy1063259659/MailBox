@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
@@ -14,6 +14,15 @@ const selectedGroup = ref(DEFAULT_GROUP)
 const importing = ref(false)
 const lastResult = ref<{ imported: number; updated: number; errors: string[] }>()
 const fileInput = ref<HTMLInputElement>()
+
+const nonEmptyLineCount = computed(() =>
+  text.value.split(/\r?\n/).filter((line) => line.trim()).length,
+)
+
+const importSummary = computed(() => {
+  const group = selectedGroup.value.trim() || DEFAULT_GROUP
+  return `目标分组：${group}；检测到 ${nonEmptyLineCount.value} 行账号数据`
+})
 
 watch(
   visible,
@@ -64,7 +73,7 @@ async function handleFileChange(event: Event) {
   if (!file) {
     return
   }
-  text.value = await file.text()
+  await readImportFile(file)
   input.value = ''
 }
 
@@ -73,7 +82,30 @@ async function readDroppedFile(event: DragEvent) {
   if (!file) {
     return
   }
+  await readImportFile(file)
+}
+
+async function readImportFile(file: File) {
+  if (!file.name.toLowerCase().endsWith('.txt') && file.type && file.type !== 'text/plain') {
+    ElMessage.warning('请导入 TXT 文本文件')
+    return
+  }
   text.value = await file.text()
+  lastResult.value = undefined
+  ElMessage.success(`已读取 ${nonEmptyLineCount.value} 行账号数据`)
+}
+
+async function copyImportErrors() {
+  if (!lastResult.value?.errors.length) {
+    ElMessage.warning('没有可复制的失败信息')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(lastResult.value.errors.join('\n'))
+    ElMessage.success('已复制失败信息')
+  } catch {
+    ElMessage.error('复制失败信息失败')
+  }
 }
 </script>
 
@@ -128,6 +160,12 @@ async function readDroppedFile(event: DragEvent) {
       <input ref="fileInput" type="file" accept=".txt,text/plain" class="hidden-file" @change="handleFileChange" />
     </div>
 
+    <div class="import-summary" :class="{ active: nonEmptyLineCount > 0 }">
+      <strong>导入摘要</strong>
+      <span>{{ importSummary }}</span>
+      <small>追加导入会合并到目标分组；覆盖导入会先清空账号和浏览器邮件缓存。</small>
+    </div>
+
     <el-input
       v-model="text"
       type="textarea"
@@ -140,6 +178,14 @@ async function readDroppedFile(event: DragEvent) {
       <el-tag type="success">新增 {{ lastResult.imported }}</el-tag>
       <el-tag>更新 {{ lastResult.updated }}</el-tag>
       <el-tag v-if="lastResult.errors.length" type="danger">失败 {{ lastResult.errors.length }}</el-tag>
+      <el-button
+        v-if="lastResult.errors.length"
+        size="small"
+        plain
+        @click="copyImportErrors"
+      >
+        复制失败信息
+      </el-button>
     </div>
     <el-scrollbar v-if="lastResult?.errors.length" max-height="140px" class="error-list">
       <p v-for="error in lastResult.errors" :key="error">{{ error }}</p>

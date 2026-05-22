@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Link,
@@ -55,6 +55,8 @@ const gptPlanFilter = useLocalUiState('mailbox.ui.gptPlanFilter', 'all', {
 const gptDialogVisible = ref(false)
 const gptDialogAccount = ref<MailAccount>()
 const focusedEmail = ref('')
+const gptKeywordDraft = ref(gptKeyword.value)
+let gptKeywordDebounceTimer: number | undefined
 
 function isGptViewMode(value: unknown): value is GptViewMode {
   return value === 'cards' || value === 'table'
@@ -222,8 +224,25 @@ function focusAccount(email: string) {
   }
   focusedEmail.value = normalizedEmail
   gptKeyword.value = normalizedEmail
+  gptKeywordDraft.value = normalizedEmail
   gptStatusFilter.value = 'all'
   gptPlanFilter.value = 'all'
+}
+
+function handleGptKeywordInput(value: string) {
+  gptKeywordDraft.value = value
+  if (gptKeywordDebounceTimer) {
+    window.clearTimeout(gptKeywordDebounceTimer)
+    gptKeywordDebounceTimer = undefined
+  }
+  const applyKeyword = () => {
+    gptKeyword.value = value
+  }
+  if (!value.trim()) {
+    applyKeyword()
+    return
+  }
+  gptKeywordDebounceTimer = window.setTimeout(applyKeyword, 250)
 }
 
 watch(
@@ -235,17 +254,28 @@ watch(
   },
   { immediate: true },
 )
+
+watch(gptKeyword, (value) => {
+  gptKeywordDraft.value = value
+})
+
+onBeforeUnmount(() => {
+  if (gptKeywordDebounceTimer) {
+    window.clearTimeout(gptKeywordDebounceTimer)
+  }
+})
 </script>
 
 <template>
   <section class="gpt-management-view">
     <div class="gpt-management-toolbar">
       <el-input
-        v-model="gptKeyword"
+        :model-value="gptKeywordDraft"
         class="gpt-management-search"
         :prefix-icon="Search"
         clearable
         placeholder="搜索邮箱、套餐、分组、备注..."
+        @update:model-value="handleGptKeywordInput"
       />
       <el-select v-model="gptStatusFilter" class="gpt-filter-select" placeholder="状态">
         <el-option label="全部状态" value="all" />

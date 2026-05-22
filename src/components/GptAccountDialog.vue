@@ -22,12 +22,12 @@ const callbackUrl = ref('')
 const binding = ref(false)
 const startingOAuth = ref(false)
 const mailFolder = ref<MailFolder>('inbox')
-const mailLoading = ref(false)
-const bodyLoading = ref(false)
+const verificationLoading = ref(false)
 const verificationMessages = ref<ImapMessageSummary[]>([])
-const selectedMessageId = ref('')
-const selectedBody = ref('')
-const selectedSubject = ref('')
+const verificationCode = ref('')
+const verificationSource = ref<ImapMessageSummary>()
+const lastVerificationRefreshAt = ref('')
+const verificationStatusText = ref('刷新后会自动从最新邮件里提取验证码')
 
 const title = computed(() => props.account ? `绑定 GPT/Codex：${props.account.email}` : '绑定 GPT/Codex')
 const canSubmit = computed(() => {
@@ -42,8 +42,6 @@ const currentAuthUrl = computed(() => props.account
   ? gptAccountStore.oauthAuthUrlByEmail[props.account.email.toLowerCase()]
   : '',
 )
-const selectedCode = computed(() => extractVerificationCode(`${selectedSubject.value}\n${selectedBody.value}`))
-const selectedBodyText = computed(() => cleanMailText(selectedBody.value))
 
 watch(visible, (isVisible) => {
   if (isVisible) {
@@ -52,9 +50,19 @@ watch(visible, (isVisible) => {
     callbackUrl.value = ''
     mailFolder.value = 'inbox'
     verificationMessages.value = []
-    selectedMessageId.value = ''
-    selectedBody.value = ''
-    selectedSubject.value = ''
+    verificationCode.value = ''
+    verificationSource.value = undefined
+    lastVerificationRefreshAt.value = ''
+    verificationStatusText.value = '正在查找最新验证码...'
+    if (props.account) {
+      void refreshVerificationMessages({ silent: true })
+    }
+  }
+})
+
+watch(mailFolder, () => {
+  if (visible.value && props.account) {
+    void refreshVerificationMessages({ silent: true })
   }
 })
 
@@ -109,48 +117,66 @@ async function submit() {
   }
 }
 
-async function refreshVerificationMessages() {
-  if (!props.account || mailLoading.value) {
+async function refreshVerificationMessages(options: { silent?: boolean } = {}) {
+  if (!props.account || verificationLoading.value) {
     return
   }
-  mailLoading.value = true
-  selectedMessageId.value = ''
-  selectedBody.value = ''
-  selectedSubject.value = ''
+  verificationLoading.value = true
+  verificationCode.value = ''
+  verificationSource.value = undefined
+  verificationStatusText.value = '正在查找最新验证码...'
   try {
     const result = await listImapMessages({
       credentials: { email: props.account.email },
       folder: mailFolder.value,
       limit: 12,
     })
-    verificationMessages.value = result.messages ?? []
+    verificationMessages.value = [...(result.messages ?? [])].sort((left, right) =>
+      right.receivedAt.localeCompare(left.receivedAt),
+    )
+    const recentMessages = verificationMessages.value.slice(0, 5)
+    for (const message of recentMessages) {
+      const codeFromSummary = extractVerificationCode(message.subject)
+      if (codeFromSummary) {
+        verificationCode.value = codeFromSummary
+        verificationSource.value = message
+        break
+      }
+
+      try {
+        const detail = await getImapMessage({
+          credentials: { email: props.account.email },
+          folder: mailFolder.value,
+          messageId: message.id,
+        })
+        const code = extractVerificationCode(`${detail.message.subject || message.subject}\n${detail.body.content || detail.message.content || ''}`)
+        if (code) {
+          verificationCode.value = code
+          verificationSource.value = {
+            ...message,
+            subject: detail.message.subject || message.subject,
+            receivedAt: detail.message.receivedAt || message.receivedAt,
+            from: detail.message.from?.length ? detail.message.from : message.from,
+          }
+          break
+        }
+      } catch {
+        // Try the next recent message; one unreadable email should not block binding.
+      }
+    }
+
+    lastVerificationRefreshAt.value = new Date().toLocaleTimeString()
+    verificationStatusText.value = verificationCode.value
+      ? '已识别到最新验证码'
+      : '未识别到验证码，可稍后刷新或切换垃圾箱查看'
+    if (!options.silent) {
+      ElMessage.success(verificationCode.value ? '已刷新并识别验证码' : '已刷新，未识别到验证码')
+    }
   } catch (error) {
+    verificationStatusText.value = '刷新验证码邮件失败'
     ElMessage.error(error instanceof Error ? error.message : '刷新验证码邮件失败')
   } finally {
-    mailLoading.value = false
-  }
-}
-
-async function selectVerificationMessage(message: ImapMessageSummary) {
-  if (!props.account || bodyLoading.value) {
-    return
-  }
-  selectedMessageId.value = message.id
-  selectedSubject.value = message.subject
-  selectedBody.value = ''
-  bodyLoading.value = true
-  try {
-    const result = await getImapMessage({
-      credentials: { email: props.account.email },
-      folder: mailFolder.value,
-      messageId: message.id,
-    })
-    selectedSubject.value = result.message.subject || message.subject
-    selectedBody.value = result.body.content || result.message.content || ''
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '读取邮件正文失败')
-  } finally {
-    bodyLoading.value = false
+    verificationLoading.value = false
   }
 }
 
@@ -181,6 +207,13 @@ function formatShortTime(value: string): string {
     return value
   }
   return date.toLocaleString()
+}
+
+function sourceText(message?: ImapMessageSummary): string {
+  if (!message) {
+    return '暂无来源邮件'
+  }
+  return `${senderText(message)} · ${message.subject || '无主题'} · ${formatShortTime(message.receivedAt)}`
 }
 
 function cleanMailText(value: string): string {
@@ -268,14 +301,15 @@ function extractVerificationCode(value: string): string {
           <div>
             <strong>验证码邮件</strong>
             <span>{{ account.email }}</span>
+            <span v-if="lastVerificationRefreshAt">上次刷新 {{ lastVerificationRefreshAt }}</span>
           </div>
           <el-button
             size="small"
             :icon="Refresh"
-            :loading="mailLoading"
+            :loading="verificationLoading"
             @click="refreshVerificationMessages"
           >
-            刷新邮件
+            刷新验证码
           </el-button>
         </header>
         <el-segmented
@@ -286,44 +320,35 @@ function extractVerificationCode(value: string): string {
             { label: '垃圾箱', value: 'junkemail' },
           ]"
         />
-        <div v-loading="mailLoading" class="gpt-verification-list">
-          <el-empty v-if="verificationMessages.length === 0" :image-size="56" description="暂无邮件" />
-          <button
-            v-for="message in verificationMessages"
-            v-else
-            :key="message.id"
-            type="button"
-            class="gpt-verification-item"
-            :class="{ active: selectedMessageId === message.id }"
-            @click="selectVerificationMessage(message)"
-          >
-            <span>{{ senderText(message) }}</span>
-            <strong>{{ message.subject || '无主题' }}</strong>
-            <small>{{ formatShortTime(message.receivedAt) }}</small>
-          </button>
-        </div>
-        <div v-loading="bodyLoading" class="gpt-verification-body">
+        <div v-loading="verificationLoading" class="gpt-verification-body">
           <div class="verification-copy-row">
             <el-button
               size="small"
               :icon="CopyDocument"
-              :disabled="!selectedCode"
-              @click="copyValue(selectedCode, '验证码')"
+              :disabled="!verificationCode"
+              @click="copyValue(verificationCode, '验证码')"
             >
               复制验证码
             </el-button>
-            <el-button
-              size="small"
-              :icon="CopyDocument"
-              :disabled="!selectedBodyText"
-              @click="copyValue(selectedBodyText, '正文')"
-            >
-              复制正文
-            </el-button>
           </div>
-          <p v-if="selectedCode" class="verification-code">{{ selectedCode }}</p>
-          <p v-if="selectedBodyText" class="verification-body-text">{{ selectedBodyText }}</p>
-          <el-empty v-else :image-size="46" description="选择邮件查看正文" />
+          <p v-if="verificationCode" class="verification-code">{{ verificationCode }}</p>
+          <el-empty v-else :image-size="46" description="未识别到验证码" />
+          <p class="verification-body-text">{{ verificationStatusText }}</p>
+          <p class="verification-source">{{ sourceText(verificationSource) }}</p>
+        </div>
+        <div class="gpt-verification-list">
+          <el-empty v-if="verificationMessages.length === 0" :image-size="56" description="暂无最近邮件" />
+          <div
+            v-for="message in verificationMessages.slice(0, 5)"
+            v-else
+            :key="message.id"
+            class="gpt-verification-item"
+            :class="{ active: verificationSource?.id === message.id }"
+          >
+            <span>{{ senderText(message) }}</span>
+            <strong>{{ message.subject || '无主题' }}</strong>
+            <small>{{ formatShortTime(message.receivedAt) }}</small>
+          </div>
         </div>
       </aside>
     </div>

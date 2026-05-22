@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   CopyDocument,
@@ -48,6 +48,9 @@ const authStore = useAuthStore()
 const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const selectedAccountRows = ref<MailAccount[]>([])
+const accountPage = ref(1)
+const accountPageSize = ref(20)
+const topSearchDraft = ref('')
 const globalKeyword = useLocalUiState('mailbox.ui.globalKeyword', '', {
   validate: isString,
 })
@@ -187,6 +190,17 @@ const visibleAccounts = computed<MailAccount[]>(() => {
 })
 
 const visibleFlatAccounts = computed(() => flattenAccounts(visibleAccounts.value))
+
+const pagedFlatAccounts = computed(() => {
+  const start = (accountPage.value - 1) * accountPageSize.value
+  return visibleFlatAccounts.value.slice(start, start + accountPageSize.value)
+})
+
+const selectionScopeText = computed(() =>
+  selectedAccountRows.value.length > 0
+    ? '批量收信、复制、导出、移动分组、删除会优先作用于已选账号'
+    : '未勾选时，批量收信、复制、导出会作用于当前筛选范围',
+)
 
 const sidebarRootAccounts = computed(() => accountTree.value)
 
@@ -359,6 +373,7 @@ function setGroup(group: string) {
   accountStore.setSelectedGroup(group)
   mailStore.setFilter({ group, accountEmail: '' })
   workspaceMode.value = 'accounts'
+  accountPage.value = 1
 }
 
 function setActiveModule(module: 'mailboxes' | 'gptAccounts') {
@@ -497,14 +512,48 @@ function handleAccountSelection(rows: MailAccount[]) {
   selectedAccountRows.value = rows
 }
 
+let topSearchDebounceTimer: number | undefined
+
 function handleTopSearchInput(value: string) {
+  topSearchDraft.value = value
+  if (topSearchDebounceTimer) {
+    window.clearTimeout(topSearchDebounceTimer)
+    topSearchDebounceTimer = undefined
+  }
+
   if (workspaceMode.value === 'mail') {
-    mailStore.setFilter({ query: value })
-    void mailStore.loadMessages()
+    const applyMailSearch = () => {
+      mailStore.setFilter({ query: value })
+      void mailStore.loadMessages()
+    }
+    if (!value.trim()) {
+      applyMailSearch()
+      return
+    }
+    topSearchDebounceTimer = window.setTimeout(applyMailSearch, 250)
     return
   }
 
-  globalKeyword.value = value
+  const applyAccountSearch = () => {
+    globalKeyword.value = value
+    accountPage.value = 1
+  }
+  if (!value.trim()) {
+    applyAccountSearch()
+    return
+  }
+  topSearchDebounceTimer = window.setTimeout(applyAccountSearch, 250)
+}
+
+function handleAccountPageChange(page: number) {
+  accountPage.value = page
+  selectedAccountRows.value = []
+}
+
+function handleAccountPageSizeChange(size: number) {
+  accountPageSize.value = size
+  accountPage.value = 1
+  selectedAccountRows.value = []
 }
 
 async function copyText(value: string, label = '内容') {
@@ -757,6 +806,7 @@ async function batchDeleteSelected() {
     }
     await mailStore.loadMessages()
     selectedAccountRows.value = []
+    accountPage.value = 1
     ElMessage.success('已删除选中账号')
   } finally {
     deleting.value = false
@@ -786,6 +836,7 @@ async function submitMoveGroup() {
     )
     accountStore.setSelectedGroup(group)
     mailStore.setFilter({ group, accountEmail: '' })
+    accountPage.value = 1
     groupDialogVisible.value = false
     ElMessage.success(`已移动 ${selectedAccountRows.value.length} 个账号到 ${group}`)
   } finally {
@@ -809,6 +860,27 @@ function backToAccounts() {
   currentViewedAccountEmail.value = ''
   mailStore.setFilter({ accountEmail: '', query: '' })
 }
+
+watch(
+  topSearchValue,
+  (value) => {
+    topSearchDraft.value = value
+  },
+  { immediate: true },
+)
+
+watch(
+  () => [accountStore.selectedGroup, visibleFlatAccounts.value.length],
+  ([, visibleCount], [, previousVisibleCount]) => {
+    if (visibleCount !== previousVisibleCount) {
+      accountPage.value = 1
+    }
+    const maxPage = Math.max(1, Math.ceil(visibleFlatAccounts.value.length / accountPageSize.value))
+    if (accountPage.value > maxPage) {
+      accountPage.value = maxPage
+    }
+  },
+)
 
 watch(
   () => [
@@ -864,6 +936,12 @@ watch(
   },
   { immediate: true },
 )
+
+onBeforeUnmount(() => {
+  if (topSearchDebounceTimer) {
+    window.clearTimeout(topSearchDebounceTimer)
+  }
+})
 </script>
 
 <template>
@@ -1006,7 +1084,7 @@ watch(
           </div>
           <el-input
             v-if="activeModule === 'mailboxes'"
-            :model-value="topSearchValue"
+            :model-value="topSearchDraft"
             class="faka-search"
             :prefix-icon="Search"
             clearable
@@ -1059,6 +1137,11 @@ watch(
           </el-dropdown>
         </div>
 
+        <div class="account-selection-hint" :class="{ active: selectedAccountRows.length > 0 }">
+          <strong>已选 {{ selectedAccountRows.length }} 个账号</strong>
+          <span>{{ selectionScopeText }}</span>
+        </div>
+
         <Transition name="panel-slide">
           <div
             v-if="mailStore.batchSyncRunning || mailStore.batchSyncResults.length > 0"
@@ -1104,12 +1187,12 @@ watch(
 
         <el-table
           v-loading="accountStore.loading || deleting || movingGroup || clearingData"
-          :data="visibleAccounts"
+          :data="pagedFlatAccounts"
           row-key="email"
           class="faka-account-table"
           height="calc(100vh - 232px)"
           :default-expand-all="false"
-          :tree-props="{ children: 'children' }"
+          :tree-props="{ children: 'tableChildren' }"
           :row-class-name="({ row }: { row: MailAccount }) => (isSplitAccount(row) ? 'split-account-row' : 'parent-account-row')"
           @selection-change="handleAccountSelection"
         >
@@ -1261,7 +1344,16 @@ watch(
         </el-table>
         <div class="faka-pagination">
           <span>Total {{ visibleFlatAccounts.length }}</span>
-          <el-pagination size="small" layout="prev, pager, next" :total="visibleFlatAccounts.length" :page-size="20" />
+          <el-pagination
+            v-model:current-page="accountPage"
+            v-model:page-size="accountPageSize"
+            size="small"
+            layout="sizes, prev, pager, next"
+            :total="visibleFlatAccounts.length"
+            :page-sizes="[20, 50, 100]"
+            @current-change="handleAccountPageChange"
+            @size-change="handleAccountPageSizeChange"
+          />
         </div>
       </section>
 
