@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import LoginView from '@/views/LoginView.vue'
 import { getImapHealth } from '@/services/imapApi'
@@ -7,23 +7,31 @@ import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
 import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
+import { navigateToAppRoute, useAppRoute, type AppRouteName } from '@/composables/useAppRoute'
 
-const AccountWorkspaceView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
+const AppShellView = defineAsyncComponent(() => import('@/views/AppShellView.vue'))
 const ImportAccountsDialog = defineAsyncComponent(() => import('@/components/ImportAccountsDialog.vue'))
 
 const authStore = useAuthStore()
 const accountStore = useAccountStore()
 const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
+const appRoute = useAppRoute()
+const focusedGptEmail = ref('')
 const importVisible = ref(false)
 const backendOnline = ref<boolean | undefined>(undefined)
 const clearingData = ref(false)
 let workspaceLoadPromise: Promise<void> | undefined
 
+const isAuthenticated = computed(() => authStore.checked && authStore.isAuthenticated)
+
 onMounted(async () => {
   window.addEventListener('mailbox:unauthorized', handleUnauthorized)
   await Promise.all([authStore.checkSession(), checkBackend()])
-  await loadWorkspaceData()
+  if (authStore.isAuthenticated) {
+    await loadWorkspaceData()
+    ensureRouteWhenAuthenticated()
+  }
 })
 
 watch(
@@ -31,9 +39,16 @@ watch(
   async (isAuthenticated, wasAuthenticated) => {
     if (isAuthenticated && !wasAuthenticated) {
       await loadWorkspaceData()
+      ensureRouteWhenAuthenticated()
     }
   },
 )
+
+function ensureRouteWhenAuthenticated() {
+  if (appRoute.value === 'login') {
+    navigateToAppRoute('mailboxes')
+  }
+}
 
 async function loadWorkspaceData() {
   if (!authStore.isAuthenticated) {
@@ -52,6 +67,7 @@ async function loadWorkspaceData() {
 
 function handleUnauthorized() {
   authStore.markLoggedOut()
+  navigateToAppRoute('login')
 }
 
 async function checkBackend() {
@@ -78,19 +94,37 @@ async function clearData() {
     clearingData.value = false
   }
 }
+
+function handleNavigate(route: AppRouteName) {
+  navigateToAppRoute(route)
+}
+
+function handleFocusGptAccount(email: string) {
+  focusedGptEmail.value = email
+  navigateToAppRoute('gptAccounts')
+}
 </script>
 
 <template>
   <el-container class="app-shell">
     <el-main class="app-main">
       <Transition name="app-view" mode="out-in">
-        <LoginView v-if="authStore.checked && !authStore.isAuthenticated" key="login" />
-        <AccountWorkspaceView
-          v-else-if="authStore.checked"
+        <LoginView
+          v-if="appRoute === 'login' && authStore.checked && !authStore.isAuthenticated"
+          key="login"
+          :backend-online="backendOnline"
+          @navigate-app="handleNavigate"
+        />
+        <AppShellView
+          v-else-if="authStore.checked && isAuthenticated"
           key="workspace"
           :clearing-data="clearingData"
+          :focus-email="focusedGptEmail"
+          :route="appRoute"
           @import-accounts="importVisible = true"
           @clear-data="clearData"
+          @focus-gpt-account="handleFocusGptAccount"
+          @navigate-app="handleNavigate"
         />
         <div v-else key="loading" class="app-loading">正在检查登录状态...</div>
       </Transition>

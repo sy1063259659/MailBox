@@ -8,7 +8,6 @@ import {
   EditPen,
   Files,
   FolderOpened,
-  Grid,
   Message,
   Reading,
   Refresh,
@@ -18,7 +17,6 @@ import {
 } from '@element-plus/icons-vue'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
-import { useAuthStore } from '@/stores/auth'
 import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
 import type {
@@ -38,13 +36,9 @@ import {
 } from '@/utils/gptDisplay'
 
 const GptAccountDialog = defineAsyncComponent(() => import('@/components/GptAccountDialog.vue'))
-const GptAccountManagementView = defineAsyncComponent(() => import('@/views/GptAccountManagementView.vue'))
-
-type ActiveModule = 'mailboxes' | 'gptAccounts'
 type WorkspaceMode = 'accounts' | 'mail'
 
 const accountStore = useAccountStore()
-const authStore = useAuthStore()
 const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const selectedAccountRows = ref<MailAccount[]>([])
@@ -63,9 +57,6 @@ const currentViewedAccount = ref<MailAccount>()
 const currentViewedAccountEmail = useLocalUiState('mailbox.ui.currentViewedAccount.email', '', {
   validate: isString,
 })
-const activeModule = useLocalUiState<ActiveModule>('mailbox.ui.activeModule', 'mailboxes', {
-  validate: isActiveModule,
-})
 const workspaceMode = useLocalUiState<WorkspaceMode>('mailbox.ui.workspaceMode', 'accounts', {
   validate: isWorkspaceMode,
 })
@@ -78,7 +69,6 @@ const splittingEmail = ref('')
 const deleting = ref(false)
 const movingGroup = ref(false)
 const refreshingFolder = ref(false)
-const loggingOut = ref(false)
 const copying = ref(false)
 const exportingAccounts = ref(false)
 const copiedValues = ref<Set<string>>(new Set())
@@ -93,6 +83,7 @@ defineProps<{
 
 const emit = defineEmits<{
   importAccounts: []
+  focusGptAccount: [email: string]
 }>()
 
 const statusType: Record<AccountStatus, 'info' | 'primary' | 'success' | 'warning' | 'danger'> = {
@@ -111,10 +102,6 @@ const statusText: Record<AccountStatus, string> = {
   error: '失败',
   token_expired: '令牌失效',
   rate_limited: '限流',
-}
-
-function isActiveModule(value: unknown): value is ActiveModule {
-  return value === 'mailboxes' || value === 'gptAccounts'
 }
 
 function isWorkspaceMode(value: unknown): value is WorkspaceMode {
@@ -299,7 +286,7 @@ function openGptDialog(account: MailAccount) {
 function openGptDetails(account: MailAccount) {
   const targetAccount = resolveMailboxAccount(account)
   focusedGptEmail.value = targetAccount.email
-  activeModule.value = 'gptAccounts'
+  emit('focusGptAccount', targetAccount.email)
 }
 
 function handleGptBound(_payload: { mailAccountEmail: string }) {
@@ -369,15 +356,10 @@ function isSplitAccount(account: MailAccount): boolean {
 }
 
 function setGroup(group: string) {
-  activeModule.value = 'mailboxes'
   accountStore.setSelectedGroup(group)
   mailStore.setFilter({ group, accountEmail: '' })
   workspaceMode.value = 'accounts'
   accountPage.value = 1
-}
-
-function setActiveModule(module: 'mailboxes' | 'gptAccounts') {
-  activeModule.value = module
 }
 
 function groupAccountCount(group: MailGroup): number {
@@ -661,7 +643,6 @@ async function viewAccountInbox(account: MailAccount) {
   const targetAccount = resolveMailboxAccount(account)
   viewingEmail.value = targetAccount.email
   try {
-    activeModule.value = 'mailboxes'
     currentViewedAccount.value = targetAccount
     currentViewedAccountEmail.value = targetAccount.email
     workspaceMode.value = 'mail'
@@ -844,17 +825,7 @@ async function submitMoveGroup() {
   }
 }
 
-async function logout() {
-  loggingOut.value = true
-  try {
-    await authStore.logout()
-  } finally {
-    loggingOut.value = false
-  }
-}
-
 function backToAccounts() {
-  activeModule.value = 'mailboxes'
   workspaceMode.value = 'accounts'
   currentViewedAccount.value = undefined
   currentViewedAccountEmail.value = ''
@@ -945,8 +916,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="faka-shell" :class="{ 'gpt-module-active': activeModule === 'gptAccounts' }">
-    <aside v-if="activeModule === 'mailboxes'" class="faka-sidebar">
+  <section class="faka-shell">
+    <aside class="faka-sidebar">
       <div class="faka-brand">
         <el-icon><Message /></el-icon>
         <span>MailBox</span>
@@ -1060,30 +1031,7 @@ onBeforeUnmount(() => {
     <main class="faka-main">
       <header class="faka-topbar">
         <div class="topbar-left">
-          <div class="module-tabs" aria-label="主菜单">
-            <button
-              class="module-tab"
-              :class="{ active: activeModule === 'mailboxes' }"
-              type="button"
-              @click="setActiveModule('mailboxes')"
-            >
-              <el-icon><Message /></el-icon>
-              <span>邮箱管理</span>
-              <strong>{{ accountStore.accounts.length }}</strong>
-            </button>
-            <button
-              class="module-tab"
-              :class="{ active: activeModule === 'gptAccounts' }"
-              type="button"
-              @click="setActiveModule('gptAccounts')"
-            >
-              <el-icon><Grid /></el-icon>
-              <span>GPT账号管理</span>
-              <strong>{{ gptAccountStore.accounts.length }}</strong>
-            </button>
-          </div>
           <el-input
-            v-if="activeModule === 'mailboxes'"
             :model-value="topSearchDraft"
             class="faka-search"
             :prefix-icon="Search"
@@ -1093,18 +1041,11 @@ onBeforeUnmount(() => {
           />
         </div>
         <div class="topbar-actions">
-          <el-button v-if="activeModule === 'mailboxes' && workspaceMode === 'mail'" plain @click="backToAccounts">返回账号</el-button>
-          <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
+          <el-button v-if="workspaceMode === 'mail'" plain @click="backToAccounts">返回账号</el-button>
         </div>
       </header>
 
-      <Transition name="workspace-view" mode="out-in">
-      <GptAccountManagementView
-        v-if="activeModule === 'gptAccounts'"
-        key="gpt-accounts"
-        :focus-email="focusedGptEmail"
-      />
-      <section v-else-if="workspaceMode === 'accounts'" key="accounts" class="faka-card">
+      <section v-if="workspaceMode === 'accounts'" class="faka-card">
         <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="emit('importAccounts')">导入账号</el-button>
           <el-button
@@ -1448,7 +1389,6 @@ onBeforeUnmount(() => {
           </Transition>
         </section>
       </section>
-      </Transition>
 
       <el-dialog v-model="groupDialogVisible" title="设置分组" width="420px">
         <el-form label-position="top">
