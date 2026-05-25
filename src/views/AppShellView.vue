@@ -29,10 +29,17 @@ const loggingOut = ref(false)
 const activeModule = computed(() => (props.route === 'gptAccounts' ? 'gptAccounts' : 'mailboxes'))
 
 async function logout() {
+  if (loggingOut.value) {
+    return
+  }
   loggingOut.value = true
+  authStore.markLoggedOut()
+  emit('navigateApp', 'login')
   try {
     await authStore.logout()
-    emit('navigateApp', 'login')
+  } catch {
+    // The UI has already returned to the login page. A failed remote logout only
+    // leaves the server cookie to expire naturally or be replaced on next login.
   } finally {
     loggingOut.value = false
   }

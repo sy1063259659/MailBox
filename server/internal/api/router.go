@@ -221,6 +221,6 @@ type healthResponse struct {
 func healthHandler(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, healthResponse{
 		OK:      true,
-		Service: "mailbox-imap-server",
+		Service: "gptbox-server",
 	})
 }

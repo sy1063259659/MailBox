@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Message, RefreshRight } from '@element-plus/icons-vue'
+import { Message } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import type { AppRouteName } from '@/composables/useAppRoute'
 
@@ -48,8 +48,7 @@ async function submitLogin() {
       <div class="login-brand">
         <el-icon><Message /></el-icon>
         <div>
-          <h1>MailBox</h1>
-          <p>邮箱管理 · GPT 账号管理</p>
+          <h1>GptBox</h1>
         </div>
       </div>
 
@@ -57,7 +56,6 @@ async function submitLogin() {
         <el-tag :type="backendOnline === false ? 'danger' : 'success'" effect="plain">
           {{ backendStatusText }}
         </el-tag>
-        <el-button text :icon="RefreshRight" @click="emit('navigateApp', 'login')">返回登录页</el-button>
       </div>
 
       <el-form label-position="top" @submit.prevent="submitLogin">

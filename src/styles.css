@@ -1691,7 +1691,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 }
 
 .login-brand .el-icon {
@@ -1709,10 +1709,12 @@ textarea {
   font-size: 22px;
 }
 
-.login-brand p {
-  margin: 4px 0 0;
-  color: #64748b;
-  font-size: 13px;
+.login-status-row {
+  min-height: 28px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
 }
 
 .login-submit {

@@ -630,7 +630,7 @@ async function downloadExportText() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
+    anchor.download = `gptbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
     anchor.click()
     URL.revokeObjectURL(url)
     ElMessage.success(`已导出 ${targets.length} 个账号`)
@@ -920,7 +920,7 @@ onBeforeUnmount(() => {
     <aside class="faka-sidebar">
       <div class="faka-brand">
         <el-icon><Message /></el-icon>
-        <span>MailBox</span>
+        <span>GptBox</span>
       </div>
 
       <nav class="faka-nav">

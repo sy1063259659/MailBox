@@ -40,7 +40,7 @@ func main() {
 		),
 	}
 
-	log.Printf("mailbox-imap-server listening on http://%s", cfg.Addr)
+	log.Printf("gptbox-server listening on http://%s", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server failed: %v", err)
 	}
