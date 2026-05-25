@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 import { Grid, Message } from '@element-plus/icons-vue'
 import type { AppRouteName } from '@/composables/useAppRoute'
+import { useAuthStore } from '@/stores/auth'
 import { useAccountStore } from '@/stores/account'
 import { useGptAccountStore } from '@/stores/gptAccount'
 
@@ -22,18 +23,25 @@ const emit = defineEmits<{
 }>()
 
 const accountStore = useAccountStore()
+const authStore = useAuthStore()
 const gptAccountStore = useGptAccountStore()
+const loggingOut = ref(false)
 const activeModule = computed(() => (props.route === 'gptAccounts' ? 'gptAccounts' : 'mailboxes'))
 
-function goToLogin() {
-  emit('navigateApp', 'login')
+async function logout() {
+  loggingOut.value = true
+  try {
+    await authStore.logout()
+    emit('navigateApp', 'login')
+  } finally {
+    loggingOut.value = false
+  }
 }
 </script>
 
 <template>
-  <section class="faka-shell" :class="{ 'gpt-module-active': activeModule === 'gptAccounts' }">
-    <main class="faka-main">
-      <header class="faka-topbar">
+  <section class="workspace-shell" :class="{ 'gpt-module-active': activeModule === 'gptAccounts' }">
+    <header class="workspace-topbar">
         <div class="topbar-left">
           <div class="module-tabs" aria-label="主菜单">
             <button class="module-tab" :class="{ active: activeModule === 'mailboxes' }" type="button" @click="emit('navigateApp', 'mailboxes')">
@@ -50,10 +58,11 @@ function goToLogin() {
         </div>
         <div class="topbar-actions">
           <el-button plain @click="emit('clearData')">清空本地缓存</el-button>
-          <el-button plain @click="goToLogin">退出登录</el-button>
+          <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
         </div>
-      </header>
+    </header>
 
+    <main class="workspace-content">
       <MailboxManagementView
         v-if="activeModule === 'mailboxes'"
         :clearing-data="props.clearingData"
