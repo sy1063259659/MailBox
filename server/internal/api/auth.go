@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"strings"
 
-	"mailbox-server/internal/session"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/session"
+	"gptbox-server/internal/store"
 )
 
 type authAPI struct {

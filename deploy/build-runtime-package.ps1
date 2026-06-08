@@ -1,5 +1,5 @@
 param(
-  [string]$Output = "deploy\mailbox-runtime-deploy.tar.gz",
+  [string]$Output = "deploy\gptbox-runtime-deploy.tar.gz",
   [switch]$SkipCheck,
   [switch]$Clean,
   [switch]$KeepRootArchive,
@@ -19,9 +19,9 @@ $outputPath = [System.IO.Path]::GetFullPath($outputPath)
 $outputParent = Split-Path -Parent $outputPath
 $stagingRoot = Join-Path $repoRoot "deploy\.runtime-package-work"
 $stagingPath = Join-Path $stagingRoot "package"
-$serverBinary = Join-Path $repoRoot "build\mailbox-server-$Goos-$Goarch"
+$serverBinary = Join-Path $repoRoot "build\gptbox-server-$Goos-$Goarch"
 $requiredDistIndex = Join-Path $repoRoot "dist\index.html"
-$rootArchive = Join-Path $repoRoot "mailbox-runtime-deploy.tar.gz"
+$rootArchive = Join-Path $repoRoot "gptbox-runtime-deploy.tar.gz"
 $allowedRoots = @("dist", "build", "Dockerfile.runtime", "docker-compose.yml")
 
 function Invoke-Step {
@@ -59,6 +59,12 @@ function Copy-PackageItem {
   }
 
   Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force
+}
+
+function Copy-BuildOutput {
+  $destination = Join-Path $stagingPath "build"
+  New-Item -ItemType Directory -Path $destination -Force | Out-Null
+  Copy-Item -LiteralPath $serverBinary -Destination (Join-Path $destination (Split-Path -Leaf $serverBinary)) -Force
 }
 
 function Test-ForbiddenArchiveEntry {
@@ -145,7 +151,7 @@ if ($SkipCheck) {
   Invoke-Step "npm run check" { npm run check }
 }
 
-Invoke-Step "go build mailbox server for $Goos/$Goarch" {
+Invoke-Step "go build gptbox server for $Goos/$Goarch" {
   Push-Location (Join-Path $repoRoot "server")
   try {
     $previousCgo = $env:CGO_ENABLED
@@ -154,7 +160,7 @@ Invoke-Step "go build mailbox server for $Goos/$Goarch" {
     $env:CGO_ENABLED = "0"
     $env:GOOS = $Goos
     $env:GOARCH = $Goarch
-    go build -o "..\build\mailbox-server-$Goos-$Goarch" .
+    go build -o "..\build\gptbox-server-$Goos-$Goarch" .
   } finally {
     $env:CGO_ENABLED = $previousCgo
     $env:GOOS = $previousGoos
@@ -171,6 +177,10 @@ Get-ChildItem -LiteralPath $stagingPath -Force | Remove-Item -Recurse -Force
 New-Item -ItemType Directory -Path $outputParent -Force | Out-Null
 
 foreach ($item in $allowedRoots) {
+  if ($item -eq "build") {
+    Copy-BuildOutput
+    continue
+  }
   Copy-PackageItem $item
 }
 

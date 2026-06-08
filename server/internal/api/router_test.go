@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"mailbox-server/internal/codexauth"
-	"mailbox-server/internal/session"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/codexauth"
+	"gptbox-server/internal/session"
+	"gptbox-server/internal/store"
 )
 
 func TestAuthRequiredRejectsMissingSession(t *testing.T) {

@@ -6,15 +6,14 @@ import {
   Delete,
   Download,
   EditPen,
-  Files,
   FolderOpened,
-  Message,
   Reading,
   Refresh,
-  Search,
   Sort,
   UploadFilled,
 } from '@element-plus/icons-vue'
+import MailboxSidebar from '@/components/MailboxSidebar.vue'
+import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
 import { useGptAccountStore } from '@/stores/gptAccount'
@@ -45,8 +44,9 @@ const selectedAccountRows = ref<MailAccount[]>([])
 const accountPage = ref(1)
 const accountPageSize = ref(20)
 const topSearchDraft = ref('')
-const globalKeyword = useLocalUiState('mailbox.ui.globalKeyword', '', {
+const globalKeyword = useLocalUiState('gptbox.ui.globalKeyword', '', {
   validate: isString,
+  legacyKey: 'mailbox.ui.globalKeyword',
 })
 const groupDialogVisible = ref(false)
 const gptDialogVisible = ref(false)
@@ -54,14 +54,17 @@ const targetGroupName = ref('')
 const gptDialogAccount = ref<MailAccount>()
 const focusedGptEmail = ref('')
 const currentViewedAccount = ref<MailAccount>()
-const currentViewedAccountEmail = useLocalUiState('mailbox.ui.currentViewedAccount.email', '', {
+const currentViewedAccountEmail = useLocalUiState('gptbox.ui.currentViewedAccount.email', '', {
   validate: isString,
+  legacyKey: 'mailbox.ui.currentViewedAccount.email',
 })
-const workspaceMode = useLocalUiState<WorkspaceMode>('mailbox.ui.workspaceMode', 'accounts', {
+const workspaceMode = useLocalUiState<WorkspaceMode>('gptbox.ui.workspaceMode', 'accounts', {
   validate: isWorkspaceMode,
+  legacyKey: 'mailbox.ui.workspaceMode',
 })
-const mailSortDesc = useLocalUiState('mailbox.ui.mailSortDesc', true, {
+const mailSortDesc = useLocalUiState('gptbox.ui.mailSortDesc', true, {
   validate: (value): value is boolean => typeof value === 'boolean',
+  legacyKey: 'mailbox.ui.mailSortDesc',
 })
 const lastBatchFailedResults = ref<{ accountEmail: string; folder: MailFolder }[]>([])
 const viewingEmail = ref('')
@@ -362,12 +365,8 @@ function setGroup(group: string) {
   accountPage.value = 1
 }
 
-function groupAccountCount(group: MailGroup): number {
-  return groupCountByName.value.get(group.name) ?? 0
-}
-
 function canDeleteGroup(group: MailGroup): boolean {
-  return group.name !== '默认分组' && groupAccountCount(group) === 0
+  return group.name !== '默认分组' && (groupCountByName.value.get(group.name) ?? 0) === 0
 }
 
 function canRenameGroup(group: MailGroup): boolean {
@@ -917,133 +916,36 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="faka-shell">
-    <aside class="faka-sidebar">
-      <div class="faka-brand">
-        <el-icon><Message /></el-icon>
-        <span>GptBox</span>
-      </div>
-
-      <nav class="faka-nav">
-        <section class="sidebar-panel group-panel">
-          <div class="sidebar-panel-head">
-            <span>
-              <el-icon><FolderOpened /></el-icon>
-              分组
-            </span>
-            <strong>{{ accountStore.remoteGroups.length }}</strong>
-          </div>
-          <div class="sidebar-panel-body group-panel-body">
-            <button
-              class="faka-nav-item sidebar-list-row pinned-row"
-              :class="{ active: workspaceMode === 'accounts' }"
-              type="button"
-              @click="backToAccounts"
-            >
-              <el-icon><Files /></el-icon>
-              <span>账号列表</span>
-            </button>
-            <button
-              class="faka-nav-item sidebar-list-row pinned-row"
-              :class="{ active: !accountStore.selectedGroup }"
-              type="button"
-              @click="setGroup('')"
-            >
-              <el-icon><FolderOpened /></el-icon>
-              <span>全部</span>
-            </button>
-            <button
-              v-for="group in accountStore.remoteGroups"
-              :key="group.id"
-              class="faka-nav-item sidebar-list-row group-nav-item"
-              :class="{ active: accountStore.selectedGroup === group.name, dragging: draggingGroupId === group.id }"
-              type="button"
-              draggable="true"
-              @click="setGroup(group.name)"
-              @dragstart="handleGroupDragStart(group, $event)"
-              @dragover="handleGroupDragOver"
-              @drop="handleGroupDrop(group, $event)"
-              @dragend="handleGroupDragEnd"
-            >
-              <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-              <el-icon><FolderOpened /></el-icon>
-              <span>{{ group.name }}</span>
-              <div class="group-actions">
-                <small>{{ groupAccountCount(group) }}</small>
-                <el-button
-                  v-if="canRenameGroup(group)"
-                  class="group-action-button"
-                  link
-                  :icon="EditPen"
-                  :loading="renamingGroupId === group.id"
-                  :disabled="renamingGroupId === group.id"
-                  @click.stop="renameGroup(group)"
-                />
-                <el-button
-                  v-if="canDeleteGroup(group)"
-                  class="group-action-button"
-                  link
-                  :icon="Delete"
-                  :loading="deletingGroupId === group.id"
-                  :disabled="deletingGroupId === group.id"
-                  @click.stop="deleteEmptyGroup(group)"
-                />
-              </div>
-            </button>
-          </div>
-        </section>
-
-        <section class="sidebar-panel account-panel">
-          <div class="sidebar-panel-head">
-            <span>
-              <el-icon><Message /></el-icon>
-              账号快捷
-            </span>
-            <strong>{{ sidebarRootAccounts.length }}</strong>
-          </div>
-          <div class="sidebar-panel-body sidebar-account-list">
-            <div
-              v-for="account in sidebarRootAccounts"
-              :key="account.email"
-              class="sidebar-account-group"
-            >
-              <button
-                class="faka-nav-item sidebar-list-row account-shortcut parent-shortcut"
-                :class="{ active: currentViewedAccount?.email === account.email && workspaceMode === 'mail' }"
-                type="button"
-                :disabled="isViewingAccount(account)"
-                @click="viewAccountInbox(account)"
-              >
-                <el-icon><Message /></el-icon>
-                <span class="shortcut-email">{{ account.email }}</span>
-              </button>
-            </div>
-          </div>
-        </section>
-      </nav>
-
-      <div class="faka-total-card">
-        <el-icon><Files /></el-icon>
-        <span>邮箱账号</span>
-        <strong>{{ accountStore.accounts.length }}</strong>
-      </div>
-    </aside>
+    <MailboxSidebar
+      :remote-groups="accountStore.remoteGroups"
+      :selected-group="accountStore.selectedGroup"
+      :workspace-mode="workspaceMode"
+      :sidebar-root-accounts="sidebarRootAccounts"
+      :current-viewed-account-email="currentViewedAccount?.email"
+      :viewing-email="viewingEmail"
+      :account-count="accountStore.accounts.length"
+      :group-counts="groupCountByName"
+      :dragging-group-id="draggingGroupId"
+      :deleting-group-id="deletingGroupId"
+      :renaming-group-id="renamingGroupId"
+      @back-to-accounts="backToAccounts"
+      @set-group="setGroup"
+      @view-account="viewAccountInbox"
+      @group-drag-start="handleGroupDragStart"
+      @group-drag-over="handleGroupDragOver"
+      @group-drop="handleGroupDrop"
+      @group-drag-end="handleGroupDragEnd"
+      @rename-group="renameGroup"
+      @delete-group="deleteEmptyGroup"
+    />
 
     <main class="faka-main">
-      <header class="faka-topbar">
-        <div class="topbar-left">
-          <el-input
-            :model-value="topSearchDraft"
-            class="faka-search"
-            :prefix-icon="Search"
-            clearable
-            :placeholder="workspaceMode === 'mail' ? '搜索主题/发件人...' : '搜索邮件或账号...'"
-            @update:model-value="handleTopSearchInput"
-          />
-        </div>
-        <div class="topbar-actions">
-          <el-button v-if="workspaceMode === 'mail'" plain @click="backToAccounts">返回账号</el-button>
-        </div>
-      </header>
+      <MailboxTopbar
+        :search-value="topSearchDraft"
+        :workspace-mode="workspaceMode"
+        @search-input="handleTopSearchInput"
+        @back-to-accounts="backToAccounts"
+      />
 
       <section v-if="workspaceMode === 'accounts'" class="faka-card">
         <div class="faka-action-row">

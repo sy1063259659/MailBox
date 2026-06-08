@@ -26,6 +26,7 @@ let workspaceLoadPromise: Promise<void> | undefined
 const isAuthenticated = computed(() => authStore.checked && authStore.isAuthenticated)
 
 onMounted(async () => {
+  window.addEventListener('gptbox:unauthorized', handleUnauthorized)
   window.addEventListener('mailbox:unauthorized', handleUnauthorized)
   await Promise.all([authStore.checkSession(), checkBackend()])
   if (authStore.isAuthenticated) {

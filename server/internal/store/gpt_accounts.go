@@ -10,7 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"mailbox-server/internal/secure"
+	"gptbox-server/internal/secure"
 )
 
 type GPTAccount struct {

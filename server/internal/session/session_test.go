@@ -13,10 +13,10 @@ func TestSessionCookieSecureFlag(t *testing.T) {
 	manager.Set(recorder, "admin")
 
 	cookies := recorder.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("len(cookies) = %d, want 1", len(cookies))
+	if len(cookies) != 2 {
+		t.Fatalf("len(cookies) = %d, want 2", len(cookies))
 	}
-	cookie := cookies[0]
+	cookie := findCookie(t, cookies, CookieName)
 	if cookie.Name != CookieName {
 		t.Fatalf("cookie.Name = %q, want %q", cookie.Name, CookieName)
 	}
@@ -28,6 +28,11 @@ func TestSessionCookieSecureFlag(t *testing.T) {
 	}
 	if cookie.SameSite != http.SameSiteLaxMode {
 		t.Fatalf("cookie.SameSite = %v, want Lax", cookie.SameSite)
+	}
+
+	legacyCookie := findCookie(t, cookies, LegacyCookieName)
+	if legacyCookie.MaxAge >= 0 {
+		t.Fatalf("legacy cookie MaxAge = %d, want negative clear cookie", legacyCookie.MaxAge)
 	}
 }
 
@@ -45,4 +50,36 @@ func TestSessionUsernameRejectsTamperedCookie(t *testing.T) {
 	if username, ok := manager.Username(request); ok {
 		t.Fatalf("Username() = (%q, true), want false", username)
 	}
+}
+
+func TestSessionUsernameAcceptsLegacyCookie(t *testing.T) {
+	manager := NewManager([]byte("test-secret"), false)
+	recorder := httptest.NewRecorder()
+	manager.Set(recorder, "admin")
+
+	issuedCookie := findCookie(t, recorder.Result().Cookies(), CookieName)
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.AddCookie(&http.Cookie{
+		Name:  LegacyCookieName,
+		Value: issuedCookie.Value,
+	})
+
+	username, ok := manager.Username(request)
+	if !ok {
+		t.Fatal("Username() did not accept legacy cookie")
+	}
+	if username != "admin" {
+		t.Fatalf("Username() = %q, want admin", username)
+	}
+}
+
+func findCookie(t *testing.T, cookies []*http.Cookie, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range cookies {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("cookie %q not found", name)
+	return nil
 }

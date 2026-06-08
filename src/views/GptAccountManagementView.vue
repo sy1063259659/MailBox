@@ -40,17 +40,21 @@ const props = defineProps<{
 
 const accountStore = useAccountStore()
 const gptAccountStore = useGptAccountStore()
-const gptViewMode = useLocalUiState<GptViewMode>('mailbox.ui.gptViewMode', 'cards', {
+const gptViewMode = useLocalUiState<GptViewMode>('gptbox.ui.gptViewMode', 'cards', {
   validate: isGptViewMode,
+  legacyKey: 'mailbox.ui.gptViewMode',
 })
-const gptKeyword = useLocalUiState('mailbox.ui.gptKeyword', '', {
+const gptKeyword = useLocalUiState('gptbox.ui.gptKeyword', '', {
   validate: isString,
+  legacyKey: 'mailbox.ui.gptKeyword',
 })
-const gptStatusFilter = useLocalUiState<GptStatusFilter>('mailbox.ui.gptStatusFilter', 'all', {
+const gptStatusFilter = useLocalUiState<GptStatusFilter>('gptbox.ui.gptStatusFilter', 'all', {
   validate: isGptStatusFilter,
+  legacyKey: 'mailbox.ui.gptStatusFilter',
 })
-const gptPlanFilter = useLocalUiState('mailbox.ui.gptPlanFilter', 'all', {
+const gptPlanFilter = useLocalUiState('gptbox.ui.gptPlanFilter', 'all', {
   validate: isString,
+  legacyKey: 'mailbox.ui.gptPlanFilter',
 })
 const gptDialogVisible = ref(false)
 const gptDialogAccount = ref<MailAccount>()

@@ -2,7 +2,8 @@ import { ref, type Ref } from 'vue'
 
 export type AppRouteName = 'login' | 'mailboxes' | 'gptAccounts' | 'sms'
 
-const STORAGE_KEY = 'mailbox.ui.route'
+const STORAGE_KEY = 'gptbox.ui.route'
+const LEGACY_STORAGE_KEY = 'mailbox.ui.route'
 const routeState = ref<AppRouteName>('login')
 let initialized = false
 
@@ -30,10 +31,12 @@ function readInitialRoute(): AppRouteName {
   }
 
   try {
-    const raw = window.localStorage.getItem(STORAGE_KEY)
+    const raw = window.localStorage.getItem(STORAGE_KEY) ?? window.localStorage.getItem(LEGACY_STORAGE_KEY)
     if (raw) {
       const parsed = JSON.parse(raw) as unknown
       if (isAppRouteName(parsed)) {
+        window.localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed))
+        window.localStorage.removeItem(LEGACY_STORAGE_KEY)
         return parsed
       }
     }

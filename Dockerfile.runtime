@@ -6,13 +6,13 @@ RUN apt-get update \
     && useradd --system --uid 10001 --create-home --home-dir /app mailbox
 
 WORKDIR /app
-COPY build/mailbox-server-linux-amd64 /app/mailbox-server
+COPY build/gptbox-server-linux-amd64 /app/gptbox-server
 COPY dist /app/dist
 
-RUN chmod +x /app/mailbox-server
+RUN chmod +x /app/gptbox-server
 
-ENV MAILBOX_SERVER_ADDR=0.0.0.0:8787
-ENV MAILBOX_STATIC_DIR=/app/dist
+ENV GPTBOX_SERVER_ADDR=0.0.0.0:8787
+ENV GPTBOX_STATIC_DIR=/app/dist
 EXPOSE 8787
 USER mailbox
-ENTRYPOINT ["/app/mailbox-server"]
+ENTRYPOINT ["/app/gptbox-server"]

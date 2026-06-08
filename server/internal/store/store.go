@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 
-	"mailbox-server/internal/secure"
+	"gptbox-server/internal/secure"
 )
 
 const DefaultGroupName = "默认分组"

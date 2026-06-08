@@ -14,3 +14,4 @@ vite.config.d.ts
 .env.*.local
 
 mailbox-server-linux-amd64
+gptbox-server-linux-amd64

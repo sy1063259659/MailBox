@@ -67,7 +67,7 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
   if (!response.ok) {
     const error = data as ErrorResponse | undefined
     if (response.status === 401 && (error?.error === undefined || error.error === 'unauthorized')) {
-      window.dispatchEvent(new CustomEvent('mailbox:unauthorized'))
+      window.dispatchEvent(new CustomEvent('gptbox:unauthorized'))
     }
     throw new ApiError(
       error?.error ?? `http_${response.status}`,

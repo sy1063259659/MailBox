@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"mailbox-server/internal/session"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/session"
+	"gptbox-server/internal/store"
 )
 
 var allowedOrigins = map[string]struct{}{

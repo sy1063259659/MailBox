@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"mailbox-server/internal/imapmail"
-	"mailbox-server/internal/oauth"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/imapmail"
+	"gptbox-server/internal/oauth"
+	"gptbox-server/internal/store"
 )
 
 const requestTimeout = 90 * time.Second

@@ -9,7 +9,10 @@ import (
 	"time"
 )
 
-const CookieName = "mailbox_session"
+const (
+	CookieName       = "gptbox_session"
+	LegacyCookieName = "mailbox_session"
+)
 
 type Manager struct {
 	secret []byte
@@ -22,36 +25,30 @@ func NewManager(secret []byte, secure bool) Manager {
 
 func (m Manager) Set(w http.ResponseWriter, username string) {
 	value := m.sign(username)
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    value,
-		Path:     "/",
-		MaxAge:   int((24 * time.Hour).Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   m.secure,
-	})
+	http.SetCookie(w, m.cookie(CookieName, value, int((24*time.Hour).Seconds())))
+	http.SetCookie(w, m.cookie(LegacyCookieName, "", -1))
 }
 
 func (m Manager) Clear(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     CookieName,
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-		Secure:   m.secure,
-	})
+	http.SetCookie(w, m.cookie(CookieName, "", -1))
+	http.SetCookie(w, m.cookie(LegacyCookieName, "", -1))
 }
 
 func (m Manager) Username(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(CookieName)
-	if err != nil {
-		return "", false
+	for _, cookieName := range []string{CookieName, LegacyCookieName} {
+		cookie, err := r.Cookie(cookieName)
+		if err != nil {
+			continue
+		}
+		if username, ok := m.usernameFromCookieValue(cookie.Value); ok {
+			return username, true
+		}
 	}
+	return "", false
+}
 
-	parts := strings.Split(cookie.Value, ".")
+func (m Manager) usernameFromCookieValue(value string) (string, bool) {
+	parts := strings.Split(value, ".")
 	if len(parts) != 2 {
 		return "", false
 	}
@@ -60,10 +57,22 @@ func (m Manager) Username(r *http.Request) (string, bool) {
 		return "", false
 	}
 	username := string(usernameBytes)
-	if !hmac.Equal([]byte(cookie.Value), []byte(m.sign(username))) {
+	if !hmac.Equal([]byte(value), []byte(m.sign(username))) {
 		return "", false
 	}
 	return username, true
+}
+
+func (m Manager) cookie(name string, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Path:     "/",
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   m.secure,
+	}
 }
 
 func (m Manager) sign(username string) string {

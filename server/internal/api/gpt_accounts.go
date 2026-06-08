@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"mailbox-server/internal/codexauth"
-	"mailbox-server/internal/codexquota"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/codexauth"
+	"gptbox-server/internal/codexquota"
+	"gptbox-server/internal/store"
 )
 
 type gptAccountAPI struct {

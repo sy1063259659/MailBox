@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/store"
 )
 
 var emailPattern = regexp.MustCompile(`^[^\s@]+@[^\s@]+\.[^\s@]+$`)

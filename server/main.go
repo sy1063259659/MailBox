@@ -5,11 +5,11 @@ import (
 	"log"
 	"net/http"
 
-	"mailbox-server/internal/api"
-	"mailbox-server/internal/config"
-	"mailbox-server/internal/session"
-	"mailbox-server/internal/staticfiles"
-	"mailbox-server/internal/store"
+	"gptbox-server/internal/api"
+	"gptbox-server/internal/config"
+	"gptbox-server/internal/session"
+	"gptbox-server/internal/staticfiles"
+	"gptbox-server/internal/store"
 )
 
 func main() {
