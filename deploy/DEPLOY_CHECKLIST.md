@@ -10,6 +10,7 @@ Use this checklist before deploying a locally built release to the server.
 3. Confirm `dist/index.html` and `build/gptbox-server-linux-amd64` exist.
 4. Package `dist`, `build`, `Dockerfile.runtime`, and `docker-compose.yml`.
 5. Do not package `.env`, screenshots, logs, or local deployment archives.
+6. Optional one-command deployment: `npm run deploy:aliyun`.
 
 ## Server verification
 

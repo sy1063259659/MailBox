@@ -2,16 +2,11 @@
 import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  CopyDocument,
-  Delete,
-  Download,
-  EditPen,
-  FolderOpened,
   Reading,
   Refresh,
   Sort,
-  UploadFilled,
 } from '@element-plus/icons-vue'
+import MailboxAccountPanel from '@/components/MailboxAccountPanel.vue'
 import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useLocalUiState } from '@/composables/useLocalUiState'
@@ -20,19 +15,13 @@ import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
 import type {
   AccountStatus,
-  GptAccount,
   MailAccount,
   MailAddress,
   MailFolder,
   MailMessage,
 } from '@/types'
 import type { MailGroup } from '@/services/accountApi'
-import {
-  compactGptStatus,
-  formatDateTime,
-  formatShortDate,
-  planText,
-} from '@/utils/gptDisplay'
+import { formatDateTime } from '@/utils/gptDisplay'
 
 const GptAccountDialog = defineAsyncComponent(() => import('@/components/GptAccountDialog.vue'))
 type WorkspaceMode = 'accounts' | 'mail'
@@ -270,16 +259,13 @@ function looksLikeHtml(value: string): boolean {
   return /<(?:!doctype|html|head|body|div|table|style|meta|title|p|br|span)\b/i.test(value)
 }
 
-function gptForAccount(account: MailAccount): GptAccount | undefined {
-  return gptAccountByEmail.value.get(resolveMailboxAccount(account).email.toLowerCase())
-}
-
-function isGptBusy(account: MailAccount): boolean {
-  const email = resolveMailboxAccount(account).email.toLowerCase()
-  return gptAccountStore.bindingEmails.includes(email)
-    || gptAccountStore.refreshingEmails.includes(email)
-    || gptAccountStore.unlinkingEmails.includes(email)
-}
+const gptBusyEmails = computed<ReadonlySet<string>>(() =>
+  new Set([
+    ...gptAccountStore.bindingEmails,
+    ...gptAccountStore.refreshingEmails,
+    ...gptAccountStore.unlinkingEmails,
+  ]),
+)
 
 function openGptDialog(account: MailAccount) {
   gptDialogAccount.value = resolveMailboxAccount(account)
@@ -311,16 +297,8 @@ function formatAddressList(addresses?: MailAddress[], emptyText = '未知收件�
   return text || emptyText
 }
 
-function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' | 'updatedAt' | 'lastSyncAt'): number {
-  return new Date(left[key] ?? 0).getTime() - new Date(right[key] ?? 0).getTime()
-}
-
 function flattenAccounts(accounts: MailAccount[]): MailAccount[] {
   return accounts.flatMap((account) => [account, ...(account.children ?? [])])
-}
-
-function splitCount(account: MailAccount): number {
-  return account.children?.length ?? 0
 }
 
 function resolveParentAccount(account: MailAccount): MailAccount {
@@ -334,28 +312,6 @@ function resolveParentAccount(account: MailAccount): MailAccount {
 
 function resolveMailboxAccount(account: MailAccount): MailAccount {
   return resolveParentAccount(account)
-}
-
-function accountRowLabel(account: MailAccount): string {
-  if (isSplitAccount(account)) {
-    return ''
-  }
-  return String(parentRowIndexMap.value.get(account.email) ?? 0)
-}
-
-function splitLabel(account: MailAccount): string {
-  const parent = resolveParentAccount(account)
-  const splitIndex = account.splitIndex
-    ?? ((parent.children?.findIndex((child) => child.email === account.email) ?? -1) + 1)
-  return String(splitIndex)
-}
-
-function canSplitHotmail(account: MailAccount): boolean {
-  return !account.parentEmail && /^[^+@\s]+@hotmail\.com$/i.test(account.email) && splitCount(account) === 0
-}
-
-function isSplitAccount(account: MailAccount): boolean {
-  return Boolean(account.parentEmail)
 }
 
 function setGroup(group: string) {
@@ -470,10 +426,6 @@ async function renameGroup(group: MailGroup) {
   } finally {
     renamingGroupId.value = undefined
   }
-}
-
-function isViewingAccount(account: MailAccount): boolean {
-  return viewingEmail.value === resolveMailboxAccount(account).email
 }
 
 function markCopied(value: string) {
@@ -947,258 +899,57 @@ onBeforeUnmount(() => {
         @back-to-accounts="backToAccounts"
       />
 
-      <section v-if="workspaceMode === 'accounts'" class="faka-card">
-        <div class="faka-action-row">
-          <el-button type="primary" :icon="UploadFilled" @click="emit('importAccounts')">导入账号</el-button>
-          <el-button
-            :icon="Refresh"
-            :loading="mailStore.batchSyncRunning"
-            :disabled="mailStore.batchSyncRunning"
-            @click="syncVisibleOrSelectedAccounts"
-          >
-            收信
-          </el-button>
-          <el-dropdown trigger="click">
-            <el-button :icon="CopyDocument" :loading="copying" :disabled="copying">复制</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item @click="copyAccounts('email')">仅复制邮箱</el-dropdown-item>
-                <el-dropdown-item divided @click="copyAccounts('emailPassword')">邮箱----密码</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <el-button :icon="FolderOpened" :disabled="movingGroup || deleting" @click="openMoveGroupDialog">分组</el-button>
-          <el-button type="danger" :icon="Delete" :loading="deleting" :disabled="deleting" @click="batchDeleteSelected">删除</el-button>
-          <el-dropdown trigger="click">
-            <el-button :icon="Download" :loading="exportingAccounts" :disabled="exportingAccounts">导出</el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item @click="copyExportText">复制导出文本</el-dropdown-item>
-                <el-dropdown-item divided @click="downloadExportText">下载 TXT 文件</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-        </div>
-
-        <div class="account-selection-hint" :class="{ active: selectedAccountRows.length > 0 }">
-          <strong>已选 {{ selectedAccountRows.length }} 个账号</strong>
-          <span>{{ selectionScopeText }}</span>
-        </div>
-
-        <Transition name="panel-slide">
-          <div
-            v-if="mailStore.batchSyncRunning || mailStore.batchSyncResults.length > 0"
-            class="batch-sync-panel"
-          >
-            <div class="batch-sync-head">
-              <span>
-                收信：
-                {{ mailStore.batchSyncDone }} / {{ mailStore.batchSyncTotal }}
-              </span>
-              <strong>
-                成功 {{ mailStore.batchSyncSuccess }}，
-                失败 {{ mailStore.batchSyncFailed }}
-              </strong>
-            </div>
-            <el-progress
-              :percentage="batchProgressPercent"
-              :status="mailStore.batchSyncFailed > 0 && !mailStore.batchSyncRunning ? 'exception' : undefined"
-            />
-            <Transition name="content-fade">
-              <div v-if="batchFailedResults.length > 0" class="batch-error-list">
-                <div
-                  v-for="result in batchFailedResults"
-                  :key="`${result.accountEmail}-${result.folder}`"
-                  class="batch-error-item"
-                >
-                  <span>{{ result.accountEmail }}</span>
-                  <small>{{ result.error }}</small>
-                </div>
-                <el-button
-                  size="small"
-                  type="warning"
-                  plain
-                  :loading="mailStore.batchSyncRunning"
-                  @click="retryFailedAccounts"
-                >
-                  重试失败账号
-                </el-button>
-              </div>
-            </Transition>
-          </div>
-        </Transition>
-
-        <el-table
-          v-loading="accountStore.loading || deleting || movingGroup || clearingData"
-          :data="pagedFlatAccounts"
-          row-key="email"
-          class="faka-account-table"
-          height="calc(100vh - 232px)"
-          :default-expand-all="false"
-          :tree-props="{ children: 'tableChildren' }"
-          :row-class-name="({ row }: { row: MailAccount }) => (isSplitAccount(row) ? 'split-account-row' : 'parent-account-row')"
-          @selection-change="handleAccountSelection"
-        >
-          <el-table-column type="selection" width="52" align="center" header-align="center" />
-          <el-table-column label="" width="68" align="center" header-align="center" class-name="split-marker-column">
-            <template #default="{ row }">
-              <span v-if="isSplitAccount(row)" class="split-marker">{{ splitLabel(row) }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="#" width="64" align="center" header-align="center">
-            <template #default="{ row }">
-              <span class="row-number" :class="{ split: isSplitAccount(row) }">
-                {{ accountRowLabel(row) }}
-              </span>
-            </template>
-          </el-table-column>
-          <el-table-column label="邮箱" min-width="300" show-overflow-tooltip align="center" header-align="center">
-            <template #default="{ row }">
-              <div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }">
-                <span>{{ row.email }}</span>
-                <el-tooltip content="复制" placement="top">
-                  <el-button link :icon="CopyDocument" @click.stop="copyText(row.email, '邮箱')" />
-                </el-tooltip>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="密码" min-width="170" show-overflow-tooltip align="center" header-align="center">
-            <template #default="{ row }">
-              <div class="copy-cell" :class="{ copied: copiedValues.has(row.password) }">
-                <span>{{ row.password }}</span>
-                <el-tooltip content="复制" placement="top">
-                  <el-button link :icon="CopyDocument" @click.stop="copyText(row.password, '密码')" />
-                </el-tooltip>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="邮件" width="90" align="center" header-align="center">
-            <template #default="{ row }">
-              <span class="mail-count">{{ messageCountByEmail.get(resolveMailboxAccount(row).email) ?? 0 }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column label="GPT" width="220" align="center" header-align="center">
-            <template #default="{ row }">
-              <div class="gpt-compact-cell">
-                <div class="gpt-compact-tags">
-                  <el-tag
-                    size="small"
-                    :type="compactGptStatus(gptForAccount(row)).type"
-                    effect="light"
-                  >
-                    {{ compactGptStatus(gptForAccount(row)).text }}
-                  </el-tag>
-                  <el-tag
-                    v-if="gptForAccount(row)"
-                    size="small"
-                    type="primary"
-                    effect="plain"
-                  >
-                    {{ planText(gptForAccount(row)) }}
-                  </el-tag>
-                </div>
-                <small v-if="gptForAccount(row)" class="gpt-compact-meta">
-                  到期 {{ formatShortDate(gptForAccount(row)?.subscriptionActiveUntil) }}
-                </small>
-                <div class="gpt-compact-actions">
-                  <el-button
-                    v-if="gptForAccount(row)"
-                    link
-                    size="small"
-                    @click.stop="openGptDetails(row)"
-                  >
-                    详情
-                  </el-button>
-                  <el-button link size="small" :disabled="isGptBusy(row)" @click.stop="openGptDialog(row)">
-                    {{ gptForAccount(row) ? '重绑' : '绑定' }}
-                  </el-button>
-                </div>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column label="状态" width="100" align="center" header-align="center">
-            <template #default="{ row }">
-              <el-tag :type="statusType[row.status as AccountStatus]" size="small" effect="light">
-                {{ statusText[row.status as AccountStatus] }}
-              </el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="group" label="分组" width="140" align="center" header-align="center" />
-          <el-table-column label="备注" min-width="190" show-overflow-tooltip align="center" header-align="center">
-            <template #default="{ row }">
-              <div class="remark-cell">
-                <span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span>
-                <el-tooltip content="编辑备注" placement="top">
-                  <el-button
-                    link
-                    :icon="EditPen"
-                    :loading="editingRemarkEmail === row.email"
-                    :disabled="editingRemarkEmail === row.email"
-                    @click.stop="editAccountRemark(row)"
-                  />
-                </el-tooltip>
-              </div>
-            </template>
-          </el-table-column>
-          <el-table-column
-            label="导入"
-            width="170"
-            sortable
-            :sort-method="(left: MailAccount, right: MailAccount) => sortByDateTime(left, right, 'createdAt')"
-            align="center"
-            header-align="center"
-          >
-            <template #default="{ row }">
-              {{ formatDateTime(row.createdAt) }}
-            </template>
-          </el-table-column>
-          <el-table-column label="操作" width="180" fixed="right" align="center" header-align="center">
-            <template #default="{ row }">
-              <el-space :size="8" class="row-actions">
-                <template v-if="!isSplitAccount(row)">
-                  <el-button
-                    size="small"
-                    type="primary"
-                    :loading="isViewingAccount(row)"
-                    :disabled="isViewingAccount(row)"
-                    @click="viewAccountInbox(row)"
-                  >
-                    查看
-                  </el-button>
-                  <el-tooltip
-                    :content="splitCount(row) > 0 ? '已分裂' : '生成 5 个分裂邮箱'"
-                    placement="top"
-                  >
-                    <el-button
-                      size="small"
-                      type="success"
-                      plain
-                      :loading="splittingEmail === row.email"
-                      :disabled="!canSplitHotmail(row)"
-                      @click="splitHotmail(row)"
-                    >
-                      分裂
-                    </el-button>
-                  </el-tooltip>
-                </template>
-              </el-space>
-            </template>
-          </el-table-column>
-        </el-table>
-        <div class="faka-pagination">
-          <span>Total {{ visibleFlatAccounts.length }}</span>
-          <el-pagination
-            v-model:current-page="accountPage"
-            v-model:page-size="accountPageSize"
-            size="small"
-            layout="sizes, prev, pager, next"
-            :total="visibleFlatAccounts.length"
-            :page-sizes="[20, 50, 100]"
-            @current-change="handleAccountPageChange"
-            @size-change="handleAccountPageSizeChange"
-          />
-        </div>
-      </section>
+      <MailboxAccountPanel
+        v-if="workspaceMode === 'accounts'"
+        :clearing-data="clearingData"
+        :loading="accountStore.loading"
+        :deleting="deleting"
+        :moving-group="movingGroup"
+        :copying="copying"
+        :exporting-accounts="exportingAccounts"
+        :selected-count="selectedAccountRows.length"
+        :selection-scope-text="selectionScopeText"
+        :batch-sync-running="mailStore.batchSyncRunning"
+        :batch-sync-results-count="mailStore.batchSyncResults.length"
+        :batch-sync-done="mailStore.batchSyncDone"
+        :batch-sync-total="mailStore.batchSyncTotal"
+        :batch-sync-success="mailStore.batchSyncSuccess"
+        :batch-sync-failed="mailStore.batchSyncFailed"
+        :batch-progress-percent="batchProgressPercent"
+        :batch-failed-results="batchFailedResults"
+        :paged-accounts="pagedFlatAccounts"
+        :visible-total="visibleFlatAccounts.length"
+        :account-page="accountPage"
+        :account-page-size="accountPageSize"
+        :copied-values="copiedValues"
+        :message-count-by-email="messageCountByEmail"
+        :account-by-email="accountByEmail"
+        :gpt-account-by-email="gptAccountByEmail"
+        :gpt-busy-emails="gptBusyEmails"
+        :parent-row-index-map="parentRowIndexMap"
+        :editing-remark-email="editingRemarkEmail"
+        :viewing-email="viewingEmail"
+        :splitting-email="splittingEmail"
+        :status-type="statusType"
+        :status-text="statusText"
+        @import-accounts="emit('importAccounts')"
+        @sync-accounts="syncVisibleOrSelectedAccounts"
+        @copy-accounts="copyAccounts"
+        @open-move-group-dialog="openMoveGroupDialog"
+        @batch-delete-selected="batchDeleteSelected"
+        @copy-export-text="copyExportText"
+        @download-export-text="downloadExportText"
+        @retry-failed-accounts="retryFailedAccounts"
+        @selection-change="handleAccountSelection"
+        @copy-text="copyText"
+        @open-gpt-details="openGptDetails"
+        @open-gpt-dialog="openGptDialog"
+        @edit-account-remark="editAccountRemark"
+        @view-account-inbox="viewAccountInbox"
+        @split-hotmail="splitHotmail"
+        @update-account-page="handleAccountPageChange"
+        @update-account-page-size="handleAccountPageSizeChange"
+      />
 
       <section v-else key="mail" class="faka-mail-workspace">
         <section class="faka-mail-list">

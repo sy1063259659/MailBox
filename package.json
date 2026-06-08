@@ -8,6 +8,7 @@
     "build": "vue-tsc -b && vite build",
     "check": "npm run build && cd server && go test ./...",
     "package:runtime": "powershell -ExecutionPolicy Bypass -File deploy/build-runtime-package.ps1",
+    "deploy:aliyun": "powershell -ExecutionPolicy Bypass -File deploy/deploy-aliyun.ps1",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
