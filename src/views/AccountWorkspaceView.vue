@@ -102,19 +102,22 @@ const readerDocumentEnhancements = [
   '<meta name="viewport" content="width=device-width, initial-scale=1" />',
   '<base target="_blank" />',
   '<style>',
-  'html { color-scheme: light; background: #ffffff; }',
+  'html { min-height: 100%; padding: 20px; color-scheme: light; background: #f3f5f9; }',
   '*, *::before, *::after { box-sizing: border-box; }',
-  'body { max-width: 100%; margin: 0 auto; padding: 24px; background: #ffffff; color: #1f2937; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }',
+  'body { width: auto !important; max-width: 760px !important; min-height: calc(100vh - 40px); margin: 0 auto !important; padding: 32px !important; border: 1px solid #e3e8f0; border-radius: 8px; background: #ffffff !important; box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06); color: #1f2937; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }',
   'img { max-width: 100% !important; height: auto !important; }',
   'table { max-width: 100% !important; }',
   'pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }',
   'blockquote { margin-left: 0; padding-left: 14px; border-left: 3px solid #dbeafe; color: #475569; }',
   'a { color: #1d4ed8; }',
-  '@media (max-width: 680px) { body { padding: 16px; } }',
+  '@media (max-width: 680px) { html { padding: 0; } body { min-height: 100vh; padding: 18px !important; border: 0; border-radius: 0; box-shadow: none; } }',
   '</style>',
 ].join('')
 
 function buildReaderHtml(content: string): string {
+  if (/<\/head>/i.test(content)) {
+    return content.replace(/<\/head>/i, readerDocumentEnhancements + '</head>')
+  }
   if (/<head(?:\s[^>]*)?>/i.test(content)) {
     return content.replace(/<head([^>]*)>/i, '<head$1>' + readerDocumentEnhancements)
   }
@@ -123,7 +126,6 @@ function buildReaderHtml(content: string): string {
   }
   return '<!doctype html><html><head>' + readerDocumentEnhancements + '</head><body>' + content + '</body></html>'
 }
-
 const selectedHtml = computed(() => {
   const content = mailStore.selectedBody?.content ?? ''
   return looksLikeHtml(content) ? buildReaderHtml(content) : ''
@@ -995,30 +997,22 @@ onBeforeUnmount(() => {
                     {{ mailStore.selectedMessage.isRead ? '已读' : '未读' }}
                   </el-tag>
                 </div>
-                <div class="reader-meta-grid">
-                  <div class="reader-meta-item">
-                    <span>发件人</span>
+                <div class="reader-sender-row">
+                  <div class="reader-sender-avatar" aria-hidden="true">
+                    {{ mailStore.selectedMessage.from?.email?.charAt(0).toUpperCase() || '?' }}
+                  </div>
+                  <div class="reader-sender-main">
                     <strong>{{ mailStore.selectedMessage.from?.email || '未知发件人' }}</strong>
+                    <p>
+                      <span>收件人 {{ formatAddressList(mailStore.selectedMessage.to) }}</span>
+                      <span class="reader-meta-separator">·</span>
+                      <span>查看账号 {{ mailStore.selectedMessage.accountEmail }}</span>
+                    </p>
                   </div>
-                  <div class="reader-meta-item">
-                    <span>收件人</span>
-                    <strong>{{ formatAddressList(mailStore.selectedMessage.to) }}</strong>
-                  </div>
-                  <div class="reader-meta-item">
-                    <span>查看账号</span>
-                    <strong>{{ mailStore.selectedMessage.accountEmail }}</strong>
-                  </div>
-                  <div class="reader-meta-item">
-                    <span>时间</span>
-                    <strong>{{ formatDateTime(mailStore.selectedMessage.receivedAt) }}</strong>
-                  </div>
+                  <time class="reader-sender-time">{{ formatDateTime(mailStore.selectedMessage.receivedAt) }}</time>
                 </div>
               </header>
-              <section class="reader-body-panel">
-                <div class="reader-body-toolbar">
-                  <strong>邮件正文</strong>
-                  <el-tag size="small" effect="plain">{{ selectedHtml ? 'HTML' : '纯文本' }}</el-tag>
-                </div>
+              <section class="reader-body-panel" aria-label="邮件正文">
                 <div class="reader-body-content">
                   <Transition name="content-fade" mode="out-in">
                     <el-skeleton v-if="mailStore.bodyLoading" key="skeleton" :rows="8" animated />

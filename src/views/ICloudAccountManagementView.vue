@@ -542,23 +542,21 @@ function canDeleteGroup(group: ICloudGroup): boolean {
               <h2>{{ latestMail.email.subject || '无主题' }}</h2>
               <el-tag size="small" effect="plain">iCloud</el-tag>
             </div>
-            <div class="reader-meta-grid">
-              <div class="reader-meta-item">
-                <span>发件人</span>
+            <div class="reader-sender-row">
+              <div class="reader-sender-avatar" aria-hidden="true">
+                {{ latestMail.email.from?.charAt(0).toUpperCase() || '?' }}
+              </div>
+              <div class="reader-sender-main">
                 <strong>{{ latestMail.email.from || '未知发件人' }}</strong>
+                <p>
+                  <span>收件人 {{ latestMail.email.to || latestMailAccount }}</span>
+                  <span class="reader-meta-separator">·</span>
+                  <span>查看账号 {{ latestMailAccount }}</span>
+                </p>
               </div>
-              <div class="reader-meta-item">
-                <span>收件人</span>
-                <strong>{{ latestMail.email.to || latestMailAccount }}</strong>
-              </div>
-              <div class="reader-meta-item">
-                <span>查看账号</span>
-                <strong>{{ latestMailAccount }}</strong>
-              </div>
-              <div class="reader-meta-item">
-                <span>时间</span>
-                <strong>{{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}</strong>
-              </div>
+              <time class="reader-sender-time">
+                {{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}
+              </time>
             </div>
           </header>
 
