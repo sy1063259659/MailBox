@@ -1,4 +1,5 @@
 node_modules/
+.gocache/
 dist/
 build/
 .worktrees/

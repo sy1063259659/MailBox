@@ -134,7 +134,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 
-	_, err := s.ensureGroup(ctx, DefaultGroupName)
+	if _, err := s.ensureGroup(ctx, DefaultGroupName); err != nil {
+		return err
+	}
+	_, err := s.ensureICloudGroup(ctx, DefaultICloudGroupName)
 	return err
 }
 
@@ -171,7 +174,21 @@ func migrationCreateStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
-	}
+		`CREATE TABLE IF NOT EXISTS icloud_groups (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_accounts (
+			email TEXT PRIMARY KEY,
+			access_key_encrypted TEXT NOT NULL,
+			group_id BIGINT NOT NULL REFERENCES icloud_groups(id),
+			remark TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`}
 }
 
 func migrationColumnStatements() []string {
@@ -194,7 +211,8 @@ func migrationIndexStatements() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index
 			ON mail_accounts(parent_email, split_index)
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
-	}
+		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`}
 }
 
 func legacyCleanupStatements() []string {

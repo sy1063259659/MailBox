@@ -166,3 +166,35 @@ func TestRandomLetters(t *testing.T) {
 		}
 	}
 }
+func TestICloudMigrationCreatesIndependentTables(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS icloud_groups",
+		"CREATE TABLE IF NOT EXISTS icloud_accounts",
+		"access_key_encrypted TEXT NOT NULL",
+		"REFERENCES icloud_groups(id)",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("migrationCreateStatements() missing %q", want)
+		}
+	}
+	if strings.Contains(statements, "icloud_accounts") && strings.Contains(statements, "client_id") {
+		iCloudStart := strings.Index(statements, "CREATE TABLE IF NOT EXISTS icloud_accounts")
+		iCloudStatements := statements[iCloudStart:]
+		if strings.Contains(iCloudStatements, "client_id") || strings.Contains(iCloudStatements, "refresh_token") {
+			t.Fatal("icloud_accounts must only contain the encrypted access key and account metadata")
+		}
+	}
+}
+
+func TestICloudMigrationCreatesIndexes(t *testing.T) {
+	statements := strings.Join(migrationIndexStatements(), "\n")
+	for _, want := range []string{
+		"idx_icloud_accounts_group_id",
+		"idx_icloud_accounts_created_at",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("migrationIndexStatements() missing %q", want)
+		}
+	}
+}

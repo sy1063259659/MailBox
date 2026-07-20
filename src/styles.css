@@ -1233,3 +1233,239 @@ textarea {
     transform: none;
   }
 }
+.mailbox-section-switch {
+  width: 300px;
+  max-width: 100%;
+}
+
+.icloud-management-shell {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.icloud-sidebar {
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 9px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.icloud-sidebar .group-panel {
+  flex: 1 1 auto;
+}
+
+.icloud-sidebar .pinned-row small {
+  margin-left: auto;
+  color: #64748b;
+}
+
+.icloud-main {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 9px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+.icloud-toolbar {
+  flex: 0 0 auto;
+  min-height: 42px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.icloud-search {
+  width: min(380px, 100%);
+}
+
+.icloud-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.icloud-account-table {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.icloud-latest-dialog,
+.icloud-import-dialog {
+  max-width: calc(100vw - 24px);
+}
+
+.icloud-latest-account {
+  margin-bottom: 12px;
+  color: #475569;
+  font-size: 13px;
+}
+
+.icloud-latest-content {
+  min-height: 220px;
+}
+
+.icloud-latest-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 16px;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.icloud-latest-meta div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.icloud-latest-meta span,
+.icloud-invite-link > span,
+.icloud-verification-code > span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.icloud-latest-meta strong {
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icloud-verification-code {
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  background: #eff6ff;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.icloud-verification-code strong {
+  color: #1d4ed8;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.icloud-verification-code .el-button {
+  margin-left: auto;
+}
+
+.icloud-latest-body {
+  margin-bottom: 14px;
+}
+
+.icloud-latest-section-head {
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.icloud-latest-body pre {
+  max-height: 280px;
+  margin: 0;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #334155;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.icloud-invite-link {
+  padding: 12px;
+  border: 1px solid #e5eaf2;
+  border-radius: 8px;
+  background: #f8fafc;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.icloud-invite-link code {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icloud-import-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+@media (max-width: 1180px) {
+  .mailbox-section-switch {
+    width: 100%;
+  }
+
+  .icloud-management-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+    grid-template-columns: 1fr;
+  }
+
+  .icloud-sidebar {
+    max-height: 340px;
+  }
+
+  .icloud-main {
+    overflow: visible;
+  }
+
+  .icloud-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .icloud-search {
+    width: 100%;
+  }
+
+  .icloud-actions {
+    justify-content: flex-start;
+  }
+
+  .icloud-latest-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .icloud-invite-link {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+}

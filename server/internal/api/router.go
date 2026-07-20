@@ -19,6 +19,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux := http.NewServeMux()
 	authAPI := authAPI{store: store, sessions: sessions}
 	accountAPI := accountAPI{store: store}
+	iCloudAPI := iCloudAPI{store: store, latestFetch: newICloudLatestClient()}
 	mailAPI := newMailAPI(store)
 	mux.HandleFunc("/api/health", methodHandler(http.MethodGet, healthHandler))
 
@@ -35,6 +36,14 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/groups", authRequired(sessions, groupsHandler(accountAPI)))
 	mux.HandleFunc("/api/groups/", authRequired(sessions, groupIDHandler(accountAPI)))
 
+	mux.HandleFunc("/api/icloud-accounts", authRequired(sessions, methodHandler(http.MethodGet, iCloudAPI.listAccounts)))
+	mux.HandleFunc("/api/icloud-accounts/import", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.importAccounts)))
+	mux.HandleFunc("/api/icloud-accounts/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.latestMail)))
+	mux.HandleFunc("/api/icloud-accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudAPI.updateRemark)))
+	mux.HandleFunc("/api/icloud-accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.moveAccounts)))
+	mux.HandleFunc("/api/icloud-accounts/", authRequired(sessions, iCloudAccountPathHandler(iCloudAPI)))
+	mux.HandleFunc("/api/icloud-groups", authRequired(sessions, iCloudGroupsHandler(iCloudAPI)))
+	mux.HandleFunc("/api/icloud-groups/", authRequired(sessions, iCloudGroupIDHandler(iCloudAPI)))
 	mux.HandleFunc("/api/mail/check", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.check)))
 	mux.HandleFunc("/api/mail/folders", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.folders)))
 	mux.HandleFunc("/api/mail/messages", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.messages)))
@@ -43,6 +52,49 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	return withRequestLogging(withCORS(mux))
 }
 
+func iCloudAccountPathHandler(api iCloudAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			api.deleteAccount(w, r)
+			return
+		}
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+	}
+}
+
+func iCloudGroupsHandler(api iCloudAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			api.listGroups(w, r)
+		case http.MethodPost:
+			api.createGroup(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}
+}
+
+func iCloudGroupIDHandler(api iCloudAPI) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if strings.TrimSuffix(r.URL.Path, "/") == "/api/icloud-groups/order" {
+			if r.Method != http.MethodPatch {
+				WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+				return
+			}
+			api.reorderGroups(w, r)
+			return
+		}
+		switch r.Method {
+		case http.MethodPatch:
+			api.updateGroup(w, r)
+		case http.MethodDelete:
+			api.deleteGroup(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}
+}
 func accountPathHandler(api accountAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/split-hotmail") {

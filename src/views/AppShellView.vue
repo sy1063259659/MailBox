@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { defineAsyncComponent, ref } from 'vue'
 import type { AppRouteName } from '@/composables/useAppRoute'
+import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAuthStore } from '@/stores/auth'
 
+type MailboxSection = 'outlook' | 'icloud'
+
 const MailboxManagementView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
+const ICloudAccountManagementView = defineAsyncComponent(() => import('@/views/ICloudAccountManagementView.vue'))
 
 defineProps<{
   clearingData?: boolean
@@ -17,6 +21,9 @@ const emit = defineEmits<{
 
 const authStore = useAuthStore()
 const loggingOut = ref(false)
+const activeSection = useLocalUiState<MailboxSection>('mailbox.ui.mailboxSection', 'outlook', {
+  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud',
+})
 
 async function logout() {
   if (loggingOut.value) {
@@ -28,8 +35,7 @@ async function logout() {
   try {
     await authStore.logout()
   } catch {
-    // The UI has already returned to the login page. A failed remote logout only
-    // leaves the server cookie to expire naturally or be replaced on next login.
+    // The UI has already returned to the login page.
   } finally {
     loggingOut.value = false
   }
@@ -41,18 +47,28 @@ async function logout() {
     <header class="workspace-topbar">
       <div class="topbar-left">
         <strong class="workspace-title">邮箱管理</strong>
+        <el-segmented
+          v-model="activeSection"
+          :options="[
+            { label: 'Outlook / Hotmail', value: 'outlook' },
+            { label: 'iCloud', value: 'icloud' },
+          ]"
+          class="mailbox-section-switch"
+        />
       </div>
       <div class="topbar-actions">
-        <el-button plain @click="emit('clearData')">清空本地缓存</el-button>
+        <el-button v-if="activeSection === 'outlook'" plain @click="emit('clearData')">清空本地缓存</el-button>
         <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
       </div>
     </header>
 
     <main class="workspace-content">
       <MailboxManagementView
+        v-if="activeSection === 'outlook'"
         :clearing-data="clearingData"
         @import-accounts="emit('importAccounts')"
       />
+      <ICloudAccountManagementView v-else />
     </main>
   </section>
 </template>
