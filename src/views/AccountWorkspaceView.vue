@@ -21,7 +21,7 @@ import type {
 } from '@/types'
 import type { MailGroup } from '@/services/accountApi'
 import { formatDateTime } from '@/utils/dateTime'
-import { plainMailParagraphs } from '@/utils/mailBody'
+import { plainMailBlocks } from '@/utils/mailBody'
 
 type WorkspaceMode = 'accounts' | 'mail'
 
@@ -132,8 +132,8 @@ const selectedHtml = computed(() => {
   const isHtml = mailStore.selectedBody?.contentType === 'html' || looksLikeHtml(content)
   return isHtml ? buildReaderHtml(content) : ''
 })
-const selectedPlainParagraphs = computed(() =>
-  plainMailParagraphs(mailStore.selectedBody?.content ?? ''),
+const selectedPlainBlocks = computed(() =>
+  plainMailBlocks(mailStore.selectedBody?.content ?? ''),
 )
 const accountSearchKeyword = computed({
   get: () => (workspaceMode.value === 'accounts' ? globalKeyword.value : ''),
@@ -1030,8 +1030,14 @@ onBeforeUnmount(() => {
                       title="邮件正文"
                     />
                     <div v-else key="plain-body" class="mail-body plain plain-mail-paragraphs">
-                      <template v-if="selectedPlainParagraphs.length">
-                        <p v-for="(paragraph, index) in selectedPlainParagraphs" :key="index">{{ paragraph }}</p>
+                      <template v-if="selectedPlainBlocks.length">
+                        <p
+                          v-for="(block, index) in selectedPlainBlocks"
+                          :key="index"
+                          :class="{ 'plain-mail-heading': block.kind === 'heading' }"
+                        >
+                          {{ block.text }}
+                        </p>
                       </template>
                       <p v-else class="plain-mail-empty">暂无正文内容</p>
                     </div>

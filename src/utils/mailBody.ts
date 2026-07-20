@@ -1,8 +1,15 @@
 const blockTagPattern = /<\/?(?:address|article|aside|blockquote|div|footer|h[1-6]|header|li|main|ol|p|pre|section|table|tbody|td|th|thead|tr|ul)\b[^>]*>/gi
 const breakTagPattern = /<br\s*\/?\s*>/gi
+const angleUrlPattern = /<(https?:\/\/[^>\s]+)>/gi
 const remainingTagPattern = /<[^>]+>/g
 const htmlCommentPattern = /<!--[\s\S]*?-->/g
 const hiddenHtmlPattern = /<(?:head|script|style|title)\b[^>]*>[\s\S]*?<\/(?:head|script|style|title)>/gi
+const decorativeHeadingPattern = /^=+\s*(.+?)\s*=+$/
+
+export interface PlainMailBlock {
+  kind: 'heading' | 'paragraph'
+  text: string
+}
 
 function decodeQuotedPrintable(value: string): string {
   if (!/=([\dA-F]{2})/i.test(value)) {
@@ -51,22 +58,23 @@ function decodeHtmlEntities(value: string): string {
   })
 }
 
-export function plainMailParagraphs(value: string): string[] {
+export function plainMailBlocks(value: string): PlainMailBlock[] {
   const readableText = decodeHtmlEntities(decodeQuotedPrintable(value))
     .replace(hiddenHtmlPattern, '')
     .replace(htmlCommentPattern, '')
     .replace(breakTagPattern, '\n')
     .replace(blockTagPattern, '\n')
+    .replace(angleUrlPattern, '$1')
     .replace(remainingTagPattern, ' ')
     .replace(/\r\n?/g, '\n')
     .replace(/[\u00a0\u200b\ufeff]/g, ' ')
 
-  const paragraphs: string[] = []
+  const blocks: PlainMailBlock[] = []
   let currentLines: string[] = []
   const flush = () => {
-    const paragraph = currentLines.join(' ').replace(/[ \t]+/g, ' ').trim()
-    if (paragraph) {
-      paragraphs.push(paragraph)
+    const text = currentLines.join(' ').replace(/[ \t]+/g, ' ').trim()
+    if (text) {
+      blocks.push({ kind: 'paragraph', text })
     }
     currentLines = []
   }
@@ -77,9 +85,16 @@ export function plainMailParagraphs(value: string): string[] {
       flush()
       continue
     }
+
+    const heading = line.match(decorativeHeadingPattern)
+    if (heading) {
+      flush()
+      blocks.push({ kind: 'heading', text: heading[1].trim() })
+      continue
+    }
     currentLines.push(line)
   }
   flush()
 
-  return paragraphs
+  return blocks
 }

@@ -22,7 +22,7 @@ import {
   type ICloudLatestMailResponse,
 } from '@/services/iCloudAccountApi'
 import { formatDateTime } from '@/utils/dateTime'
-import { plainMailParagraphs } from '@/utils/mailBody'
+import { plainMailBlocks } from '@/utils/mailBody'
 
 const store = useICloudAccountStore()
 const keyword = ref('')
@@ -44,7 +44,7 @@ const latestMailVisible = ref(false)
 const latestMailLoading = ref(false)
 const latestMailAccount = ref('')
 const latestMail = ref<ICloudLatestMailResponse>()
-const latestMailParagraphs = computed(() => plainMailParagraphs(latestMail.value?.email?.text ?? ''))
+const latestMailBlocks = computed(() => plainMailBlocks(latestMail.value?.email?.text ?? ''))
 
 const filteredAccounts = computed(() => {
   const normalizedKeyword = keyword.value.trim().toLowerCase()
@@ -587,8 +587,14 @@ function canDeleteGroup(group: ICloudGroup): boolean {
               </el-button>
             </div>
             <div class="mail-body plain plain-mail-paragraphs icloud-mail-body">
-              <template v-if="latestMailParagraphs.length">
-                <p v-for="(paragraph, index) in latestMailParagraphs" :key="index">{{ paragraph }}</p>
+              <template v-if="latestMailBlocks.length">
+                <p
+                  v-for="(block, index) in latestMailBlocks"
+                  :key="index"
+                  :class="{ 'plain-mail-heading': block.kind === 'heading' }"
+                >
+                  {{ block.text }}
+                </p>
               </template>
               <p v-else class="plain-mail-empty">暂无正文内容</p>
             </div>

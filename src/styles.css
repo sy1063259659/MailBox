@@ -1114,6 +1114,14 @@ textarea {
   margin-bottom: 0;
 }
 
+.plain-mail-paragraphs .plain-mail-heading {
+  margin-bottom: 12px;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
 .plain-mail-paragraphs .plain-mail-empty {
   color: #94a3b8;
 }
