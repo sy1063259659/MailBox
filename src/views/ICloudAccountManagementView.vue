@@ -33,6 +33,7 @@ const iCloudReaderEnhancements = [
   '*, *::before, *::after { box-sizing: border-box; }',
   'body { max-width: 760px !important; min-height: 100vh; margin: 0 auto !important; padding: 28px !important; background: #ffffff; color: #1f2937; overflow-wrap: anywhere; }',
   'img { max-width: 100% !important; height: auto !important; }',
+  'img[src*="cdn.mcauto-images-production.sendgrid.net"], img[src*="/wf/open?"] { display: none !important; }',
   'table { max-width: 100% !important; }',
   'a { color: #2563eb; }',
   '@media (max-width: 680px) { body { padding: 18px !important; } }',
