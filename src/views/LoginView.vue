@@ -48,7 +48,7 @@ async function submitLogin() {
       <div class="login-brand">
         <el-icon><Message /></el-icon>
         <div>
-          <h1>GptBox</h1>
+          <h1>MailBox</h1>
         </div>
       </div>
 

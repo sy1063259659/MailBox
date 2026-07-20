@@ -1,4 +1,4 @@
-# GptBox Deploy Checklist
+# MailBox Deploy Checklist
 
 Use this checklist before deploying a locally built release to the server.
 

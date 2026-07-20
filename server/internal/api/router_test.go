@@ -6,9 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"gptbox-server/internal/codexauth"
 	"gptbox-server/internal/session"
 	"gptbox-server/internal/store"
 )
@@ -54,87 +52,24 @@ func TestGroupOrderRejectsMissingSession(t *testing.T) {
 	}
 }
 
-func TestGPTAccountsRejectMissingSession(t *testing.T) {
-	handler := authRequired(session.NewManager([]byte("test-secret"), false), methodHandler(http.MethodGet, newGPTAccountAPI(nil).list))
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/api/gpt-accounts", nil)
-
-	handler(recorder, request)
-
-	if recorder.Code != http.StatusUnauthorized {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
-	}
-}
-
-func TestGPTAccountOAuthStartRejectsMissingMailAccountEmail(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/start", strings.NewReader(`{}`))
-
-	newGPTAccountAPI(nil).oauthStart(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
-	}
-	if !strings.Contains(recorder.Body.String(), "mailAccountEmail is required") {
-		t.Fatalf("body = %s, want mailAccountEmail error", recorder.Body.String())
-	}
-}
-
-func TestGPTAccountOAuthCompleteRejectsMissingState(t *testing.T) {
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"missing","callbackUrl":"http://localhost/callback?code=abc&state=state"}`))
-
-	newGPTAccountAPI(nil).oauthComplete(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
-	}
-	if !strings.Contains(recorder.Body.String(), "OAuth 登录会话不存在或已过期") {
-		t.Fatalf("body = %s, want missing state error", recorder.Body.String())
-	}
-}
-
-func TestGPTAccountOAuthCompleteRejectsExpiredState(t *testing.T) {
-	api := newGPTAccountAPI(nil)
-	api.oauthState["login-1"] = codexauth.OAuthState{
-		LoginID:      "login-1",
-		State:        "state-1",
-		RedirectURI:  "http://localhost/callback",
-		CodeVerifier: "verifier",
-		ExpiresAt:    time.Now().Add(-time.Minute).Unix(),
-	}
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"login-1","callbackUrl":"http://localhost/callback?code=abc&state=state-1"}`))
-
-	api.oauthComplete(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
-	}
-	if !strings.Contains(recorder.Body.String(), "OAuth 登录已过期") {
-		t.Fatalf("body = %s, want expired state error", recorder.Body.String())
-	}
-}
-
-func TestGPTAccountOAuthCompleteRejectsWrongCallbackState(t *testing.T) {
-	api := newGPTAccountAPI(nil)
-	api.oauthState["login-1"] = codexauth.OAuthState{
-		LoginID:      "login-1",
-		State:        "state-1",
-		RedirectURI:  "http://localhost/callback",
-		CodeVerifier: "verifier",
-		ExpiresAt:    time.Now().Add(time.Minute).Unix(),
-	}
-	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/gpt-accounts/oauth/complete", strings.NewReader(`{"mailAccountEmail":"user@example.com","loginId":"login-1","callbackUrl":"http://localhost/callback?code=abc&state=wrong"}`))
-
-	api.oauthComplete(recorder, request)
-
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
-	}
-	if !strings.Contains(recorder.Body.String(), "OAuth state 校验失败") {
-		t.Fatalf("body = %s, want wrong state error", recorder.Body.String())
+func TestRemovedGPTAccountRoutesReturnNotFound(t *testing.T) {
+	handler := NewRouter(nil, session.NewManager([]byte("test-secret"), false))
+	for _, path := range []string{
+		"/api/gpt-accounts",
+		"/api/gpt-accounts/import-token",
+		"/api/gpt-accounts/oauth/start",
+		"/api/gpt-accounts/oauth/complete",
+		"/api/gpt-accounts/refresh-all",
+		"/api/gpt-accounts/user%40example.com/refresh",
+	} {
+		t.Run(path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, path, nil)
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusNotFound)
+			}
+		})
 	}
 }
 
@@ -321,23 +256,5 @@ func TestMailAccountJSONOmitsEmptyRefreshToken(t *testing.T) {
 	}
 	if strings.Contains(string(payload), "refreshToken") {
 		t.Fatalf("payload = %s, want refreshToken omitted", string(payload))
-	}
-}
-
-func TestGPTAccountJSONDoesNotExposeTokensOrRawQuota(t *testing.T) {
-	payload, err := json.Marshal(store.GPTAccount{
-		MailAccountEmail: "user@example.com",
-		GPTEmail:         "user@example.com",
-		QuotaRawJSON:     json.RawMessage(`{"detail":"server-only"}`),
-		Status:           "active",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(payload)
-	for _, forbidden := range []string{"idToken", "accessToken", "refreshToken", "quotaRawJson", "server-only"} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("payload = %s, want %q omitted", text, forbidden)
-		}
 	}
 }

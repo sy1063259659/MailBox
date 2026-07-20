@@ -1,32 +1,22 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref } from 'vue'
-import { Grid, Message } from '@element-plus/icons-vue'
+import { defineAsyncComponent, ref } from 'vue'
 import type { AppRouteName } from '@/composables/useAppRoute'
 import { useAuthStore } from '@/stores/auth'
-import { useAccountStore } from '@/stores/account'
-import { useGptAccountStore } from '@/stores/gptAccount'
 
 const MailboxManagementView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
-const GptAccountManagementView = defineAsyncComponent(() => import('@/views/GptAccountManagementView.vue'))
 
-const props = defineProps<{
+defineProps<{
   clearingData?: boolean
-  focusEmail?: string
-  route: AppRouteName
 }>()
 
 const emit = defineEmits<{
   importAccounts: []
   clearData: []
-  focusGptAccount: [email: string]
   navigateApp: [route: AppRouteName]
 }>()
 
-const accountStore = useAccountStore()
 const authStore = useAuthStore()
-const gptAccountStore = useGptAccountStore()
 const loggingOut = ref(false)
-const activeModule = computed(() => (props.route === 'gptAccounts' ? 'gptAccounts' : 'mailboxes'))
 
 async function logout() {
   if (loggingOut.value) {
@@ -47,40 +37,21 @@ async function logout() {
 </script>
 
 <template>
-  <section class="workspace-shell" :class="{ 'gpt-module-active': activeModule === 'gptAccounts' }">
+  <section class="workspace-shell">
     <header class="workspace-topbar">
-        <div class="topbar-left">
-          <div class="module-tabs" aria-label="主菜单">
-            <button class="module-tab" :class="{ active: activeModule === 'mailboxes' }" type="button" @click="emit('navigateApp', 'mailboxes')">
-              <el-icon><Message /></el-icon>
-              <span>邮箱管理</span>
-              <strong>{{ accountStore.accounts.length }}</strong>
-            </button>
-            <button class="module-tab" :class="{ active: activeModule === 'gptAccounts' }" type="button" @click="emit('navigateApp', 'gptAccounts')">
-              <el-icon><Grid /></el-icon>
-              <span>GPT账号管理</span>
-              <strong>{{ gptAccountStore.accounts.length }}</strong>
-            </button>
-          </div>
-        </div>
-        <div class="topbar-actions">
-          <el-button plain @click="emit('clearData')">清空本地缓存</el-button>
-          <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
-        </div>
+      <div class="topbar-left">
+        <strong class="workspace-title">邮箱管理</strong>
+      </div>
+      <div class="topbar-actions">
+        <el-button plain @click="emit('clearData')">清空本地缓存</el-button>
+        <el-button plain :loading="loggingOut" :disabled="loggingOut" @click="logout">退出登录</el-button>
+      </div>
     </header>
 
     <main class="workspace-content">
       <MailboxManagementView
-        v-if="activeModule === 'mailboxes'"
-        :clearing-data="props.clearingData"
-        @focus-gpt-account="emit('focusGptAccount', $event)"
-        @navigate-app="emit('navigateApp', $event)"
+        :clearing-data="clearingData"
         @import-accounts="emit('importAccounts')"
-      />
-
-      <GptAccountManagementView
-        v-else
-        :focus-email="props.focusEmail"
       />
     </main>
   </section>

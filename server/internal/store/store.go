@@ -116,6 +116,11 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("store: migrate index: %w", err)
 		}
 	}
+	for _, statement := range legacyCleanupStatements() {
+		if _, err := s.pool.Exec(ctx, statement); err != nil {
+			return fmt.Errorf("store: cleanup legacy schema: %w", err)
+		}
+	}
 	if err := s.backfillAuthEmails(ctx); err != nil {
 		return err
 	}
@@ -166,44 +171,6 @@ func migrationCreateStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
-		`CREATE TABLE IF NOT EXISTS gpt_accounts (
-			id BIGSERIAL PRIMARY KEY,
-			mail_account_email TEXT NOT NULL UNIQUE,
-			gpt_email TEXT NOT NULL DEFAULT '',
-			account_id TEXT NOT NULL DEFAULT '',
-			organization_id TEXT NOT NULL DEFAULT '',
-			account_name TEXT NOT NULL DEFAULT '',
-			account_structure TEXT NOT NULL DEFAULT '',
-			plan_type TEXT NOT NULL DEFAULT '',
-			auth_file_plan_type TEXT NOT NULL DEFAULT '',
-			subscription_active_until TIMESTAMPTZ,
-			hourly_percentage INTEGER,
-			hourly_reset_time TIMESTAMPTZ,
-			hourly_window_minutes INTEGER,
-			hourly_window_present BOOLEAN,
-			weekly_percentage INTEGER,
-			weekly_reset_time TIMESTAMPTZ,
-			weekly_window_minutes INTEGER,
-			weekly_window_present BOOLEAN,
-			quota_raw_json JSONB,
-			status TEXT NOT NULL DEFAULT 'unknown',
-			status_reason TEXT NOT NULL DEFAULT '',
-			requires_reauth BOOLEAN NOT NULL DEFAULT false,
-			reauth_reason TEXT NOT NULL DEFAULT '',
-			quota_error_code TEXT NOT NULL DEFAULT '',
-			quota_error_message TEXT NOT NULL DEFAULT '',
-			quota_error_at TIMESTAMPTZ,
-			id_token_encrypted TEXT NOT NULL DEFAULT '',
-			access_token_encrypted TEXT NOT NULL DEFAULT '',
-			refresh_token_encrypted TEXT NOT NULL DEFAULT '',
-			token_expires_at TIMESTAMPTZ,
-			token_updated_at TIMESTAMPTZ,
-			last_refresh_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			CONSTRAINT fk_gpt_accounts_mail_account_email
-				FOREIGN KEY (mail_account_email) REFERENCES mail_accounts(email) ON DELETE CASCADE
-		)`,
 	}
 }
 
@@ -216,47 +183,6 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS mail_account_email TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS gpt_email TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS organization_id TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_name TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS account_structure TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS plan_type TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS auth_file_plan_type TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS subscription_active_until TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_percentage INTEGER`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_reset_time TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_window_minutes INTEGER`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS hourly_window_present BOOLEAN`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_percentage INTEGER`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_reset_time TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_window_minutes INTEGER`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS weekly_window_present BOOLEAN`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_raw_json JSONB`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'unknown'`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS status_reason TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS requires_reauth BOOLEAN NOT NULL DEFAULT false`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS reauth_reason TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_code TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_message TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS quota_error_at TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS id_token_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS access_token_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS refresh_token_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS token_updated_at TIMESTAMPTZ`,
-		`ALTER TABLE gpt_accounts ADD COLUMN IF NOT EXISTS last_refresh_at TIMESTAMPTZ`,
-		`DO $$
-		BEGIN
-			IF NOT EXISTS (
-				SELECT 1 FROM pg_constraint WHERE conname = 'fk_gpt_accounts_mail_account_email'
-			) THEN
-				ALTER TABLE gpt_accounts
-					ADD CONSTRAINT fk_gpt_accounts_mail_account_email
-					FOREIGN KEY (mail_account_email) REFERENCES mail_accounts(email) ON DELETE CASCADE NOT VALID;
-			END IF;
-		END $$`,
 	}
 }
 
@@ -268,9 +194,12 @@ func migrationIndexStatements() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index
 			ON mail_accounts(parent_email, split_index)
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_gpt_accounts_mail_account_email ON gpt_accounts(mail_account_email)`,
-		`CREATE INDEX IF NOT EXISTS idx_gpt_accounts_status ON gpt_accounts(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_gpt_accounts_updated_at ON gpt_accounts(updated_at)`,
+	}
+}
+
+func legacyCleanupStatements() []string {
+	return []string{
+		`DROP TABLE IF EXISTS gpt_accounts`,
 	}
 }
 

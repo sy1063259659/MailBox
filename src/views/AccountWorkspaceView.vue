@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Reading,
@@ -11,7 +11,6 @@ import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
-import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
 import type {
   AccountStatus,
@@ -21,13 +20,11 @@ import type {
   MailMessage,
 } from '@/types'
 import type { MailGroup } from '@/services/accountApi'
-import { formatDateTime } from '@/utils/gptDisplay'
+import { formatDateTime } from '@/utils/dateTime'
 
-const GptAccountDialog = defineAsyncComponent(() => import('@/components/GptAccountDialog.vue'))
 type WorkspaceMode = 'accounts' | 'mail'
 
 const accountStore = useAccountStore()
-const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const selectedAccountRows = ref<MailAccount[]>([])
 const accountPage = ref(1)
@@ -38,10 +35,7 @@ const globalKeyword = useLocalUiState('gptbox.ui.globalKeyword', '', {
   legacyKey: 'mailbox.ui.globalKeyword',
 })
 const groupDialogVisible = ref(false)
-const gptDialogVisible = ref(false)
 const targetGroupName = ref('')
-const gptDialogAccount = ref<MailAccount>()
-const focusedGptEmail = ref('')
 const currentViewedAccount = ref<MailAccount>()
 const currentViewedAccountEmail = useLocalUiState('gptbox.ui.currentViewedAccount.email', '', {
   validate: isString,
@@ -75,7 +69,6 @@ defineProps<{
 
 const emit = defineEmits<{
   importAccounts: []
-  focusGptAccount: [email: string]
 }>()
 
 const statusType: Record<AccountStatus, 'info' | 'primary' | 'success' | 'warning' | 'danger'> = {
@@ -183,7 +176,6 @@ const selectionScopeText = computed(() =>
 
 const sidebarRootAccounts = computed(() => accountTree.value)
 
-const gptAccountByEmail = computed(() => gptAccountStore.accountByMailEmail)
 
 const accountByEmail = computed(() => {
   const map = new Map<string, MailAccount>()
@@ -259,28 +251,6 @@ function looksLikeHtml(value: string): boolean {
   return /<(?:!doctype|html|head|body|div|table|style|meta|title|p|br|span)\b/i.test(value)
 }
 
-const gptBusyEmails = computed<ReadonlySet<string>>(() =>
-  new Set([
-    ...gptAccountStore.bindingEmails,
-    ...gptAccountStore.refreshingEmails,
-    ...gptAccountStore.unlinkingEmails,
-  ]),
-)
-
-function openGptDialog(account: MailAccount) {
-  gptDialogAccount.value = resolveMailboxAccount(account)
-  gptDialogVisible.value = true
-}
-
-function openGptDetails(account: MailAccount) {
-  const targetAccount = resolveMailboxAccount(account)
-  focusedGptEmail.value = targetAccount.email
-  emit('focusGptAccount', targetAccount.email)
-}
-
-function handleGptBound(_payload: { mailAccountEmail: string }) {
-  gptDialogAccount.value = undefined
-}
 
 function formatAddress(address: MailAddress): string {
   if (address.name && address.email) {
@@ -581,7 +551,7 @@ async function downloadExportText() {
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `gptbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
+    anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
     anchor.click()
     URL.revokeObjectURL(url)
     ElMessage.success(`已导出 ${targets.length} 个账号`)
@@ -924,8 +894,6 @@ onBeforeUnmount(() => {
         :copied-values="copiedValues"
         :message-count-by-email="messageCountByEmail"
         :account-by-email="accountByEmail"
-        :gpt-account-by-email="gptAccountByEmail"
-        :gpt-busy-emails="gptBusyEmails"
         :parent-row-index-map="parentRowIndexMap"
         :editing-remark-email="editingRemarkEmail"
         :viewing-email="viewingEmail"
@@ -942,8 +910,6 @@ onBeforeUnmount(() => {
         @retry-failed-accounts="retryFailedAccounts"
         @selection-change="handleAccountSelection"
         @copy-text="copyText"
-        @open-gpt-details="openGptDetails"
-        @open-gpt-dialog="openGptDialog"
         @edit-account-remark="editAccountRemark"
         @view-account-inbox="viewAccountInbox"
         @split-hotmail="splitHotmail"
@@ -1067,11 +1033,6 @@ onBeforeUnmount(() => {
         </template>
       </el-dialog>
 
-      <GptAccountDialog
-        v-model="gptDialogVisible"
-        :account="gptDialogAccount"
-        @bound="handleGptBound"
-      />
     </main>
   </section>
 </template>

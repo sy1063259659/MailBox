@@ -5,7 +5,6 @@ import LoginView from '@/views/LoginView.vue'
 import { getImapHealth } from '@/services/imapApi'
 import { useAccountStore } from '@/stores/account'
 import { useAuthStore } from '@/stores/auth'
-import { useGptAccountStore } from '@/stores/gptAccount'
 import { useMailStore } from '@/stores/mail'
 import { navigateToAppRoute, useAppRoute, type AppRouteName } from '@/composables/useAppRoute'
 
@@ -14,10 +13,8 @@ const ImportAccountsDialog = defineAsyncComponent(() => import('@/components/Imp
 
 const authStore = useAuthStore()
 const accountStore = useAccountStore()
-const gptAccountStore = useGptAccountStore()
 const mailStore = useMailStore()
 const appRoute = useAppRoute()
-const focusedGptEmail = ref('')
 const importVisible = ref(false)
 const backendOnline = ref<boolean | undefined>(undefined)
 const clearingData = ref(false)
@@ -32,6 +29,8 @@ onMounted(async () => {
   if (authStore.isAuthenticated) {
     await loadWorkspaceData()
     ensureRouteWhenAuthenticated()
+  } else {
+    navigateToAppRoute('login')
   }
 })
 
@@ -57,7 +56,7 @@ async function loadWorkspaceData() {
   }
 
   workspaceLoadPromise ??= (async () => {
-    await Promise.all([accountStore.loadAccounts(), accountStore.refreshStats(), gptAccountStore.loadAccounts()])
+    await Promise.all([accountStore.loadAccounts(), accountStore.refreshStats()])
     await mailStore.loadMessages()
   })().finally(() => {
     workspaceLoadPromise = undefined
@@ -100,10 +99,6 @@ function handleNavigate(route: AppRouteName) {
   navigateToAppRoute(route)
 }
 
-function handleFocusGptAccount(email: string) {
-  focusedGptEmail.value = email
-  navigateToAppRoute('gptAccounts')
-}
 </script>
 
 <template>
@@ -120,11 +115,8 @@ function handleFocusGptAccount(email: string) {
           v-else-if="authStore.checked && isAuthenticated"
           key="workspace"
           :clearing-data="clearingData"
-          :focus-email="focusedGptEmail"
-          :route="appRoute"
           @import-accounts="importVisible = true"
           @clear-data="clearData"
-          @focus-gpt-account="handleFocusGptAccount"
           @navigate-app="handleNavigate"
         />
         <div v-else key="loading" class="app-loading">正在检查登录状态...</div>

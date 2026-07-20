@@ -50,7 +50,7 @@ function canRenameGroup(group: MailGroup): boolean {
   <aside class="faka-sidebar">
     <div class="faka-brand">
       <el-icon><Message /></el-icon>
-      <span>GptBox</span>
+      <span>MailBox</span>
     </div>
 
     <nav class="faka-nav">

@@ -102,30 +102,17 @@ func TestMailAccountsMigrationCreatesEncryptedPasswordColumn(t *testing.T) {
 	t.Fatal("migrationColumnStatements() missing password_encrypted column")
 }
 
-func TestGPTAccountsMigrationCreatesTable(t *testing.T) {
-	statements := strings.Join(migrationCreateStatements(), "\n")
-	if !strings.Contains(statements, "CREATE TABLE IF NOT EXISTS gpt_accounts") {
-		t.Fatal("migration missing gpt_accounts table")
-	}
-	if !strings.Contains(statements, "access_token_encrypted TEXT NOT NULL DEFAULT ''") {
-		t.Fatal("gpt_accounts migration missing encrypted access token column")
+func TestMigrationsDoNotCreateLegacyGPTAccountsTable(t *testing.T) {
+	statements := strings.Join(append(append(migrationCreateStatements(), migrationColumnStatements()...), migrationIndexStatements()...), "\n")
+	if strings.Contains(statements, "gpt_accounts") {
+		t.Fatal("active migrations must not create or alter gpt_accounts")
 	}
 }
 
-func TestGPTAccountsMigrationCascadesWithMailAccount(t *testing.T) {
-	statements := strings.Join(append(migrationCreateStatements(), migrationColumnStatements()...), "\n")
-	if !strings.Contains(statements, "fk_gpt_accounts_mail_account_email") {
-		t.Fatal("migration missing gpt account mail account foreign key")
-	}
-	if !strings.Contains(statements, "ON DELETE CASCADE") {
-		t.Fatal("gpt account foreign key must cascade when mail account is deleted")
-	}
-}
-
-func TestGPTAccountsMigrationCreatesIndexes(t *testing.T) {
-	statements := strings.Join(migrationIndexStatements(), "\n")
-	if !strings.Contains(statements, "idx_gpt_accounts_mail_account_email") {
-		t.Fatal("migrationIndexStatements() missing gpt account mail email index")
+func TestLegacyGPTAccountsTableCleanupIsIdempotent(t *testing.T) {
+	statements := legacyCleanupStatements()
+	if len(statements) != 1 || strings.TrimSpace(statements[0]) != "DROP TABLE IF EXISTS gpt_accounts" {
+		t.Fatalf("legacyCleanupStatements() = %v", statements)
 	}
 }
 

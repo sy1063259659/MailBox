@@ -8,13 +8,8 @@ import {
   Refresh,
   UploadFilled,
 } from '@element-plus/icons-vue'
-import type { AccountStatus, GptAccount, MailAccount } from '@/types'
-import {
-  compactGptStatus,
-  formatDateTime,
-  formatShortDate,
-  planText,
-} from '@/utils/gptDisplay'
+import type { AccountStatus, MailAccount } from '@/types'
+import { formatDateTime } from '@/utils/dateTime'
 
 const props = defineProps<{
   clearingData?: boolean
@@ -40,8 +35,6 @@ const props = defineProps<{
   copiedValues: ReadonlySet<string>
   messageCountByEmail: ReadonlyMap<string, number>
   accountByEmail: ReadonlyMap<string, MailAccount>
-  gptAccountByEmail: ReadonlyMap<string, GptAccount>
-  gptBusyEmails: ReadonlySet<string>
   parentRowIndexMap: ReadonlyMap<string, number>
   editingRemarkEmail: string
   viewingEmail: string
@@ -61,8 +54,6 @@ const emit = defineEmits<{
   retryFailedAccounts: []
   selectionChange: [rows: MailAccount[]]
   copyText: [value: string, label: string]
-  openGptDetails: [account: MailAccount]
-  openGptDialog: [account: MailAccount]
   editAccountRemark: [account: MailAccount]
   viewAccountInbox: [account: MailAccount]
   splitHotmail: [account: MailAccount]
@@ -84,14 +75,6 @@ function resolveMailboxAccount(account: MailAccount): MailAccount {
   return account.parentEmail ? props.accountByEmail.get(account.parentEmail.toLowerCase()) ?? account : account
 }
 
-function gptForAccount(account: MailAccount): GptAccount | undefined {
-  return props.gptAccountByEmail.get(resolveMailboxAccount(account).email.toLowerCase())
-}
-
-function isGptBusy(account: MailAccount): boolean {
-  const email = resolveMailboxAccount(account).email.toLowerCase()
-  return props.gptBusyEmails.has(email)
-}
 
 function splitCount(account: MailAccount): number {
   return account.children?.length ?? 0
@@ -255,45 +238,6 @@ function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' 
       <el-table-column label="邮件" width="90" align="center" header-align="center">
         <template #default="{ row }">
           <span class="mail-count">{{ messageCountByEmail.get(resolveMailboxAccount(row).email) ?? 0 }}</span>
-        </template>
-      </el-table-column>
-      <el-table-column label="GPT" width="220" align="center" header-align="center">
-        <template #default="{ row }">
-          <div class="gpt-compact-cell">
-            <div class="gpt-compact-tags">
-              <el-tag
-                size="small"
-                :type="compactGptStatus(gptForAccount(row)).type"
-                effect="light"
-              >
-                {{ compactGptStatus(gptForAccount(row)).text }}
-              </el-tag>
-              <el-tag
-                v-if="gptForAccount(row)"
-                size="small"
-                type="primary"
-                effect="plain"
-              >
-                {{ planText(gptForAccount(row)) }}
-              </el-tag>
-            </div>
-            <small v-if="gptForAccount(row)" class="gpt-compact-meta">
-              到期 {{ formatShortDate(gptForAccount(row)?.subscriptionActiveUntil) }}
-            </small>
-            <div class="gpt-compact-actions">
-              <el-button
-                v-if="gptForAccount(row)"
-                link
-                size="small"
-                @click.stop="emit('openGptDetails', row)"
-              >
-                详情
-              </el-button>
-              <el-button link size="small" :disabled="isGptBusy(row)" @click.stop="emit('openGptDialog', row)">
-                {{ gptForAccount(row) ? '重绑' : '绑定' }}
-              </el-button>
-            </div>
-          </div>
         </template>
       </el-table-column>
       <el-table-column label="状态" width="100" align="center" header-align="center">
