@@ -97,29 +97,37 @@ function isString(value: unknown): value is string {
   return typeof value === 'string'
 }
 
+const readerDocumentEnhancements = [
+  '<meta charset="utf-8" />',
+  '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+  '<base target="_blank" />',
+  '<style>',
+  'html { color-scheme: light; background: #ffffff; }',
+  '*, *::before, *::after { box-sizing: border-box; }',
+  'body { max-width: 100%; margin: 0 auto; padding: 24px; background: #ffffff; color: #1f2937; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.65; overflow-wrap: anywhere; }',
+  'img { max-width: 100% !important; height: auto !important; }',
+  'table { max-width: 100% !important; }',
+  'pre { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; }',
+  'blockquote { margin-left: 0; padding-left: 14px; border-left: 3px solid #dbeafe; color: #475569; }',
+  'a { color: #1d4ed8; }',
+  '@media (max-width: 680px) { body { padding: 16px; } }',
+  '</style>',
+].join('')
+
+function buildReaderHtml(content: string): string {
+  if (/<head(?:\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<head([^>]*)>/i, '<head$1>' + readerDocumentEnhancements)
+  }
+  if (/<html(?:\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<html([^>]*)>/i, '<html$1><head>' + readerDocumentEnhancements + '</head>')
+  }
+  return '<!doctype html><html><head>' + readerDocumentEnhancements + '</head><body>' + content + '</body></html>'
+}
+
 const selectedHtml = computed(() => {
   const content = mailStore.selectedBody?.content ?? ''
-  if (!looksLikeHtml(content)) {
-    return ''
-  }
-
-  return `<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <base target="_blank" />
-    <style>
-      html, body { margin: 0; padding: 0; background: #fff; color: #18212f; font-family: Arial, sans-serif; line-height: 1.55; }
-      body { padding: 18px 20px; overflow-wrap: anywhere; }
-      img { max-width: 100%; height: auto; }
-      table { max-width: 100%; }
-      a { color: #1d4ed8; }
-    </style>
-  </head>
-  <body>${content}</body>
-</html>`
+  return looksLikeHtml(content) ? buildReaderHtml(content) : ''
 })
-
 const accountSearchKeyword = computed({
   get: () => (workspaceMode.value === 'accounts' ? globalKeyword.value : ''),
   set: (value: string) => {
@@ -980,30 +988,52 @@ onBeforeUnmount(() => {
               <el-icon class="reader-empty-icon"><Reading /></el-icon>
             </el-empty>
             <div v-else :key="mailStore.selectedMessage.messageId" class="reader-content">
-              <div class="reader-head">
-                <div>
+              <header class="reader-head">
+                <div class="reader-title-row">
                   <h2>{{ mailStore.selectedMessage.subject || '无主题' }}</h2>
-                  <p>发件人：{{ mailStore.selectedMessage.from?.email || '未知' }}</p>
-                  <p>收件人：{{ formatAddressList(mailStore.selectedMessage.to) }}</p>
-                  <p>查看账号：{{ mailStore.selectedMessage.accountEmail }}</p>
-                  <p>时间：{{ formatDateTime(mailStore.selectedMessage.receivedAt) }}</p>
+                  <el-tag :type="mailStore.selectedMessage.isRead ? 'info' : 'success'" size="small">
+                    {{ mailStore.selectedMessage.isRead ? '已读' : '未读' }}
+                  </el-tag>
                 </div>
-                <el-tag :type="mailStore.selectedMessage.isRead ? 'info' : 'success'">
-                  {{ mailStore.selectedMessage.isRead ? '已读' : '未读' }}
-                </el-tag>
-              </div>
-              <Transition name="content-fade" mode="out-in">
-                <el-skeleton v-if="mailStore.bodyLoading" key="skeleton" :rows="6" animated />
-                <iframe
-                  v-else-if="selectedHtml"
-                  key="html-body"
-                  class="mail-body-frame"
-                  sandbox="allow-popups allow-popups-to-escape-sandbox"
-                  :srcdoc="selectedHtml"
-                  title="邮件正文"
-                />
-                <pre v-else key="plain-body" class="mail-body plain">{{ mailStore.selectedBody?.content || '暂无正文内容' }}</pre>
-              </Transition>
+                <div class="reader-meta-grid">
+                  <div class="reader-meta-item">
+                    <span>发件人</span>
+                    <strong>{{ mailStore.selectedMessage.from?.email || '未知发件人' }}</strong>
+                  </div>
+                  <div class="reader-meta-item">
+                    <span>收件人</span>
+                    <strong>{{ formatAddressList(mailStore.selectedMessage.to) }}</strong>
+                  </div>
+                  <div class="reader-meta-item">
+                    <span>查看账号</span>
+                    <strong>{{ mailStore.selectedMessage.accountEmail }}</strong>
+                  </div>
+                  <div class="reader-meta-item">
+                    <span>时间</span>
+                    <strong>{{ formatDateTime(mailStore.selectedMessage.receivedAt) }}</strong>
+                  </div>
+                </div>
+              </header>
+              <section class="reader-body-panel">
+                <div class="reader-body-toolbar">
+                  <strong>邮件正文</strong>
+                  <el-tag size="small" effect="plain">{{ selectedHtml ? 'HTML' : '纯文本' }}</el-tag>
+                </div>
+                <div class="reader-body-content">
+                  <Transition name="content-fade" mode="out-in">
+                    <el-skeleton v-if="mailStore.bodyLoading" key="skeleton" :rows="8" animated />
+                    <iframe
+                      v-else-if="selectedHtml"
+                      key="html-body"
+                      class="mail-body-frame"
+                      sandbox="allow-popups allow-popups-to-escape-sandbox"
+                      :srcdoc="selectedHtml"
+                      title="邮件正文"
+                    />
+                    <pre v-else key="plain-body" class="mail-body plain">{{ mailStore.selectedBody?.content || '暂无正文内容' }}</pre>
+                  </Transition>
+                </div>
+              </section>
             </div>
           </Transition>
         </section>

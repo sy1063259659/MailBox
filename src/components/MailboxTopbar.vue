@@ -6,6 +6,7 @@ type WorkspaceMode = 'accounts' | 'mail'
 defineProps<{
   searchValue: string
   workspaceMode: WorkspaceMode
+  placeholder?: string
 }>()
 
 const emit = defineEmits<{
@@ -22,7 +23,7 @@ const emit = defineEmits<{
         class="faka-search"
         :prefix-icon="Search"
         clearable
-        :placeholder="workspaceMode === 'mail' ? '搜索主题/发件人...' : '搜索邮件或账号...'"
+        :placeholder="placeholder || (workspaceMode === 'mail' ? '搜索主题/发件人...' : '搜索邮件或账号...')"
         @update:model-value="emit('searchInput', $event)"
       />
     </div>

@@ -5,13 +5,15 @@ import {
   CopyDocument,
   Delete,
   EditPen,
+  Files,
   FolderOpened,
-  Key,
+  Message,
   Refresh,
   UploadFilled,
   View,
 } from '@element-plus/icons-vue'
 import ICloudImportDialog from '@/components/ICloudImportDialog.vue'
+import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useICloudAccountStore, ICLOUD_DEFAULT_GROUP } from '@/stores/iCloudAccount'
 import {
   getLatestICloudMail,
@@ -337,9 +339,15 @@ function canDeleteGroup(group: ICloudGroup): boolean {
 </script>
 
 <template>
-  <section class="icloud-management-shell">
-    <aside class="icloud-sidebar">
-      <section class="sidebar-panel group-panel">
+  <section class="faka-shell icloud-management-shell">
+    <aside class="faka-sidebar">
+      <div class="faka-brand">
+        <el-icon><Message /></el-icon>
+        <span>MailBox</span>
+      </div>
+
+      <nav class="faka-nav">
+        <section class="sidebar-panel group-panel icloud-group-panel">
         <div class="sidebar-panel-head">
           <span>
             <el-icon><FolderOpened /></el-icon>
@@ -395,24 +403,26 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </div>
           </button>
         </div>
-      </section>
+        </section>
+      </nav>
 
       <div class="faka-total-card">
-        <el-icon><Key /></el-icon>
+        <el-icon><Files /></el-icon>
         <span>iCloud 账号</span>
         <strong>{{ store.accounts.length }}</strong>
       </div>
     </aside>
 
-    <main class="icloud-main">
-      <div class="icloud-toolbar">
-        <el-input
-          v-model="keyword"
-          clearable
-          placeholder="搜索邮箱、密钥、分组或备注"
-          class="icloud-search"
-        />
-        <div class="icloud-actions">
+    <main class="faka-main">
+      <MailboxTopbar
+        :search-value="keyword"
+        workspace-mode="accounts"
+        placeholder="搜索 iCloud 邮箱、密钥、分组或备注..."
+        @search-input="keyword = $event"
+      />
+
+      <section class="faka-card">
+        <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="importVisible = true">导入账号</el-button>
           <el-dropdown trigger="click">
             <el-button :icon="CopyDocument" :loading="copying">复制</el-button>
@@ -437,7 +447,6 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             删除
           </el-button>
         </div>
-      </div>
 
       <div class="account-selection-hint" :class="{ active: selectedRows.length > 0 }">
         <strong>已选 {{ selectedRows.length }} 个账号</strong>
@@ -448,12 +457,17 @@ function canDeleteGroup(group: ICloudGroup): boolean {
         v-loading="store.loading || moving || deleting"
         :data="pagedAccounts"
         row-key="email"
-        class="icloud-account-table"
-        height="calc(100vh - 254px)"
+        class="faka-account-table"
+        height="calc(100vh - 232px)"
         @selection-change="handleSelection"
       >
-        <el-table-column type="selection" width="52" align="center" />
-        <el-table-column label="邮箱" min-width="280" show-overflow-tooltip>
+        <el-table-column type="selection" width="52" align="center" header-align="center" />
+        <el-table-column label="#" width="64" align="center" header-align="center">
+          <template #default="{ $index }">
+            <span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="邮箱" min-width="280" show-overflow-tooltip align="center" header-align="center">
           <template #default="{ row }">
             <div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }">
               <span>{{ row.email }}</span>
@@ -463,7 +477,7 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="密钥" min-width="190" show-overflow-tooltip>
+        <el-table-column label="密钥" min-width="190" show-overflow-tooltip align="center" header-align="center">
           <template #default="{ row }">
             <div class="copy-cell" :class="{ copied: copiedValues.has(row.key) }">
               <span>{{ row.key }}</span>
@@ -473,8 +487,8 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </div>
           </template>
         </el-table-column>
-        <el-table-column prop="group" label="分组" width="150" align="center" />
-        <el-table-column label="备注" min-width="220" show-overflow-tooltip>
+        <el-table-column prop="group" label="分组" width="150" align="center" header-align="center" />
+        <el-table-column label="备注" min-width="220" show-overflow-tooltip align="center" header-align="center">
           <template #default="{ row }">
             <div class="remark-cell">
               <span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span>
@@ -489,13 +503,15 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="导入时间" width="180" align="center">
+        <el-table-column label="导入" width="170" align="center" header-align="center">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right" align="center">
+        <el-table-column label="操作" width="180" fixed="right" align="center" header-align="center">
           <template #default="{ row }">
-            <el-button link type="primary" :icon="View" @click.stop="openLatestMail(row)">最新邮件</el-button>
-            <el-button link type="danger" :icon="Delete" @click.stop="deleteOne(row)">删除</el-button>
+            <el-space :size="8" class="row-actions">
+              <el-button size="small" type="primary" :icon="View" @click.stop="openLatestMail(row)">查看</el-button>
+              <el-button size="small" type="danger" plain :icon="Delete" @click.stop="deleteOne(row)">删除</el-button>
+            </el-space>
           </template>
         </el-table-column>
       </el-table>
@@ -513,20 +529,38 @@ function canDeleteGroup(group: ICloudGroup): boolean {
           @size-change="page = 1; selectedRows = []"
         />
       </div>
+      </section>
     </main>
 
     <ICloudImportDialog v-model="importVisible" />
 
     <el-dialog v-model="latestMailVisible" title="iCloud 最新邮件" width="760px" class="icloud-latest-dialog">
-      <div class="icloud-latest-account">{{ latestMailAccount }}</div>
       <div v-loading="latestMailLoading" class="icloud-latest-content">
         <template v-if="latestMail?.email">
-          <div class="icloud-latest-meta">
-            <div><span>发件人</span><strong>{{ latestMail.email.from || '未知发件人' }}</strong></div>
-            <div><span>收件人</span><strong>{{ latestMail.email.to || latestMailAccount }}</strong></div>
-            <div><span>主题</span><strong>{{ latestMail.email.subject || '无主题' }}</strong></div>
-            <div><span>时间</span><strong>{{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}</strong></div>
-          </div>
+          <header class="reader-head icloud-latest-head">
+            <div class="reader-title-row">
+              <h2>{{ latestMail.email.subject || '无主题' }}</h2>
+              <el-tag size="small" effect="plain">iCloud</el-tag>
+            </div>
+            <div class="reader-meta-grid">
+              <div class="reader-meta-item">
+                <span>发件人</span>
+                <strong>{{ latestMail.email.from || '未知发件人' }}</strong>
+              </div>
+              <div class="reader-meta-item">
+                <span>收件人</span>
+                <strong>{{ latestMail.email.to || latestMailAccount }}</strong>
+              </div>
+              <div class="reader-meta-item">
+                <span>查看账号</span>
+                <strong>{{ latestMailAccount }}</strong>
+              </div>
+              <div class="reader-meta-item">
+                <span>时间</span>
+                <strong>{{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}</strong>
+              </div>
+            </div>
+          </header>
 
           <div v-if="latestMail.email.verification_code" class="icloud-verification-code">
             <span>验证码</span>
@@ -540,8 +574,8 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </el-button>
           </div>
 
-          <div class="icloud-latest-body">
-            <div class="icloud-latest-section-head">
+          <section class="reader-body-panel icloud-reader-panel">
+            <div class="reader-body-toolbar">
               <strong>邮件正文</strong>
               <el-button
                 v-if="latestMail.email.text"
@@ -552,8 +586,8 @@ function canDeleteGroup(group: ICloudGroup): boolean {
                 复制正文
               </el-button>
             </div>
-            <pre>{{ latestMail.email.text || '暂无纯文本正文' }}</pre>
-          </div>
+            <pre class="mail-body plain icloud-mail-body">{{ latestMail.email.text || '暂无正文内容' }}</pre>
+          </section>
 
           <div v-if="latestMail.email.invite_link" class="icloud-invite-link">
             <span>邀请链接</span>
