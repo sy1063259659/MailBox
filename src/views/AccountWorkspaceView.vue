@@ -21,6 +21,7 @@ import type {
 } from '@/types'
 import type { MailGroup } from '@/services/accountApi'
 import { formatDateTime } from '@/utils/dateTime'
+import { plainMailParagraphs } from '@/utils/mailBody'
 
 type WorkspaceMode = 'accounts' | 'mail'
 
@@ -128,8 +129,12 @@ function buildReaderHtml(content: string): string {
 }
 const selectedHtml = computed(() => {
   const content = mailStore.selectedBody?.content ?? ''
-  return looksLikeHtml(content) ? buildReaderHtml(content) : ''
+  const isHtml = mailStore.selectedBody?.contentType === 'html' || looksLikeHtml(content)
+  return isHtml ? buildReaderHtml(content) : ''
 })
+const selectedPlainParagraphs = computed(() =>
+  plainMailParagraphs(mailStore.selectedBody?.content ?? ''),
+)
 const accountSearchKeyword = computed({
   get: () => (workspaceMode.value === 'accounts' ? globalKeyword.value : ''),
   set: (value: string) => {
@@ -1024,7 +1029,12 @@ onBeforeUnmount(() => {
                       :srcdoc="selectedHtml"
                       title="邮件正文"
                     />
-                    <pre v-else key="plain-body" class="mail-body plain">{{ mailStore.selectedBody?.content || '暂无正文内容' }}</pre>
+                    <div v-else key="plain-body" class="mail-body plain plain-mail-paragraphs">
+                      <template v-if="selectedPlainParagraphs.length">
+                        <p v-for="(paragraph, index) in selectedPlainParagraphs" :key="index">{{ paragraph }}</p>
+                      </template>
+                      <p v-else class="plain-mail-empty">暂无正文内容</p>
+                    </div>
                   </Transition>
                 </div>
               </section>
