@@ -35,6 +35,7 @@ export interface ICloudLatestEmail {
   from: string
   subject: string
   text: string
+  html: string
   received_at: string
   created_at: string
   verification_code: string

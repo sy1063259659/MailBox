@@ -24,6 +24,33 @@ import {
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
 
+const iCloudReaderEnhancements = [
+  '<meta charset="utf-8" />',
+  '<meta name="viewport" content="width=device-width, initial-scale=1" />',
+  '<base target="_blank" />',
+  '<style>',
+  'html { min-height: 100%; background: #f4f6f9; color-scheme: light; }',
+  '*, *::before, *::after { box-sizing: border-box; }',
+  'body { max-width: 760px !important; min-height: 100vh; margin: 0 auto !important; padding: 28px !important; background: #ffffff; color: #1f2937; overflow-wrap: anywhere; }',
+  'img { max-width: 100% !important; height: auto !important; }',
+  'table { max-width: 100% !important; }',
+  'a { color: #2563eb; }',
+  '@media (max-width: 680px) { body { padding: 18px !important; } }',
+  '</style>',
+].join('')
+
+function buildICloudReaderHtml(content: string): string {
+  if (/<\/head>/i.test(content)) {
+    return content.replace(/<\/head>/i, iCloudReaderEnhancements + '</head>')
+  }
+  if (/<head(?:\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<head([^>]*)>/i, '<head$1>' + iCloudReaderEnhancements)
+  }
+  if (/<html(?:\s[^>]*)?>/i.test(content)) {
+    return content.replace(/<html([^>]*)>/i, '<html$1><head>' + iCloudReaderEnhancements + '</head>')
+  }
+  return '<!doctype html><html><head>' + iCloudReaderEnhancements + '</head><body>' + content + '</body></html>'
+}
 const store = useICloudAccountStore()
 const keyword = ref('')
 const page = ref(1)
@@ -44,6 +71,10 @@ const latestMailVisible = ref(false)
 const latestMailLoading = ref(false)
 const latestMailAccount = ref('')
 const latestMail = ref<ICloudLatestMailResponse>()
+const latestMailHtml = computed(() => {
+  const html = latestMail.value?.email?.html?.trim() ?? ''
+  return html ? buildICloudReaderHtml(html) : ''
+})
 const latestMailBlocks = computed(() => plainMailBlocks(latestMail.value?.email?.text ?? ''))
 
 const filteredAccounts = computed(() => {
@@ -536,31 +567,26 @@ function canDeleteGroup(group: ICloudGroup): boolean {
 
     <ICloudImportDialog v-model="importVisible" />
 
-    <el-dialog v-model="latestMailVisible" title="iCloud 最新邮件" width="760px" class="icloud-latest-dialog">
+    <el-dialog v-model="latestMailVisible" width="840px" class="icloud-latest-dialog">
+      <template #header>
+        <div class="icloud-dialog-heading">
+          <span>iCloud 邮件</span>
+          <h2>{{ latestMail?.email?.subject || '邮件详情' }}</h2>
+        </div>
+      </template>
+
       <div v-loading="latestMailLoading" class="icloud-latest-content">
         <template v-if="latestMail?.email">
-          <header class="reader-head icloud-latest-head">
-            <div class="reader-title-row">
-              <h2>{{ latestMail.email.subject || '无主题' }}</h2>
-              <el-tag size="small" effect="plain">iCloud</el-tag>
+          <div class="icloud-message-meta">
+            <div class="reader-sender-avatar" aria-hidden="true">
+              {{ latestMail.email.from?.charAt(0).toUpperCase() || '?' }}
             </div>
-            <div class="reader-sender-row">
-              <div class="reader-sender-avatar" aria-hidden="true">
-                {{ latestMail.email.from?.charAt(0).toUpperCase() || '?' }}
-              </div>
-              <div class="reader-sender-main">
-                <strong>{{ latestMail.email.from || '未知发件人' }}</strong>
-                <p>
-                  <span>收件人 {{ latestMail.email.to || latestMailAccount }}</span>
-                  <span class="reader-meta-separator">·</span>
-                  <span>查看账号 {{ latestMailAccount }}</span>
-                </p>
-              </div>
-              <time class="reader-sender-time">
-                {{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}
-              </time>
+            <div class="icloud-message-parties">
+              <strong>{{ latestMail.email.from || '未知发件人' }}</strong>
+              <span>发送至 {{ latestMail.email.to || latestMailAccount }}</span>
             </div>
-          </header>
+            <time>{{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}</time>
+          </div>
 
           <div v-if="latestMail.email.verification_code" class="icloud-verification-code">
             <span>验证码</span>
@@ -574,19 +600,15 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </el-button>
           </div>
 
-          <section class="reader-body-panel icloud-reader-panel">
-            <div class="reader-body-toolbar">
-              <strong>邮件正文</strong>
-              <el-button
-                v-if="latestMail.email.text"
-                link
-                :icon="CopyDocument"
-                @click="copyLatestValue(latestMail.email.text, '正文')"
-              >
-                复制正文
-              </el-button>
-            </div>
-            <div class="mail-body plain plain-mail-paragraphs icloud-mail-body">
+          <section class="icloud-reader-panel" aria-label="iCloud 邮件正文">
+            <iframe
+              v-if="latestMailHtml"
+              class="icloud-mail-frame"
+              :srcdoc="latestMailHtml"
+              sandbox="allow-popups allow-popups-to-escape-sandbox"
+              title="iCloud 邮件正文"
+            />
+            <div v-else class="mail-body plain plain-mail-paragraphs icloud-mail-body">
               <template v-if="latestMailBlocks.length">
                 <p
                   v-for="(block, index) in latestMailBlocks"
@@ -600,7 +622,7 @@ function canDeleteGroup(group: ICloudGroup): boolean {
             </div>
           </section>
 
-          <div v-if="latestMail.email.invite_link" class="icloud-invite-link">
+          <div v-if="latestMail.email.invite_link && !latestMailHtml" class="icloud-invite-link">
             <span>邀请链接</span>
             <code>{{ latestMail.email.invite_link }}</code>
             <el-button
@@ -616,6 +638,13 @@ function canDeleteGroup(group: ICloudGroup): boolean {
       </div>
       <template #footer>
         <el-button @click="latestMailVisible = false">关闭</el-button>
+        <el-button
+          v-if="latestMail?.email?.text"
+          :icon="CopyDocument"
+          @click="copyLatestValue(latestMail.email.text, '正文')"
+        >
+          复制正文
+        </el-button>
         <el-button type="primary" :icon="Refresh" :loading="latestMailLoading" @click="refreshLatestMail">
           刷新最新邮件
         </el-button>

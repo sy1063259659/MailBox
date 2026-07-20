@@ -384,7 +384,7 @@ func TestICloudLatestClientParsesResponseAndForwardsCredentials(t *testing.T) {
 				"to": "alias@icloud.com",
 				"subject": "Verification",
 				"text": "Your code is 123456",
-				"html": "<b>ignored</b>",
+				"html": "<p><b>formatted</b> message</p>",
 				"body": "raw ignored",
 				"received_at": "2026-07-20T10:00:00+08:00",
 				"verification_code": "123456",
@@ -404,12 +404,15 @@ func TestICloudLatestClientParsesResponseAndForwardsCredentials(t *testing.T) {
 	if payload.Email == nil || payload.Email.VerificationCode != "123456" || payload.Email.Text != "Your code is 123456" {
 		t.Fatalf("payload = %+v", payload)
 	}
+	if payload.Email.HTML != "<p><b>formatted</b> message</p>" {
+		t.Fatalf("html = %q", payload.Email.HTML)
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "<b>ignored</b>") || strings.Contains(string(encoded), "raw ignored") {
-		t.Fatalf("payload exposes raw mail content: %s", encoded)
+	if !strings.Contains(string(encoded), "formatted") || strings.Contains(string(encoded), "raw ignored") {
+		t.Fatalf("payload exposes unexpected mail content: %s", encoded)
 	}
 }
 

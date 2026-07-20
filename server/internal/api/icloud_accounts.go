@@ -74,6 +74,7 @@ type iCloudLatestEmail struct {
 	From             string `json:"from"`
 	Subject          string `json:"subject"`
 	Text             string `json:"text"`
+	HTML             string `json:"html,omitempty"`
 	ReceivedAt       string `json:"received_at"`
 	CreatedAt        string `json:"created_at"`
 	VerificationCode string `json:"verification_code"`
