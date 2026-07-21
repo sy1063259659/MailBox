@@ -1676,3 +1676,305 @@ textarea {
     grid-template-columns: 1fr;
   }
 }
+/* iCloud Hide My Email management */
+.hme-action-row {
+  gap: 8px;
+}
+
+.hme-filter-row,
+.hme-source-toolbar,
+.hme-source-batch,
+.hme-mail-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hme-filter-row {
+  min-height: 42px;
+  padding: 8px 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.hme-source-toolbar {
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hme-source-toolbar .hme-source-create {
+  flex: 1;
+  margin-bottom: 14px;
+}
+
+.hme-source-batch {
+  flex: 0 0 auto;
+  padding-top: 14px;
+}
+
+.hme-source-error {
+  display: block;
+  max-width: 125px;
+  margin-top: 5px;
+  overflow: hidden;
+  color: #b42318;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hme-source-dates {
+  display: grid;
+  gap: 3px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.hme-jobs-dialog .el-dialog__body {
+  padding-top: 8px;
+}
+
+.hme-jobs-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(260px, .75fr);
+  gap: 14px;
+  min-height: 430px;
+}
+
+.hme-jobs-layout .el-table strong,
+.hme-jobs-layout .el-table small {
+  display: block;
+}
+
+.hme-jobs-layout .el-table small {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.hme-job-detail {
+  min-width: 0;
+  border-left: 1px solid #e5eaf2;
+  padding-left: 14px;
+}
+
+.hme-job-item {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 4px;
+  border-bottom: 1px solid #eef2f7;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.hme-job-item strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #334155;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hme-job-item small {
+  grid-column: 2 / -1;
+  color: #b42318;
+  overflow-wrap: anywhere;
+}
+
+.hme-mail-dialog .el-dialog__body {
+  padding: 0;
+}
+
+.hme-mail-toolbar {
+  min-height: 58px;
+  padding: 10px 16px;
+  border-top: 1px solid #e8edf4;
+  border-bottom: 1px solid #e8edf4;
+  background: #f8fafc;
+}
+
+.hme-mail-toolbar .el-input {
+  width: min(320px, 36vw);
+}
+
+.hme-code {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.hme-code span {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.hme-code strong {
+  color: #1d4ed8;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.hme-mail-layout {
+  height: min(68vh, 650px);
+  min-height: 440px;
+  display: grid;
+  grid-template-columns: 330px minmax(0, 1fr);
+  overflow: hidden;
+  background: #f6f8fb;
+}
+
+.hme-mail-list {
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid #e1e7ef;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.hme-mail-list .el-scrollbar {
+  flex: 1;
+  min-height: 0;
+}
+
+.hme-mail-row {
+  width: 100%;
+  min-height: 78px;
+  padding: 11px 13px;
+  border: 0;
+  border-bottom: 1px solid #eef2f7;
+  border-left: 3px solid transparent;
+  background: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+
+.hme-mail-row:hover,
+.hme-mail-row.active {
+  background: #f5f9ff;
+}
+
+.hme-mail-row.active {
+  border-left-color: #2563eb;
+}
+
+.hme-mail-row div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.hme-mail-row strong,
+.hme-mail-row time,
+.hme-mail-row h3,
+.hme-mail-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hme-mail-row strong {
+  color: #334155;
+  font-size: 12px;
+}
+
+.hme-mail-row time,
+.hme-mail-row span {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.hme-mail-row h3 {
+  margin: 7px 0 4px;
+  color: #111827;
+  font-size: 13px;
+}
+
+.hme-mail-reader {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+}
+
+.hme-mail-reader > header {
+  flex: 0 0 auto;
+  padding-bottom: 12px;
+}
+
+.hme-mail-reader > header h2 {
+  margin: 0 0 8px;
+  color: #111827;
+  font-size: 17px;
+}
+
+.hme-mail-reader > header p {
+  margin: 0;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.hme-mail-reader > header time {
+  margin-left: auto;
+}
+
+.hme-mail-reader .icloud-reader-panel {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+
+@media (max-width: 900px) {
+  .hme-source-toolbar,
+  .hme-mail-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hme-source-batch,
+  .hme-mail-toolbar .el-input {
+    width: 100%;
+    padding-top: 0;
+  }
+
+  .hme-jobs-layout,
+  .hme-mail-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .hme-job-detail {
+    border-left: 0;
+    border-top: 1px solid #e5eaf2;
+    padding: 12px 0 0;
+  }
+
+  .hme-mail-layout {
+    height: auto;
+    max-height: none;
+  }
+
+  .hme-mail-list {
+    height: 300px;
+    border-right: 0;
+    border-bottom: 1px solid #e1e7ef;
+  }
+
+  .hme-mail-reader {
+    height: 520px;
+  }
+
+  .hme-code {
+    margin-left: 0;
+  }
+}

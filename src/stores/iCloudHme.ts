@@ -1,20 +1,25 @@
 import { defineStore } from 'pinia'
 import {
+  cancelICloudHMEJob,
   createICloudHMEAlias,
+  createICloudHMEJob,
   createICloudHMESourceAccount,
   deleteICloudHMEAlias,
   deleteICloudHMEGroup,
   deleteICloudHMESource,
   listICloudHMEAliases,
   listICloudHMEGroups,
+  listICloudHMEJobs,
   listICloudHMESourceAccounts,
   moveICloudHMEAliases,
   renameICloudHMEGroup,
   reorderICloudHMEGroups,
+  retryICloudHMEJob,
   syncICloudHMEAliases,
   updateICloudHMERemark,
   type ICloudHMEAlias,
   type ICloudHMEGroup,
+  type ICloudHMEJob,
   type ICloudHMESourceAccount,
 } from '@/services/iCloudHmeApi'
 
@@ -25,6 +30,7 @@ export const useICloudHmeStore = defineStore('iCloudHme', {
     sources: [] as ICloudHMESourceAccount[],
     aliases: [] as ICloudHMEAlias[],
     groups: [] as ICloudHMEGroup[],
+    jobs: [] as ICloudHMEJob[],
     selectedGroup: '',
     loading: false,
   }),
@@ -32,18 +38,42 @@ export const useICloudHmeStore = defineStore('iCloudHme', {
     async load() {
       this.loading = true
       try {
-        const [sources, aliases, groups] = await Promise.all([
+        const [sources, aliases, groups, jobs] = await Promise.all([
           listICloudHMESourceAccounts(),
           listICloudHMEAliases(),
           listICloudHMEGroups(),
+          listICloudHMEJobs(),
         ])
         this.sources = sources
         this.aliases = aliases
         this.groups = groups
+        this.jobs = jobs
         if (this.selectedGroup && !groups.some((group) => group.name === this.selectedGroup)) this.selectedGroup = ''
       } finally {
         this.loading = false
       }
+    },
+    async loadJobs() {
+      this.jobs = await listICloudHMEJobs()
+    },
+    async createJob(input: {
+      mode: 'fixed' | 'pool'
+      sourceAccountId?: number
+      labelPrefix: string
+      group: string
+      count: number
+    }) {
+      const job = await createICloudHMEJob(input)
+      await this.loadJobs()
+      return job
+    },
+    async cancelJob(id: number) {
+      await cancelICloudHMEJob(id)
+      await this.loadJobs()
+    },
+    async retryJob(id: number) {
+      await retryICloudHMEJob(id)
+      await this.loadJobs()
     },
     async createSource(input: { name: string; appleIdEmail: string; icloudEmail: string; host: string }) {
       await createICloudHMESourceAccount(input)

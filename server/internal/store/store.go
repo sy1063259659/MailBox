@@ -220,10 +220,60 @@ func migrationCreateStatements() []string {
 			anonymous_id TEXT NOT NULL DEFAULT '',
 			label TEXT NOT NULL DEFAULT '',
 			active BOOLEAN NOT NULL DEFAULT true,
+			apple_status TEXT NOT NULL DEFAULT 'active',
+			deactivated_at TIMESTAMPTZ,
+			deleted_at TIMESTAMPTZ,
+			last_synced_at TIMESTAMPTZ,
 			group_id BIGINT NOT NULL REFERENCES icloud_hme_groups(id),
 			remark TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_create_jobs (
+			id BIGSERIAL PRIMARY KEY,
+			mode TEXT NOT NULL,
+			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			label_prefix TEXT NOT NULL,
+			group_name TEXT NOT NULL DEFAULT '默认分组',
+			requested_count INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			completed_count INTEGER NOT NULL DEFAULT 0,
+			failed_count INTEGER NOT NULL DEFAULT 0,
+			cancelled_count INTEGER NOT NULL DEFAULT 0,
+			created_by TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_create_job_items (
+			id BIGSERIAL PRIMARY KEY,
+			job_id BIGINT NOT NULL REFERENCES icloud_hme_create_jobs(id) ON DELETE CASCADE,
+			sequence INTEGER NOT NULL,
+			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			label TEXT NOT NULL,
+			email TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			error_code TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(job_id, sequence)
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs (
+			id BIGSERIAL PRIMARY KEY,
+			actor TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target TEXT NOT NULL,
+			result TEXT NOT NULL,
+			error_code TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`}
 }
 
@@ -236,6 +286,13 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
 	}
 }
 
@@ -254,7 +311,11 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_anonymous_id
 			ON icloud_hme_aliases(source_account_id, anonymous_id)
-			WHERE anonymous_id <> ''`}
+			WHERE anonymous_id <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_status ON icloud_hme_aliases(apple_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_jobs_status ON icloud_hme_create_jobs(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_status ON icloud_hme_create_job_items(job_id, status, sequence)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`}
 }
 
 func legacyCleanupStatements() []string {

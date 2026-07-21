@@ -222,3 +222,59 @@ func TestICloudHMEMigrationDoesNotAlterExistingICloudTables(t *testing.T) {
 		t.Fatal("HME migrations must not alter existing iCloud tables")
 	}
 }
+
+func TestICloudHMEManagementMigrations(t *testing.T) {
+	creates := strings.Join(migrationCreateStatements(), "\n")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS icloud_hme_create_jobs",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_create_job_items",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs",
+		"UNIQUE(job_id, sequence)",
+		"ON DELETE SET NULL",
+	} {
+		if !strings.Contains(creates, want) {
+			t.Fatalf("migrationCreateStatements() missing %q", want)
+		}
+	}
+	columns := strings.Join(migrationColumnStatements(), "\n")
+	for _, want := range []string{
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at",
+	} {
+		if !strings.Contains(columns, want) {
+			t.Fatalf("migrationColumnStatements() missing %q", want)
+		}
+	}
+}
+
+func TestICloudHMEManagementIndexes(t *testing.T) {
+	indexes := strings.Join(migrationIndexStatements(), "\n")
+	for _, want := range []string{
+		"idx_icloud_hme_jobs_status",
+		"idx_icloud_hme_job_items_status",
+		"idx_icloud_hme_audit_created_at",
+		"idx_icloud_hme_aliases_status",
+	} {
+		if !strings.Contains(indexes, want) {
+			t.Fatalf("migrationIndexStatements() missing %q", want)
+		}
+	}
+}
+
+func TestICloudHMEJobAggregateStatusPreservesCancellation(t *testing.T) {
+	status, finished := iCloudHMEJobAggregateStatus("cancel_requested", 0, 0, 2, 0, 1)
+	if status != "cancel_requested" || finished {
+		t.Fatalf("status = %q, finished = %v", status, finished)
+	}
+	status, finished = iCloudHMEJobAggregateStatus("cancel_requested", 1, 0, 2, 0, 0)
+	if status != "partial_failed" || !finished {
+		t.Fatalf("status = %q, finished = %v", status, finished)
+	}
+	status, finished = iCloudHMEJobAggregateStatus("cancel_requested", 0, 0, 3, 0, 0)
+	if status != "cancelled" || !finished {
+		t.Fatalf("status = %q, finished = %v", status, finished)
+	}
+}

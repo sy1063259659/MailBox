@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/emersion/go-imap/v2"
+	"github.com/emersion/go-imap/v2/imapclient"
 )
 
 const defaultICloudAddress = "imap.mail.me.com:993"
@@ -67,6 +69,147 @@ func (c Client) GetLatestMessageByRecipient(ctx context.Context, email, password
 		return MessageDetail{}, errors.New("icloud_mail_not_found")
 	}
 
+	parsed := parseMessageBody(messages[0].FindBodySection(section))
+	detail := detailFromFetch(messages[0])
+	if parsed.HTML != "" {
+		detail.ContentType = "text/html"
+		detail.Content = parsed.HTML
+	} else {
+		detail.ContentType = "text/plain"
+		detail.Content = parsed.Text
+	}
+	return detail, nil
+}
+
+func (c Client) ListMessagesByRecipient(ctx context.Context, email, password, recipient string, limit int, cursor string) (ListResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	client, err := c.connectICloudPassword(ctx, email, password)
+	if err != nil {
+		return ListResult{}, err
+	}
+	defer client.Close()
+
+	criteria := imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: strings.ToLower(strings.TrimSpace(recipient))}},
+	}
+	if strings.TrimSpace(cursor) != "" {
+		cursorUID, err := parseUID(cursor)
+		if err != nil {
+			return ListResult{}, err
+		}
+		if cursorUID == 0 {
+			return ListResult{}, nil
+		}
+		criteria.UID = []imap.UIDSet{uidRange(1, cursorUID)}
+	}
+	data, err := client.UIDSearch(&criteria, nil).Wait()
+	if err != nil {
+		return ListResult{}, fmt.Errorf("imapmail: search iCloud recipient: %w", err)
+	}
+	uids := data.AllUIDs()
+	sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
+	if len(uids) > limit {
+		uids = uids[:limit]
+	}
+	if len(uids) == 0 {
+		return ListResult{Messages: []MessageSummary{}}, nil
+	}
+	messages, err := client.Fetch(uidSetFromUIDs(uids), &imap.FetchOptions{
+		UID: true, Envelope: true, Flags: true, InternalDate: true,
+		BodyStructure: &imap.FetchItemBodyStructure{Extended: true},
+	}).Collect()
+	if err != nil {
+		return ListResult{}, fmt.Errorf("imapmail: fetch iCloud message list: %w", err)
+	}
+	summaries := make([]MessageSummary, 0, len(messages))
+	for _, message := range messages {
+		summaries = append(summaries, summaryFromFetch(message))
+	}
+	sort.Slice(summaries, func(i, j int) bool {
+		left, _ := strconv.ParseUint(summaries[i].ID, 10, 32)
+		right, _ := strconv.ParseUint(summaries[j].ID, 10, 32)
+		return left > right
+	})
+	nextCursor := ""
+	if len(summaries) == limit {
+		last, _ := strconv.ParseUint(summaries[len(summaries)-1].ID, 10, 32)
+		if last > 1 {
+			nextCursor = strconv.FormatUint(last-1, 10)
+		}
+	}
+	return ListResult{Messages: summaries, NextCursor: nextCursor}, nil
+}
+
+func (c Client) GetMessageByRecipient(ctx context.Context, email, password, recipient, uid string) (MessageDetail, error) {
+	parsedUID, err := parseUID(uid)
+	if err != nil {
+		return MessageDetail{}, err
+	}
+	client, err := c.connectICloudPassword(ctx, email, password)
+	if err != nil {
+		return MessageDetail{}, err
+	}
+	defer client.Close()
+
+	data, err := client.UIDSearch(&imap.SearchCriteria{
+		UID:    []imap.UIDSet{imap.UIDSetNum(parsedUID)},
+		Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: strings.ToLower(strings.TrimSpace(recipient))}},
+	}, nil).Wait()
+	if err != nil {
+		return MessageDetail{}, fmt.Errorf("imapmail: verify iCloud recipient: %w", err)
+	}
+	if len(data.AllUIDs()) == 0 {
+		return MessageDetail{}, errors.New("icloud_mail_not_found")
+	}
+	return fetchICloudMessage(client, parsedUID)
+}
+
+func (c Client) connectICloudPassword(ctx context.Context, email, password string) (*imapclient.Client, error) {
+	email = strings.TrimSpace(email)
+	password = strings.TrimSpace(password)
+	if email == "" || password == "" {
+		return nil, errors.New("imapmail: iCloud email and app password are required")
+	}
+	dial := c.Dial
+	if dial == nil {
+		dial = defaultDial
+	}
+	address := c.Address
+	if address == "" || address == defaultAddress {
+		address = defaultICloudAddress
+	}
+	client, err := dial(ctx, address)
+	if err != nil {
+		return nil, fmt.Errorf("imapmail: dial iCloud: %w", err)
+	}
+	if err := client.Login(email, password).Wait(); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("imapmail: iCloud login: %w", err)
+	}
+	if _, err := client.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		client.Close()
+		return nil, fmt.Errorf("imapmail: select iCloud Inbox: %w", err)
+	}
+	return client, nil
+}
+
+func fetchICloudMessage(client *imapclient.Client, uid imap.UID) (MessageDetail, error) {
+	section := &imap.FetchItemBodySection{Peek: true}
+	messages, err := client.Fetch(imap.UIDSetNum(uid), &imap.FetchOptions{
+		UID: true, Envelope: true, Flags: true, InternalDate: true,
+		BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect()
+	if err != nil {
+		return MessageDetail{}, fmt.Errorf("imapmail: fetch iCloud message: %w", err)
+	}
+	if len(messages) == 0 {
+		return MessageDetail{}, errors.New("icloud_mail_not_found")
+	}
 	parsed := parseMessageBody(messages[0].FindBodySection(section))
 	detail := detailFromFetch(messages[0])
 	if parsed.HTML != "" {

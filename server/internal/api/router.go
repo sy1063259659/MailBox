@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -56,12 +57,29 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 		}
 	}))
+	mux.HandleFunc("/api/icloud-hme/source-accounts/validate-all", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.validateAllSources)))
+	mux.HandleFunc("/api/icloud-hme/source-accounts/sync-all", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.syncAllSources)))
 	mux.HandleFunc("/api/icloud-hme/source-accounts/", authRequired(sessions, iCloudHMEAPI.routeSourceAccount))
+	mux.HandleFunc("/api/icloud-hme/jobs", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			iCloudHMEAPI.listJobs(w, r)
+		case http.MethodPost:
+			iCloudHMEAPI.createJob(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}))
+	mux.HandleFunc("/api/icloud-hme/jobs/", authRequired(sessions, iCloudHMEAPI.routeJob))
 	mux.HandleFunc("/api/icloud-hme/aliases", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.listAliases)))
+	mux.HandleFunc("/api/icloud-hme/aliases/lifecycle", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.lifecycleAliases)))
 	mux.HandleFunc("/api/icloud-hme/aliases/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudHMEAPI.updateAliasRemark)))
 	mux.HandleFunc("/api/icloud-hme/aliases/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.moveAliases)))
 	mux.HandleFunc("/api/icloud-hme/aliases/", authRequired(sessions, iCloudHMEAPI.routeAlias))
 	mux.HandleFunc("/api/icloud-hme/mail/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.latestMail)))
+	mux.HandleFunc("/api/icloud-hme/mail/messages", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.mailMessages)))
+	mux.HandleFunc("/api/icloud-hme/mail/message", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.mailMessage)))
+	mux.HandleFunc("/api/icloud-hme/mail/code", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.mailCode)))
 	mux.HandleFunc("/api/icloud-hme/groups", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -152,13 +170,21 @@ func methodHandler(method string, handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+type requestActorKey struct{}
+
+func requestActor(r *http.Request) string {
+	actor, _ := r.Context().Value(requestActorKey{}).(string)
+	return actor
+}
+
 func authRequired(sessions session.Manager, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := sessions.Username(r); !ok {
+		username, ok := sessions.Username(r)
+		if !ok {
 			WriteError(w, http.StatusUnauthorized, "unauthorized", "未登录")
 			return
 		}
-		handler(w, r)
+		handler(w, r.WithContext(context.WithValue(r.Context(), requestActorKey{}, username)))
 	}
 }
 

@@ -22,6 +22,9 @@ type iCloudHMEClient interface {
 	AccountInfo() *icloudhme.AccountInfo
 	ListAliases() ([]icloudhme.Alias, error)
 	CreateAlias(string, int) (*icloudhme.CreateResult, error)
+	DeactivateHME(string) (bool, error)
+	ReactivateHME(string) (bool, error)
+	Delete(string) error
 	Login(string, string, icloudhme.OTPProvider) error
 	GetCookies() map[string]string
 }
@@ -29,19 +32,29 @@ type iCloudHMEClient interface {
 type iCloudHMEClientFactory func(map[string]string, string) (iCloudHMEClient, error)
 
 type iCloudHMEAPI struct {
-	store       *store.Store
-	newClient   iCloudHMEClientFactory
-	mailClient  imapmail.Client
-	createLocks sync.Map
+	store         *store.Store
+	newClient     iCloudHMEClientFactory
+	mailClient    imapmail.Client
+	createLocks   sync.Map
+	aliasCreateMu sync.Mutex
+	challenges    sync.Map
+	jobWake       chan struct{}
+	jobPaceMu     sync.Mutex
+	lastJobItem   time.Time
 }
 
 func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
-	return &iCloudHMEAPI{
+	api := &iCloudHMEAPI{
 		store: database,
 		newClient: func(cookies map[string]string, host string) (iCloudHMEClient, error) {
 			return icloudhme.NewClient(cookies, host, "", false)
 		},
+		jobWake: make(chan struct{}, 1),
 	}
+	if database != nil {
+		api.startJobWorker()
+	}
+	return api
 }
 
 type createICloudHMESourceRequest struct {
@@ -224,9 +237,14 @@ func (api *iCloudHMEAPI) createAlias(w http.ResponseWriter, r *http.Request, sou
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if !api.aliasCreateMu.TryLock() {
+		WriteError(w, 409, "icloud_alias_create_busy", "正在创建其他隐藏邮箱，请稍后重试")
+		return
+	}
+	defer api.aliasCreateMu.Unlock()
 	lock := api.lockForSource(sourceID)
 	if !lock.TryLock() {
-		WriteError(w, 409, "icloud_alias_create_busy", "该主账号正在创建隐藏邮箱")
+		WriteError(w, 409, "icloud_alias_create_busy", "该主账号正在执行其他 Apple 操作")
 		return
 	}
 	defer lock.Unlock()
@@ -243,7 +261,7 @@ func (api *iCloudHMEAPI) createAlias(w http.ResponseWriter, r *http.Request, sou
 		return
 	}
 	createdAt, _ := time.Parse(time.RFC3339, result.CreatedAt)
-	imported, _, err := api.store.SyncICloudHMEAliases(r.Context(), sourceID, []store.ICloudHMEAliasInput{{
+	imported, _, err := api.store.UpsertICloudHMEAliases(r.Context(), sourceID, []store.ICloudHMEAliasInput{{
 		Email: result.Email, Label: result.Label, Active: true, CreatedAt: createdAt,
 	}}, req.Group)
 	if err != nil {
@@ -258,34 +276,15 @@ func (api *iCloudHMEAPI) createAlias(w http.ResponseWriter, r *http.Request, sou
 }
 
 func (api *iCloudHMEAPI) syncAliases(w http.ResponseWriter, r *http.Request, sourceID int64) {
-	client, _, err := api.clientForSource(r.Context(), sourceID)
+	imported, updated, err := api.syncSource(r.Context(), sourceID, store.DefaultICloudHMEGroupName)
 	if err != nil {
 		writeICloudHMEError(w, err)
 		return
 	}
-	aliases, err := client.ListAliases()
-	if err != nil {
-		api.markSourceError(r.Context(), sourceID, err)
-		writeICloudHMEError(w, err)
-		return
-	}
-	inputs := make([]store.ICloudHMEAliasInput, 0, len(aliases))
-	for _, alias := range aliases {
-		createdAt, _ := time.Parse(time.RFC3339, alias.CreatedAt)
-		inputs = append(inputs, store.ICloudHMEAliasInput{Email: alias.Email, AnonymousID: alias.AnonymousID, Label: alias.Label, Active: alias.Active, CreatedAt: createdAt})
-	}
-	imported, updated, err := api.store.SyncICloudHMEAliases(r.Context(), sourceID, inputs, store.DefaultICloudHMEGroupName)
-	if err != nil {
-		WriteError(w, 500, "internal_error", err.Error())
-		return
-	}
-	if err := api.store.SaveICloudHMECookies(r.Context(), sourceID, client.GetCookies(), "active", ""); err != nil {
-		WriteError(w, 500, "internal_error", err.Error())
-		return
-	}
-	WriteJSON(w, 200, map[string]any{"ok": true, "imported": imported, "updated": updated, "total": len(inputs)})
+	WriteJSON(w, 200, map[string]any{
+		"ok": true, "imported": imported, "updated": updated, "total": imported + updated,
+	})
 }
-
 func (api *iCloudHMEAPI) updateAliasRemark(w http.ResponseWriter, r *http.Request) {
 	var req iCloudHMERemarkRequest
 	if !decodeJSON(w, r, &req) {
@@ -558,6 +557,10 @@ func (api *iCloudHMEAPI) routeSourceAccount(w http.ResponseWriter, r *http.Reque
 		api.saveCookies(w, r, id)
 	case r.Method == http.MethodPost && action == "login":
 		api.login(w, r, id)
+	case r.Method == http.MethodPost && action == "login/start":
+		api.loginStart(w, r, id)
+	case r.Method == http.MethodPost && action == "login/complete":
+		api.loginComplete(w, r, id)
 	case r.Method == http.MethodPut && action == "app-password":
 		api.saveAppPassword(w, r, id)
 	case r.Method == http.MethodPost && action == "validate":
@@ -574,12 +577,21 @@ func (api *iCloudHMEAPI) routeSourceAccount(w http.ResponseWriter, r *http.Reque
 }
 
 func (api *iCloudHMEAPI) routeAlias(w http.ResponseWriter, r *http.Request) {
-	email := decodePathEmail(strings.TrimPrefix(r.URL.Path, "/api/icloud-hme/aliases/"))
-	if r.Method != http.MethodDelete {
-		WriteError(w, 405, "method_not_allowed", "method not allowed")
-		return
+	raw := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/icloud-hme/aliases/"), "/")
+	action := ""
+	if strings.HasSuffix(raw, "/delete-apple") {
+		raw = strings.TrimSuffix(raw, "/delete-apple")
+		action = "delete-apple"
 	}
-	api.deleteAlias(w, r, email)
+	email := decodePathEmail(raw)
+	switch {
+	case r.Method == http.MethodPost && action == "delete-apple":
+		api.deleteAppleAlias(w, r, email)
+	case r.Method == http.MethodDelete && action == "":
+		api.deleteAlias(w, r, email)
+	default:
+		WriteError(w, 405, "method_not_allowed", "method not allowed")
+	}
 }
 
 func (api *iCloudHMEAPI) routeGroup(w http.ResponseWriter, r *http.Request) {

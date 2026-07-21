@@ -15,6 +15,9 @@ func (panicICloudHMEClient) ListAliases() ([]icloudhme.Alias, error) { return ni
 func (panicICloudHMEClient) CreateAlias(string, int) (*icloudhme.CreateResult, error) {
 	return nil, nil
 }
+func (panicICloudHMEClient) DeactivateHME(string) (bool, error) { return true, nil }
+func (panicICloudHMEClient) ReactivateHME(string) (bool, error) { return true, nil }
+func (panicICloudHMEClient) Delete(string) error                { return nil }
 func (panicICloudHMEClient) Login(string, string, icloudhme.OTPProvider) error {
 	panic("invalid SRP challenge")
 }
