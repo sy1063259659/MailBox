@@ -137,7 +137,10 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.ensureGroup(ctx, DefaultGroupName); err != nil {
 		return err
 	}
-	_, err := s.ensureICloudGroup(ctx, DefaultICloudGroupName)
+	if _, err := s.ensureICloudGroup(ctx, DefaultICloudGroupName); err != nil {
+		return err
+	}
+	_, err := s.ensureICloudHMEGroup(ctx, DefaultICloudHMEGroupName)
 	return err
 }
 
@@ -188,6 +191,39 @@ func migrationCreateStatements() []string {
 			remark TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_groups (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL UNIQUE,
+			sort_order INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_source_accounts (
+			id BIGSERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			apple_id_email TEXT NOT NULL UNIQUE,
+			icloud_email TEXT NOT NULL,
+			host TEXT NOT NULL DEFAULT 'icloud.com',
+			cookies_encrypted TEXT NOT NULL DEFAULT '',
+			app_password_encrypted TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'pending',
+			status_reason TEXT NOT NULL DEFAULT '',
+			alias_total INTEGER NOT NULL DEFAULT 0,
+			last_validated_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_aliases (
+			email TEXT PRIMARY KEY,
+			source_account_id BIGINT NOT NULL REFERENCES icloud_hme_source_accounts(id),
+			anonymous_id TEXT NOT NULL DEFAULT '',
+			label TEXT NOT NULL DEFAULT '',
+			active BOOLEAN NOT NULL DEFAULT true,
+			group_id BIGINT NOT NULL REFERENCES icloud_hme_groups(id),
+			remark TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`}
 }
 
@@ -212,7 +248,13 @@ func migrationIndexStatements() []string {
 			ON mail_accounts(parent_email, split_index)
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`}
+		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_account_id ON icloud_hme_aliases(source_account_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_id ON icloud_hme_aliases(group_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_anonymous_id
+			ON icloud_hme_aliases(source_account_id, anonymous_id)
+			WHERE anonymous_id <> ''`}
 }
 
 func legacyCleanupStatements() []string {

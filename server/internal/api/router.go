@@ -20,6 +20,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	authAPI := authAPI{store: store, sessions: sessions}
 	accountAPI := accountAPI{store: store}
 	iCloudAPI := iCloudAPI{store: store, latestFetch: newICloudLatestClient()}
+	iCloudHMEAPI := newICloudHMEAPI(store)
 	mailAPI := newMailAPI(store)
 	mux.HandleFunc("/api/health", methodHandler(http.MethodGet, healthHandler))
 
@@ -44,6 +45,34 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-accounts/", authRequired(sessions, iCloudAccountPathHandler(iCloudAPI)))
 	mux.HandleFunc("/api/icloud-groups", authRequired(sessions, iCloudGroupsHandler(iCloudAPI)))
 	mux.HandleFunc("/api/icloud-groups/", authRequired(sessions, iCloudGroupIDHandler(iCloudAPI)))
+
+	mux.HandleFunc("/api/icloud-hme/source-accounts", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			iCloudHMEAPI.listSourceAccounts(w, r)
+		case http.MethodPost:
+			iCloudHMEAPI.createSourceAccount(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}))
+	mux.HandleFunc("/api/icloud-hme/source-accounts/", authRequired(sessions, iCloudHMEAPI.routeSourceAccount))
+	mux.HandleFunc("/api/icloud-hme/aliases", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.listAliases)))
+	mux.HandleFunc("/api/icloud-hme/aliases/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudHMEAPI.updateAliasRemark)))
+	mux.HandleFunc("/api/icloud-hme/aliases/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.moveAliases)))
+	mux.HandleFunc("/api/icloud-hme/aliases/", authRequired(sessions, iCloudHMEAPI.routeAlias))
+	mux.HandleFunc("/api/icloud-hme/mail/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.latestMail)))
+	mux.HandleFunc("/api/icloud-hme/groups", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			iCloudHMEAPI.listGroups(w, r)
+		case http.MethodPost:
+			iCloudHMEAPI.createGroup(w, r)
+		default:
+			WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+		}
+	}))
+	mux.HandleFunc("/api/icloud-hme/groups/", authRequired(sessions, iCloudHMEAPI.routeGroup))
 	mux.HandleFunc("/api/mail/check", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.check)))
 	mux.HandleFunc("/api/mail/folders", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.folders)))
 	mux.HandleFunc("/api/mail/messages", authRequired(sessions, methodHandler(http.MethodPost, mailAPI.messages)))

@@ -4,10 +4,11 @@ import type { AppRouteName } from '@/composables/useAppRoute'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAuthStore } from '@/stores/auth'
 
-type MailboxSection = 'outlook' | 'icloud'
+type MailboxSection = 'outlook' | 'icloud' | 'icloudHme'
 
 const MailboxManagementView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
 const ICloudAccountManagementView = defineAsyncComponent(() => import('@/views/ICloudAccountManagementView.vue'))
+const ICloudHMEManagementView = defineAsyncComponent(() => import('@/views/ICloudHMEManagementView.vue'))
 
 defineProps<{
   clearingData?: boolean
@@ -22,7 +23,7 @@ const emit = defineEmits<{
 const authStore = useAuthStore()
 const loggingOut = ref(false)
 const activeSection = useLocalUiState<MailboxSection>('mailbox.ui.mailboxSection', 'outlook', {
-  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud',
+  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud' || value === 'icloudHme',
 })
 
 async function logout() {
@@ -52,6 +53,7 @@ async function logout() {
           :options="[
             { label: 'Outlook / Hotmail', value: 'outlook' },
             { label: 'iCloud', value: 'icloud' },
+            { label: 'iCloud隐藏邮箱', value: 'icloudHme' },
           ]"
           class="mailbox-section-switch"
         />
@@ -68,7 +70,8 @@ async function logout() {
         :clearing-data="clearingData"
         @import-accounts="emit('importAccounts')"
       />
-      <ICloudAccountManagementView v-else />
+      <ICloudAccountManagementView v-else-if="activeSection === 'icloud'" />
+      <ICloudHMEManagementView v-else />
     </main>
   </section>
 </template>

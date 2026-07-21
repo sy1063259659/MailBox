@@ -198,3 +198,27 @@ func TestICloudMigrationCreatesIndexes(t *testing.T) {
 		}
 	}
 }
+
+func TestICloudHMEMigrationCreatesIndependentTables(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS icloud_hme_groups",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_source_accounts",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_aliases",
+		"cookies_encrypted TEXT NOT NULL DEFAULT ''",
+		"app_password_encrypted TEXT NOT NULL DEFAULT ''",
+		"REFERENCES icloud_hme_source_accounts(id)",
+		"REFERENCES icloud_hme_groups(id)",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("migrationCreateStatements() missing %q", want)
+		}
+	}
+}
+
+func TestICloudHMEMigrationDoesNotAlterExistingICloudTables(t *testing.T) {
+	columns := strings.Join(migrationColumnStatements(), "\n")
+	if strings.Contains(columns, "icloud_accounts") || strings.Contains(columns, "icloud_groups") {
+		t.Fatal("HME migrations must not alter existing iCloud tables")
+	}
+}

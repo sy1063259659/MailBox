@@ -1624,3 +1624,55 @@ textarea {
     align-items: stretch;
   }
 }
+/* iCloud Hide My Email */
+.icloud-hme-shell .faka-main {
+  min-width: 0;
+}
+
+.icloud-hme-shell .faka-action-row {
+  flex-wrap: wrap;
+}
+
+.hme-source-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+.hme-source-create {
+  display: grid;
+  grid-template-columns: minmax(110px, .8fr) minmax(180px, 1.3fr) minmax(180px, 1.3fr) 110px auto;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.icloud-hme-shell .el-table .cell {
+  letter-spacing: 0;
+}
+
+.icloud-hme-shell .copy-cell {
+  justify-content: flex-start;
+}
+
+.icloud-hme-shell .group-actions {
+  min-width: 72px;
+}
+
+@media (max-width: 1080px) {
+  .hme-source-create {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .hme-source-create .el-button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 720px) {
+  .hme-source-create {
+    grid-template-columns: 1fr;
+  }
+}
