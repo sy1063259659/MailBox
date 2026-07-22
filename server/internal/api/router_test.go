@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -268,6 +269,8 @@ func TestICloudRoutesRejectMissingSession(t *testing.T) {
 		{http.MethodGet, "/api/icloud-accounts", ""},
 		{http.MethodPost, "/api/icloud-accounts/import", `{}`},
 		{http.MethodPost, "/api/icloud-accounts/latest", `{}`},
+		{http.MethodPost, "/api/icloud-accounts/messages", `{}`},
+		{http.MethodPost, "/api/icloud-accounts/message", `{}`},
 		{http.MethodPatch, "/api/icloud-accounts/remark", `{}`},
 		{http.MethodPost, "/api/icloud-accounts/move-group", `{}`},
 		{http.MethodDelete, "/api/icloud-accounts/user%40icloud.com", ""},
@@ -368,31 +371,63 @@ func TestUpdateICloudRemarkRejectsTooLongRemark(t *testing.T) {
 
 func TestICloudLatestClientParsesResponseAndForwardsCredentials(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("address"); got != "alias@icloud.com" {
-			t.Fatalf("address = %q", got)
-		}
-		if got := r.URL.Query().Get("key"); got != "test-key" {
-			t.Fatalf("key = %q", got)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{
-			"ok": true,
-			"mailbox": {"id": 1, "address": "alias@icloud.com", "active": true},
-			"email": {
-				"id": 2,
-				"from": "sender@example.com",
-				"to": "alias@icloud.com",
-				"subject": "Verification",
-				"text": "Your code is 123456",
-				"html": "<p><b>formatted</b> message</p>",
-				"body": "raw ignored",
-				"received_at": "2026-07-20T10:00:00+08:00",
-				"verification_code": "123456",
-				"mail_type": "verification",
-				"invite_link": "",
-				"process_status": "pending"
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		switch r.URL.Path {
+		case iCloudMailListPath:
+			var body map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
 			}
-		}`))
+			if body["credential"] != "alias@icloud.com----test-key" {
+				t.Fatalf("credential = %q", body["credential"])
+			}
+			_, _ = w.Write([]byte(`{
+				"ok": true,
+				"total": 1,
+				"emails": [{
+					"id": 2,
+					"from": "sender@example.com",
+					"to": "alias@icloud.com",
+					"subject": "Verification",
+					"received_at": "2026-07-20T10:00:00+08:00",
+					"verification_code": "123456"
+				}]
+			}`))
+		case iCloudMailDetailPath:
+			var body struct {
+				Address string `json:"address"`
+				Key     string `json:"key"`
+				ID      int64  `json:"id"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Address != "alias@icloud.com" || body.Key != "test-key" || body.ID != 2 {
+				t.Fatalf("detail request = %+v", body)
+			}
+			_, _ = w.Write([]byte(`{
+				"ok": true,
+				"email": {
+					"id": 2,
+					"from": "sender@example.com",
+					"to": "alias@icloud.com",
+					"subject": "Verification",
+					"text": "Your code is 123456",
+					"html": "<p><b>formatted</b> message</p>",
+					"body": "raw ignored",
+					"received_at": "2026-07-20T10:00:00+08:00",
+					"verification_code": "123456",
+					"mail_type": "verification",
+					"invite_link": "",
+					"process_status": "pending"
+				}
+			}`))
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
 	}))
 	defer server.Close()
 
@@ -413,6 +448,38 @@ func TestICloudLatestClientParsesResponseAndForwardsCredentials(t *testing.T) {
 	}
 	if !strings.Contains(string(encoded), "formatted") || strings.Contains(string(encoded), "raw ignored") {
 		t.Fatalf("payload exposes unexpected mail content: %s", encoded)
+	}
+}
+
+func TestICloudMailClientLimitsRecentMessagesToTwenty(t *testing.T) {
+	emails := make([]map[string]any, 21)
+	for index := range emails {
+		emails[index] = map[string]any{"id": index + 1, "subject": fmt.Sprintf("Mail %d", index+1)}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "total": 21, "emails": emails})
+	}))
+	defer server.Close()
+
+	client := &iCloudLatestClient{baseURL: server.URL, httpClient: server.Client()}
+	payload, err := client.Messages(t.Context(), "alias@icloud.com", "test-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Emails) != iCloudMailListLimit || payload.Total != 21 {
+		t.Fatalf("emails = %d, total = %d", len(payload.Emails), payload.Total)
+	}
+}
+
+func TestICloudMailDetailRejectsInvalidID(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/icloud-accounts/message", strings.NewReader(`{"email":"alias@icloud.com","id":0}`))
+
+	iCloudAPI{}.mailDetail(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 

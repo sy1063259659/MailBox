@@ -16,10 +16,12 @@ import ICloudImportDialog from '@/components/ICloudImportDialog.vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useICloudAccountStore, ICLOUD_DEFAULT_GROUP } from '@/stores/iCloudAccount'
 import {
-  getLatestICloudMail,
+  getICloudMailDetail,
+  listICloudMails,
   type ICloudAccount,
   type ICloudGroup,
-  type ICloudLatestMailResponse,
+  type ICloudLatestEmail,
+  type ICloudMailSummary,
 } from '@/services/iCloudAccountApi'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
@@ -69,14 +71,21 @@ const deletingGroupId = ref<number>()
 const renamingGroupId = ref<number>()
 const copiedValues = ref<Set<string>>(new Set())
 const latestMailVisible = ref(false)
-const latestMailLoading = ref(false)
+const mailListLoading = ref(false)
+const mailDetailLoading = ref(false)
 const latestMailAccount = ref('')
-const latestMail = ref<ICloudLatestMailResponse>()
+const recentMails = ref<ICloudMailSummary[]>([])
+const recentMailTotal = ref(0)
+const selectedMailId = ref<number>()
+const latestMail = ref<ICloudLatestEmail>()
+const mailListRequestSeq = ref(0)
+const mailDetailRequestSeq = ref(0)
+const selectedMailSummary = computed(() => recentMails.value.find((mail) => mail.id === selectedMailId.value))
 const latestMailHtml = computed(() => {
-  const html = latestMail.value?.email?.html?.trim() ?? ''
+  const html = latestMail.value?.html?.trim() ?? ''
   return html ? buildICloudReaderHtml(html) : ''
 })
-const latestMailBlocks = computed(() => plainMailBlocks(latestMail.value?.email?.text ?? ''))
+const latestMailBlocks = computed(() => plainMailBlocks(latestMail.value?.text ?? ''))
 
 const filteredAccounts = computed(() => {
   const normalizedKeyword = keyword.value.trim().toLowerCase()
@@ -168,24 +177,85 @@ async function copyValue(value: string, label: string) {
 }
 
 async function openLatestMail(account: ICloudAccount) {
+  mailListRequestSeq.value += 1
+  mailDetailRequestSeq.value += 1
+  mailListLoading.value = false
+  mailDetailLoading.value = false
   latestMailAccount.value = account.email
+  recentMails.value = []
+  recentMailTotal.value = 0
+  selectedMailId.value = undefined
   latestMail.value = undefined
   latestMailVisible.value = true
-  await refreshLatestMail()
+  await refreshMailList()
 }
 
-async function refreshLatestMail() {
-  if (!latestMailAccount.value || latestMailLoading.value) {
+async function refreshMailList() {
+  if (!latestMailAccount.value || mailListLoading.value) {
     return
   }
-  latestMailLoading.value = true
+  const accountEmail = latestMailAccount.value
+  const requestSeq = ++mailListRequestSeq.value
+  mailListLoading.value = true
   try {
-    latestMail.value = await getLatestICloudMail(latestMailAccount.value)
+    const response = await listICloudMails(accountEmail)
+    if (requestSeq !== mailListRequestSeq.value || accountEmail !== latestMailAccount.value) {
+      return
+    }
+    recentMails.value = response.emails ?? []
+    recentMailTotal.value = response.total ?? recentMails.value.length
+    if (recentMails.value.length === 0) {
+      selectedMailId.value = undefined
+      latestMail.value = undefined
+      return
+    }
+    const nextID = recentMails.value.some((mail) => mail.id === selectedMailId.value)
+      ? selectedMailId.value!
+      : recentMails.value[0].id
+    await selectMail(nextID)
   } catch (error) {
+    if (requestSeq !== mailListRequestSeq.value || accountEmail !== latestMailAccount.value) {
+      return
+    }
+    recentMails.value = []
+    recentMailTotal.value = 0
+    selectedMailId.value = undefined
     latestMail.value = undefined
-    showError(error, '获取最新邮件失败')
+    showError(error, '获取最近邮件失败')
   } finally {
-    latestMailLoading.value = false
+    if (requestSeq === mailListRequestSeq.value) {
+      mailListLoading.value = false
+    }
+  }
+}
+
+async function selectMail(id: number) {
+  if (!latestMailAccount.value) {
+    return
+  }
+  const accountEmail = latestMailAccount.value
+  const requestSeq = ++mailDetailRequestSeq.value
+  selectedMailId.value = id
+  latestMail.value = undefined
+  mailDetailLoading.value = true
+  try {
+    const response = await getICloudMailDetail(accountEmail, id)
+    if (requestSeq !== mailDetailRequestSeq.value || accountEmail !== latestMailAccount.value || selectedMailId.value !== id) {
+      return
+    }
+    latestMail.value = response.email
+  } catch (error) {
+    if (requestSeq !== mailDetailRequestSeq.value) {
+      return
+    }
+    if (selectedMailId.value === id) {
+      latestMail.value = undefined
+    }
+    showError(error, '获取邮件正文失败')
+  } finally {
+    if (requestSeq === mailDetailRequestSeq.value) {
+      mailDetailLoading.value = false
+    }
   }
 }
 
@@ -568,86 +638,110 @@ function canDeleteGroup(group: ICloudGroup): boolean {
 
     <ICloudImportDialog v-model="importVisible" />
 
-    <el-dialog v-model="latestMailVisible" width="840px" class="icloud-latest-dialog">
+    <el-dialog v-model="latestMailVisible" width="1120px" class="icloud-latest-dialog">
       <template #header>
         <div class="icloud-dialog-heading">
-          <span>iCloud 邮件</span>
-          <h2>{{ latestMail?.email?.subject || '邮件详情' }}</h2>
+          <span>iCloud 最近邮件</span>
+          <h2>{{ latestMailAccount }}</h2>
         </div>
       </template>
 
-      <div v-loading="latestMailLoading" class="icloud-latest-content">
-        <template v-if="latestMail?.email">
-          <div class="icloud-message-meta">
-            <div class="reader-sender-avatar" aria-hidden="true">
-              {{ latestMail.email.from?.charAt(0).toUpperCase() || '?' }}
-            </div>
-            <div class="icloud-message-parties">
-              <strong>{{ latestMail.email.from || '未知发件人' }}</strong>
-              <span>发送至 {{ latestMail.email.to || latestMailAccount }}</span>
-            </div>
-            <time>{{ formatDateTime(latestMail.email.received_at || latestMail.email.created_at) }}</time>
+      <div class="icloud-mail-workspace">
+        <aside v-loading="mailListLoading" class="icloud-mail-list" aria-label="最近邮件列表">
+          <div class="icloud-mail-list-heading">
+            <strong>最近邮件</strong>
+            <span>{{ Math.min(recentMails.length, 20) }} / {{ recentMailTotal }}</span>
           </div>
-
-          <div v-if="latestMail.email.verification_code" class="icloud-verification-code">
-            <span>验证码</span>
-            <strong>{{ latestMail.email.verification_code }}</strong>
-            <el-button
-              size="small"
-              :icon="CopyDocument"
-              @click="copyLatestValue(latestMail.email.verification_code, '验证码')"
+          <div v-if="recentMails.length" class="icloud-mail-list-scroll">
+            <button
+              v-for="mail in recentMails"
+              :key="mail.id"
+              type="button"
+              class="icloud-mail-list-item"
+              :class="{ active: selectedMailId === mail.id }"
+              @click="selectMail(mail.id)"
             >
-              复制
-            </el-button>
+              <span class="icloud-mail-list-from">{{ mail.from || '未知发件人' }}</span>
+              <time>{{ formatDateTime(mail.received_at) }}</time>
+              <strong>{{ mail.subject || '无主题' }}</strong>
+              <span v-if="mail.verification_code" class="icloud-mail-list-code">验证码 {{ mail.verification_code }}</span>
+            </button>
           </div>
+          <el-empty v-else-if="!mailListLoading" description="暂无邮件" :image-size="68" />
+        </aside>
 
-          <section class="icloud-reader-panel" aria-label="iCloud 邮件正文">
-            <iframe
-              v-if="latestMailHtml"
-              class="icloud-mail-frame"
-              :srcdoc="latestMailHtml"
-              sandbox="allow-popups allow-popups-to-escape-sandbox"
-              title="iCloud 邮件正文"
-            />
-            <div v-else class="mail-body plain plain-mail-paragraphs icloud-mail-body">
-              <template v-if="latestMailBlocks.length">
-                <p
-                  v-for="(block, index) in latestMailBlocks"
-                  :key="index"
-                  :class="{ 'plain-mail-heading': block.kind === 'heading' }"
-                >
-                  {{ block.text }}
-                </p>
-              </template>
-              <p v-else class="plain-mail-empty">暂无正文内容</p>
+        <section v-loading="mailDetailLoading" class="icloud-latest-content" aria-label="邮件详情">
+          <template v-if="latestMail">
+            <div class="icloud-reader-heading">
+              <h2>{{ latestMail.subject || selectedMailSummary?.subject || '无主题' }}</h2>
+              <div class="icloud-message-meta">
+                <div class="reader-sender-avatar" aria-hidden="true">
+                  {{ latestMail.from?.charAt(0).toUpperCase() || '?' }}
+                </div>
+                <div class="icloud-message-parties">
+                  <strong>{{ latestMail.from || '未知发件人' }}</strong>
+                  <span>收件人 {{ latestMail.to || latestMailAccount }}</span>
+                </div>
+                <time>{{ formatDateTime(latestMail.received_at || latestMail.created_at) }}</time>
+              </div>
             </div>
-          </section>
 
-          <div v-if="latestMail.email.invite_link && !latestMailHtml" class="icloud-invite-link">
-            <span>邀请链接</span>
-            <code>{{ latestMail.email.invite_link }}</code>
-            <el-button
-              size="small"
-              :icon="CopyDocument"
-              @click="copyLatestValue(latestMail.email.invite_link, '邀请链接')"
-            >
-              复制
-            </el-button>
-          </div>
-        </template>
-        <el-empty v-else-if="!latestMailLoading" description="暂无最新邮件" :image-size="72" />
+            <div v-if="latestMail.verification_code" class="icloud-verification-code">
+              <span>验证码</span>
+              <strong>{{ latestMail.verification_code }}</strong>
+              <el-button
+                size="small"
+                :icon="CopyDocument"
+                @click="copyLatestValue(latestMail.verification_code, '验证码')"
+              >
+                复制
+              </el-button>
+            </div>
+
+            <section class="icloud-reader-panel" aria-label="iCloud 邮件正文">
+              <iframe
+                v-if="latestMailHtml"
+                class="icloud-mail-frame"
+                :srcdoc="latestMailHtml"
+                sandbox="allow-popups allow-popups-to-escape-sandbox"
+                title="iCloud 邮件正文"
+              />
+              <div v-else class="mail-body plain plain-mail-paragraphs icloud-mail-body">
+                <template v-if="latestMailBlocks.length">
+                  <p
+                    v-for="(block, index) in latestMailBlocks"
+                    :key="index"
+                    :class="{ 'plain-mail-heading': block.kind === 'heading' }"
+                  >
+                    {{ block.text }}
+                  </p>
+                </template>
+                <p v-else class="plain-mail-empty">暂无正文内容</p>
+              </div>
+            </section>
+
+            <div v-if="latestMail.invite_link && !latestMailHtml" class="icloud-invite-link">
+              <span>邀请链接</span>
+              <code>{{ latestMail.invite_link }}</code>
+              <el-button
+                size="small"
+                :icon="CopyDocument"
+                @click="copyLatestValue(latestMail.invite_link, '邀请链接')"
+              >
+                复制
+              </el-button>
+            </div>
+          </template>
+          <el-empty v-else-if="!mailDetailLoading" description="请选择一封邮件" :image-size="72" />
+        </section>
       </div>
       <template #footer>
         <el-button @click="latestMailVisible = false">关闭</el-button>
-        <el-button
-          v-if="latestMail?.email?.text"
-          :icon="CopyDocument"
-          @click="copyLatestValue(latestMail.email.text, '正文')"
-        >
+        <el-button v-if="latestMail?.text" :icon="CopyDocument" @click="copyLatestValue(latestMail.text, '正文')">
           复制正文
         </el-button>
-        <el-button type="primary" :icon="Refresh" :loading="latestMailLoading" @click="refreshLatestMail">
-          刷新最新邮件
+        <el-button type="primary" :icon="Refresh" :loading="mailListLoading" @click="refreshMailList">
+          刷新邮件
         </el-button>
       </template>
     </el-dialog>

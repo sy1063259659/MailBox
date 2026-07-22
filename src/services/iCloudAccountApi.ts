@@ -50,6 +50,28 @@ export interface ICloudLatestMailResponse {
   email?: ICloudLatestEmail
 }
 
+export interface ICloudMailSummary {
+  id: number
+  to: string
+  from: string
+  subject: string
+  received_at: string
+  verification_code: string
+  mail_type: string
+  invite_link: string
+}
+
+export interface ICloudMailListResponse {
+  ok: boolean
+  emails: ICloudMailSummary[]
+  total: number
+}
+
+export interface ICloudMailDetailResponse {
+  ok: boolean
+  email?: ICloudLatestEmail
+}
+
 export async function listICloudAccounts(): Promise<ICloudAccount[]> {
   const response = await apiGet<{ ok: boolean; accounts: ICloudAccount[] }>('/icloud-accounts')
   return response.accounts
@@ -65,6 +87,14 @@ export async function importICloudAccounts(
 
 export async function getLatestICloudMail(email: string): Promise<ICloudLatestMailResponse> {
   return apiPost<ICloudLatestMailResponse>('/icloud-accounts/latest', { email })
+}
+
+export async function listICloudMails(email: string): Promise<ICloudMailListResponse> {
+  return apiPost<ICloudMailListResponse>('/icloud-accounts/messages', { email })
+}
+
+export async function getICloudMailDetail(email: string, id: number): Promise<ICloudMailDetailResponse> {
+  return apiPost<ICloudMailDetailResponse>('/icloud-accounts/message', { email, id })
 }
 
 export async function updateICloudRemark(email: string, remark: string): Promise<ICloudAccount> {

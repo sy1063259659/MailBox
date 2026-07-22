@@ -1448,9 +1448,125 @@ textarea {
 }
 
 .icloud-latest-content {
-  min-height: 360px;
+  min-width: 0;
+  min-height: 560px;
   padding: 18px 20px;
   background: #f6f8fb;
+}
+
+.icloud-mail-workspace {
+  min-height: 560px;
+  display: grid;
+  grid-template-columns: 310px minmax(0, 1fr);
+  background: #f6f8fb;
+}
+
+.icloud-mail-list {
+  min-width: 0;
+  max-height: 72vh;
+  border-right: 1px solid #e2e8f0;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+}
+
+.icloud-mail-list-heading {
+  min-height: 50px;
+  padding: 0 16px;
+  border-bottom: 1px solid #edf0f5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.icloud-mail-list-heading strong {
+  color: #1f2937;
+  font-size: 13px;
+}
+
+.icloud-mail-list-heading span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.icloud-mail-list-scroll {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.icloud-mail-list-item {
+  width: 100%;
+  min-height: 92px;
+  padding: 12px 14px 12px 16px;
+  border: 0;
+  border-bottom: 1px solid #edf0f5;
+  border-left: 3px solid transparent;
+  background: #ffffff;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+  gap: 6px 10px;
+}
+
+.icloud-mail-list-item:hover {
+  background: #f8fafc;
+}
+
+.icloud-mail-list-item.active {
+  border-left-color: #2563eb;
+  background: #eff6ff;
+}
+
+.icloud-mail-list-item > * {
+  min-width: 0;
+}
+
+.icloud-mail-list-from,
+.icloud-mail-list-item > strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icloud-mail-list-from {
+  color: #334155;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.icloud-mail-list-item time {
+  color: #94a3b8;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.icloud-mail-list-item > strong {
+  grid-column: 1 / -1;
+  color: #111827;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.icloud-mail-list-code {
+  grid-column: 1 / -1;
+  width: fit-content;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 11px;
+}
+
+.icloud-reader-heading h2 {
+  margin: 0 2px 14px;
+  color: #111827;
+  font-size: 18px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .icloud-message-meta {
@@ -1595,6 +1711,21 @@ textarea {
 
   .icloud-latest-content {
     padding: 14px 12px;
+  }
+
+  .icloud-mail-workspace {
+    min-height: 0;
+    display: block;
+  }
+
+  .icloud-mail-list {
+    max-height: 250px;
+    border-right: 0;
+    border-bottom: 1px solid #e2e8f0;
+  }
+
+  .icloud-latest-content {
+    min-height: 420px;
   }
 
   .icloud-message-meta {

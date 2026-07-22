@@ -1,13 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -17,13 +17,18 @@ import (
 )
 
 const (
-	iCloudLatestMailURL   = "https://icloud.52moyu.net/api/mail/latest"
+	iCloudMailBaseURL     = "https://icloud.52moyu.net"
+	iCloudMailListPath    = "/web/query-mails"
+	iCloudMailDetailPath  = "/web/query-mail-detail"
+	iCloudMailListLimit   = 20
 	iCloudMailMaxBodySize = 2 << 20
 )
 
 var iCloudEmailPattern = regexp.MustCompile(`(?i)^[^\s@]+@icloud\.com$`)
 
 type iCloudLatestFetcher interface {
+	Messages(context.Context, string, string) (iCloudMailListResponse, error)
+	Message(context.Context, string, string, int64) (iCloudMailDetailResponse, error)
 	Latest(context.Context, string, string) (iCloudLatestMailResponse, error)
 }
 
@@ -62,6 +67,11 @@ type latestICloudMailRequest struct {
 	Email string `json:"email"`
 }
 
+type iCloudMailDetailRequest struct {
+	Email string `json:"email"`
+	ID    int64  `json:"id"`
+}
+
 type iCloudMailboxInfo struct {
 	ID      int64  `json:"id"`
 	Address string `json:"address"`
@@ -83,6 +93,32 @@ type iCloudLatestEmail struct {
 	ProcessStatus    string `json:"process_status"`
 }
 
+type iCloudMailSummary struct {
+	ID               int64  `json:"id"`
+	To               string `json:"to"`
+	From             string `json:"from"`
+	Subject          string `json:"subject"`
+	ReceivedAt       string `json:"received_at"`
+	VerificationCode string `json:"verification_code"`
+	MailType         string `json:"mail_type"`
+	InviteLink       string `json:"invite_link"`
+}
+
+type iCloudMailListResponse struct {
+	OK      bool                `json:"ok"`
+	Emails  []iCloudMailSummary `json:"emails"`
+	Total   int                 `json:"total"`
+	Error   string              `json:"error,omitempty"`
+	Message string              `json:"message,omitempty"`
+}
+
+type iCloudMailDetailResponse struct {
+	OK      bool               `json:"ok"`
+	Email   *iCloudLatestEmail `json:"email,omitempty"`
+	Error   string             `json:"error,omitempty"`
+	Message string             `json:"message,omitempty"`
+}
+
 type iCloudLatestMailResponse struct {
 	OK      bool               `json:"ok"`
 	Mailbox *iCloudMailboxInfo `json:"mailbox,omitempty"`
@@ -98,59 +134,137 @@ type iCloudLatestClient struct {
 
 func newICloudLatestClient() *iCloudLatestClient {
 	return &iCloudLatestClient{
-		baseURL: iCloudLatestMailURL,
+		baseURL: iCloudMailBaseURL,
 		httpClient: &http.Client{
 			Timeout: 20 * time.Second,
 		},
 	}
 }
 
-func (client *iCloudLatestClient) Latest(ctx context.Context, email string, key string) (iCloudLatestMailResponse, error) {
-	endpoint, err := url.Parse(client.baseURL)
+func (client *iCloudLatestClient) Messages(ctx context.Context, email string, key string) (iCloudMailListResponse, error) {
+	var payload iCloudMailListResponse
+	err := client.postJSON(ctx, iCloudMailListPath, map[string]string{
+		"credential": email + "----" + key,
+	}, key, &payload)
 	if err != nil {
-		return iCloudLatestMailResponse{}, errors.New("iCloud 收件接口配置错误")
+		return iCloudMailListResponse{}, err
 	}
-	query := endpoint.Query()
-	query.Set("address", email)
-	query.Set("key", key)
-	endpoint.RawQuery = query.Encode()
+	if len(payload.Emails) > iCloudMailListLimit {
+		payload.Emails = payload.Emails[:iCloudMailListLimit]
+	}
+	return payload, nil
+}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+func (client *iCloudLatestClient) Message(ctx context.Context, email string, key string, id int64) (iCloudMailDetailResponse, error) {
+	var upstream struct {
+		OK    bool `json:"ok"`
+		Email *struct {
+			iCloudLatestEmail
+			Body string `json:"body"`
+		} `json:"email"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	err := client.postJSON(ctx, iCloudMailDetailPath, map[string]any{
+		"address": email,
+		"key":     key,
+		"id":      id,
+	}, key, &upstream)
 	if err != nil {
-		return iCloudLatestMailResponse{}, errors.New("创建 iCloud 收件请求失败")
+		return iCloudMailDetailResponse{}, err
+	}
+	payload := iCloudMailDetailResponse{OK: upstream.OK, Error: upstream.Error, Message: upstream.Message}
+	if upstream.Email != nil {
+		detail := upstream.Email.iCloudLatestEmail
+		if strings.TrimSpace(detail.Text) == "" {
+			detail.Text = upstream.Email.Body
+		}
+		payload.Email = &detail
+	}
+	return payload, nil
+}
+
+func (client *iCloudLatestClient) Latest(ctx context.Context, email string, key string) (iCloudLatestMailResponse, error) {
+	list, err := client.Messages(ctx, email, key)
+	if err != nil {
+		return iCloudLatestMailResponse{}, err
+	}
+	if len(list.Emails) == 0 {
+		return iCloudLatestMailResponse{OK: true}, nil
+	}
+	detail, err := client.Message(ctx, email, key, list.Emails[0].ID)
+	if err != nil {
+		return iCloudLatestMailResponse{}, err
+	}
+	return iCloudLatestMailResponse{OK: true, Email: detail.Email}, nil
+}
+
+func (client *iCloudLatestClient) postJSON(ctx context.Context, path string, body any, key string, target any) error {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return errors.New("创建 iCloud 收件请求失败")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(client.baseURL, "/")+path, bytes.NewReader(encoded))
+	if err != nil {
+		return errors.New("创建 iCloud 收件请求失败")
 	}
 	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
 
 	response, err := client.httpClient.Do(request)
 	if err != nil {
-		return iCloudLatestMailResponse{}, errors.New("iCloud 收件接口请求失败")
+		return errors.New("iCloud 收件接口请求失败")
 	}
 	defer response.Body.Close()
-
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
-		return iCloudLatestMailResponse{}, fmt.Errorf("iCloud 收件接口返回 HTTP %d", response.StatusCode)
+		var failure struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&failure)
+		if failure.Error != "" || failure.Message != "" {
+			return iCloudMailFailure(failure.Error, failure.Message, key)
+		}
+		return fmt.Errorf("iCloud 收件接口返回 HTTP %d", response.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(response.Body, iCloudMailMaxBodySize)).Decode(target); err != nil {
+		return errors.New("iCloud 收件接口返回格式异常")
 	}
 
-	var payload iCloudLatestMailResponse
-	decoder := json.NewDecoder(io.LimitReader(response.Body, iCloudMailMaxBodySize))
-	if err := decoder.Decode(&payload); err != nil {
-		return iCloudLatestMailResponse{}, errors.New("iCloud 收件接口返回格式异常")
+	var result struct {
+		OK      bool   `json:"ok"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
 	}
-	if !payload.OK {
-		message := strings.TrimSpace(payload.Message)
-		if message == "" {
-			message = strings.TrimSpace(payload.Error)
-		}
-		if message == "" {
-			message = "iCloud 收件接口返回失败"
-		}
-		if key != "" {
-			message = strings.ReplaceAll(message, key, "[redacted]")
-		}
-		return iCloudLatestMailResponse{}, errors.New(message)
+	resultBytes, _ := json.Marshal(target)
+	_ = json.Unmarshal(resultBytes, &result)
+	if result.OK {
+		return nil
 	}
-	return payload, nil
+	return iCloudMailFailure(result.Error, result.Message, key)
+}
+
+func iCloudMailFailure(errorCode string, message string, key string) error {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		switch strings.TrimSpace(errorCode) {
+		case "invalid_credential":
+			message = "iCloud 邮箱或密钥无效"
+		case "mailbox_inactive":
+			message = "该 iCloud 邮箱已停用"
+		case "mail_not_found":
+			message = "邮件不存在或已被删除"
+		default:
+			message = strings.TrimSpace(errorCode)
+		}
+	}
+	if message == "" {
+		message = "iCloud 收件接口返回失败"
+	}
+	if key != "" {
+		message = strings.ReplaceAll(message, key, "[redacted]")
+	}
+	return errors.New(message)
 }
 
 func (api iCloudAPI) listAccounts(w http.ResponseWriter, r *http.Request) {
@@ -192,14 +306,8 @@ func (api iCloudAPI) latestMail(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	if !iCloudEmailPattern.MatchString(email) {
-		WriteError(w, http.StatusBadRequest, "bad_request", "只支持 @icloud.com 邮箱")
-		return
-	}
-	credentials, err := api.store.GetICloudCredentials(r.Context(), email)
-	if err != nil {
-		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+	credentials, ok := api.iCloudCredentials(w, r, req.Email)
+	if !ok {
 		return
 	}
 	payload, err := api.latestFetch.Latest(r.Context(), credentials.Email, credentials.Key)
@@ -208,6 +316,58 @@ func (api iCloudAPI) latestMail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, payload)
+}
+
+func (api iCloudAPI) listMail(w http.ResponseWriter, r *http.Request) {
+	var req latestICloudMailRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	credentials, ok := api.iCloudCredentials(w, r, req.Email)
+	if !ok {
+		return
+	}
+	payload, err := api.latestFetch.Messages(r.Context(), credentials.Email, credentials.Key)
+	if err != nil {
+		WriteError(w, http.StatusBadGateway, "icloud_mail_error", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, payload)
+}
+
+func (api iCloudAPI) mailDetail(w http.ResponseWriter, r *http.Request) {
+	var req iCloudMailDetailRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.ID <= 0 {
+		WriteError(w, http.StatusBadRequest, "bad_request", "邮件 ID 无效")
+		return
+	}
+	credentials, ok := api.iCloudCredentials(w, r, req.Email)
+	if !ok {
+		return
+	}
+	payload, err := api.latestFetch.Message(r.Context(), credentials.Email, credentials.Key, req.ID)
+	if err != nil {
+		WriteError(w, http.StatusBadGateway, "icloud_mail_error", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, payload)
+}
+
+func (api iCloudAPI) iCloudCredentials(w http.ResponseWriter, r *http.Request, rawEmail string) (store.ICloudCredentials, bool) {
+	email := strings.ToLower(strings.TrimSpace(rawEmail))
+	if !iCloudEmailPattern.MatchString(email) {
+		WriteError(w, http.StatusBadRequest, "bad_request", "只支持 @icloud.com 邮箱")
+		return store.ICloudCredentials{}, false
+	}
+	credentials, err := api.store.GetICloudCredentials(r.Context(), email)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return store.ICloudCredentials{}, false
+	}
+	return credentials, true
 }
 
 func (api iCloudAPI) updateRemark(w http.ResponseWriter, r *http.Request) {

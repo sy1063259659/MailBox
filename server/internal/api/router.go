@@ -41,6 +41,8 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-accounts", authRequired(sessions, methodHandler(http.MethodGet, iCloudAPI.listAccounts)))
 	mux.HandleFunc("/api/icloud-accounts/import", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.importAccounts)))
 	mux.HandleFunc("/api/icloud-accounts/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.latestMail)))
+	mux.HandleFunc("/api/icloud-accounts/messages", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.listMail)))
+	mux.HandleFunc("/api/icloud-accounts/message", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.mailDetail)))
 	mux.HandleFunc("/api/icloud-accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudAPI.updateRemark)))
 	mux.HandleFunc("/api/icloud-accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.moveAccounts)))
 	mux.HandleFunc("/api/icloud-accounts/", authRequired(sessions, iCloudAccountPathHandler(iCloudAPI)))
