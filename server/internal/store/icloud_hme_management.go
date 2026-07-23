@@ -205,16 +205,12 @@ func (s *Store) ListICloudHMEJobs(ctx context.Context, limit int) ([]ICloudHMECr
 
 func (s *Store) GetICloudHMEJob(ctx context.Context, id int64) (ICloudHMECreateJob, error) {
 	var job ICloudHMECreateJob
-	err := s.pool.QueryRow(ctx, `
+	err := scanICloudHMEJob(s.pool.QueryRow(ctx, `
 		SELECT id, mode, source_account_id, label_prefix, group_name, requested_count,
 		       status, completed_count, failed_count, cancelled_count, created_by,
 		       origin, error_message, started_at, finished_at, created_at, updated_at
 		FROM icloud_hme_create_jobs WHERE id = $1
-	`, id).Scan(
-		&job.ID, &job.Mode, &job.SourceAccountID, &job.LabelPrefix, &job.GroupName, &job.RequestedCount,
-		&job.Status, &job.CompletedCount, &job.FailedCount, &job.CancelledCount, &job.CreatedBy,
-		&job.ErrorMessage, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
-	)
+	`, id), &job)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMECreateJob{}, errors.New("创建任务不存在")
 	}

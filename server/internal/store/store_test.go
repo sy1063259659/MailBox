@@ -290,6 +290,30 @@ func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
 	}
 }
 
+type iCloudHMEJobScanRow struct {
+	count int
+}
+
+func (row *iCloudHMEJobScanRow) Scan(dest ...any) error {
+	row.count = len(dest)
+	*dest[11].(*string) = "automation"
+	return nil
+}
+
+func TestScanICloudHMEJobIncludesOrigin(t *testing.T) {
+	row := &iCloudHMEJobScanRow{}
+	var job ICloudHMECreateJob
+	if err := scanICloudHMEJob(row, &job); err != nil {
+		t.Fatal(err)
+	}
+	if row.count != 17 {
+		t.Fatalf("scan destination count = %d, want 17", row.count)
+	}
+	if job.Origin != "automation" {
+		t.Fatalf("origin = %q, want automation", job.Origin)
+	}
+}
+
 func TestICloudHMEJobAggregateStatusPreservesCancellation(t *testing.T) {
 	status, finished := iCloudHMEJobAggregateStatus("cancel_requested", 0, 0, 2, 0, 1)
 	if status != "cancel_requested" || finished {
