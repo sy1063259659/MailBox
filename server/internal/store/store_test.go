@@ -282,6 +282,7 @@ func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
 		"interval '5 minutes'",
 		"interval '15 minutes'",
 		"interval '4 hours'",
+		"status = 'pending' AND retry_class = 'rate_limit'",
 		"icloud_source_wait",
 	} {
 		if !strings.Contains(statements, want) {

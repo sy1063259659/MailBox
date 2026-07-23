@@ -393,7 +393,7 @@ func legacyCleanupStatements() []string {
 		 FROM (
 		   SELECT source_account_id, max(next_attempt_at) AS next_attempt_at
 		   FROM icloud_hme_create_job_items
-		   WHERE retry_class = 'rate_limit' AND source_account_id IS NOT NULL
+		   WHERE status = 'pending' AND retry_class = 'rate_limit' AND source_account_id IS NOT NULL
 		   GROUP BY source_account_id
 		 ) latest
 		 WHERE source.id = latest.source_account_id`,
