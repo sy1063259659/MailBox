@@ -373,7 +373,7 @@ func legacyCleanupStatements() []string {
 		`UPDATE icloud_hme_create_job_items
 		 SET status = 'pending', retry_class = 'rate_limit',
 		     error_code = 'icloud_alias_rate_limited',
-		     next_attempt_at = COALESCE(finished_at, updated_at, now()) + interval '6 hours',
+		     next_attempt_at = COALESCE(finished_at, updated_at, now()) + interval '5 minutes',
 		     finished_at = NULL, updated_at = now()
 		 WHERE status = 'failed'
 		   AND (error_code = 'icloud_alias_rate_limited'
@@ -386,17 +386,7 @@ func legacyCleanupStatements() []string {
 		 ) AND job.status IN ('partial_failed', 'failed')`,
 		`UPDATE icloud_hme_source_accounts source
 		 SET status = 'cooldown', status_reason = 'Apple 暂时限制创建，系统将在冷却后自动探测',
-		     next_create_at = GREATEST(
-		       latest.next_attempt_at,
-		       COALESCE((
-		         SELECT min(item.finished_at) + interval '24 hours'
-		         FROM icloud_hme_create_job_items item
-		         WHERE item.source_account_id = source.id
-		           AND item.status = 'completed'
-		           AND item.finished_at >= now() - interval '24 hours'
-		         HAVING count(*) >= 5
-		       ), latest.next_attempt_at)
-		     ),
+		     next_create_at = latest.next_attempt_at,
 		     cooldown_level = GREATEST(cooldown_level, 1),
 		     consecutive_limit_count = GREATEST(consecutive_limit_count, 1),
 		     last_limit_at = COALESCE(last_limit_at, now()), updated_at = now()
@@ -408,19 +398,25 @@ func legacyCleanupStatements() []string {
 		 ) latest
 		 WHERE source.id = latest.source_account_id`,
 		`UPDATE icloud_hme_source_accounts source
-		 SET next_create_at = GREATEST(COALESCE(source.next_create_at, now()), limits.next_create_at),
+		 SET next_create_at = GREATEST(now(), COALESCE(last_limit_at, now()) +
+		       CASE
+		         WHEN cooldown_level <= 1 THEN interval '5 minutes'
+		         WHEN cooldown_level = 2 THEN interval '15 minutes'
+		         WHEN cooldown_level = 3 THEN interval '30 minutes'
+		         WHEN cooldown_level = 4 THEN interval '1 hour'
+		         WHEN cooldown_level = 5 THEN interval '2 hours'
+		         ELSE interval '4 hours'
+		       END),
 		     updated_at = now()
-		 FROM (
-		   SELECT source_account_id, min(finished_at) + interval '24 hours' AS next_create_at
-		   FROM icloud_hme_create_job_items
-		   WHERE status = 'completed' AND finished_at >= now() - interval '24 hours'
-		   GROUP BY source_account_id
-		   HAVING count(*) >= 5
-		 ) limits
-		 WHERE source.id = limits.source_account_id`,
+		 WHERE cooldown_level > 0 AND last_limit_at IS NOT NULL`,
+		`UPDATE icloud_hme_create_job_items item
+		 SET next_attempt_at = source.next_create_at, updated_at = now()
+		 FROM icloud_hme_source_accounts source
+		 WHERE item.source_account_id = source.id
+		   AND item.status = 'pending' AND item.retry_class = 'rate_limit'`,
 		`UPDATE icloud_hme_automation_events
 		 SET result = 'waiting', error_code = 'icloud_source_wait',
-		     message = '主账号正在冷却或已达到 24 小时安全上限，队列将自动等待'
+		     message = '主账号正在等待下一次单项探测，队列将自动继续'
 		 WHERE error_code = 'icloud_no_healthy_source'
 		   AND event_type = 'queue'`,
 	}

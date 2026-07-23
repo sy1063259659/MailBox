@@ -687,7 +687,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     </main>
     <el-dialog v-model="automationDialogVisible" title="自动补货设置" width="560px">
       <el-form label-position="top">
-        <el-alert title="系统每分钟检查库存；真正创建会按每个主账号 15–30 分钟随机间隔、24 小时最多 5 个执行。遇到 Apple 限流会自动冷却并单次探测。" type="info" :closable="false" />
+        <el-alert title="系统每分钟检查库存；正常创建间隔为 15–30 分钟。遇到 Apple 限流后只做单次探测，按 5/15/30 分钟、1/2/4 小时逐级退避。" type="info" :closable="false" />
         <el-form-item label="自动补货"><el-switch v-model="automationForm.enabled" active-text="启用" inactive-text="暂停" /></el-form-item>
         <el-form-item label="目标可售库存"><el-input-number v-model="automationForm.targetAvailableCount" :min="0" :max="10000" /></el-form-item>
         <el-form-item label="新邮箱分组"><el-select v-model="automationForm.targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>

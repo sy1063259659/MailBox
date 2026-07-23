@@ -190,14 +190,7 @@ func (s *Store) EligibleICloudHMEAutomationSources(ctx context.Context) ([]IClou
 		  AND cookies_encrypted <> ''
 		  AND status IN ('active', 'cooldown')
 		  AND (next_create_at IS NULL OR next_create_at <= now())
-		  AND (SELECT count(*) FROM icloud_hme_create_job_items item
-		       WHERE item.source_account_id = source.id AND item.status = 'completed'
-		         AND item.finished_at >= now() - interval '24 hours') < 5
-		ORDER BY
-		  (SELECT count(*) FROM icloud_hme_create_job_items item
-		   WHERE item.source_account_id = source.id AND item.status = 'completed'
-		     AND item.finished_at >= now() - interval '24 hours') ASC,
-		  alias_total ASC, id ASC
+		ORDER BY alias_total ASC, COALESCE(last_created_at, to_timestamp(0)) ASC, id ASC
 	`)
 	if err != nil {
 		return nil, err
@@ -235,16 +228,7 @@ func (s *Store) DelayICloudHMESourceAutomation(ctx context.Context, sourceID int
 func (s *Store) MarkICloudHMEAutomationSuccess(ctx context.Context, sourceID int64, next time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET status = 'active', status_reason = '',
-		    next_create_at = CASE
-		      WHEN (SELECT count(*) FROM icloud_hme_create_job_items
-		            WHERE source_account_id = $1 AND status = 'completed'
-		              AND finished_at >= now() - interval '24 hours') >= 5
-		      THEN (SELECT min(finished_at) + interval '24 hours'
-		            FROM icloud_hme_create_job_items
-		            WHERE source_account_id = $1 AND status = 'completed'
-		              AND finished_at >= now() - interval '24 hours')
-		      ELSE $2 END,
+		SET status = 'active', status_reason = '', next_create_at = $2,
 		    cooldown_level = 0, consecutive_limit_count = 0, last_created_at = now(),
 		    create_window_started_at = CASE
 		      WHEN create_window_started_at IS NULL OR create_window_started_at < now() - interval '24 hours'
@@ -262,7 +246,7 @@ func (s *Store) MarkICloudHMEAutomationLimited(ctx context.Context, sourceID int
 	var level int
 	err := s.pool.QueryRow(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET cooldown_level = LEAST(cooldown_level + 1, 4),
+		SET cooldown_level = LEAST(cooldown_level + 1, 6),
 		    consecutive_limit_count = consecutive_limit_count + 1,
 		    last_limit_at = now(), status = 'cooldown',
 		    status_reason = 'Apple 暂时限制创建，系统将在冷却后自动探测',
@@ -272,7 +256,14 @@ func (s *Store) MarkICloudHMEAutomationLimited(ctx context.Context, sourceID int
 	if err != nil {
 		return time.Time{}, 0, err
 	}
-	delays := []time.Duration{6 * time.Hour, 12 * time.Hour, 24 * time.Hour, 48 * time.Hour}
+	delays := []time.Duration{
+		5 * time.Minute,
+		15 * time.Minute,
+		30 * time.Minute,
+		time.Hour,
+		2 * time.Hour,
+		4 * time.Hour,
+	}
 	next := time.Now().Add(delays[level-1])
 	_, err = s.pool.Exec(ctx, `UPDATE icloud_hme_source_accounts SET next_create_at = $2 WHERE id = $1`, sourceID, next)
 	return next, level, err

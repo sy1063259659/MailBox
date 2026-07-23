@@ -276,11 +276,12 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 	}
 }
 
-func TestICloudHMEAutomationCleanupPreservesDailySafetyWindow(t *testing.T) {
+func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
 	statements := strings.Join(legacyCleanupStatements(), "\n")
 	for _, want := range []string{
-		"min(finished_at) + interval '24 hours'",
-		"HAVING count(*) >= 5",
+		"interval '5 minutes'",
+		"interval '15 minutes'",
+		"interval '4 hours'",
 		"icloud_source_wait",
 	} {
 		if !strings.Contains(statements, want) {

@@ -319,17 +319,7 @@ func (s *Store) SaveICloudHMECookies(ctx context.Context, id int64, cookies map[
 		UPDATE icloud_hme_source_accounts
 		SET cookies_encrypted = $2, status = $3, status_reason = $4,
 		    automation_enabled = CASE WHEN $3 = 'active' THEN true ELSE automation_enabled END,
-		    next_create_at = CASE WHEN $3 = 'active' THEN GREATEST(
-		      COALESCE(next_create_at, now()),
-		      COALESCE((
-		        SELECT min(item.finished_at) + interval '24 hours'
-		        FROM icloud_hme_create_job_items item
-		        WHERE item.source_account_id = icloud_hme_source_accounts.id
-		          AND item.status = 'completed'
-		          AND item.finished_at >= now() - interval '24 hours'
-		        HAVING count(*) >= 5
-		      ), now())
-		    ) ELSE next_create_at END,
+		    next_create_at = CASE WHEN $3 = 'active' THEN COALESCE(next_create_at, now()) ELSE next_create_at END,
 		    last_validated_at = now(), updated_at = now()
 		WHERE id = $1
 	`, id, encrypted, status, sanitizeICloudHMEStoredMessage(reason))
