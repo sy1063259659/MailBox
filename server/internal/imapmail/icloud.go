@@ -169,6 +169,83 @@ func (c Client) GetMessageByRecipient(ctx context.Context, email, password, reci
 	return fetchICloudMessage(client, parsedUID)
 }
 
+// ListMessageDetailsByRecipient fetches a page of complete messages using one
+// authenticated IMAP session. The recipient search prevents cross-alias reads.
+func (c Client) ListMessageDetailsByRecipient(ctx context.Context, email, password, recipient string, limit int, cursor string) (DetailListResult, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 20 {
+		limit = 20
+	}
+	client, err := c.connectICloudPassword(ctx, email, password)
+	if err != nil {
+		return DetailListResult{}, err
+	}
+	defer client.Close()
+
+	criteria := imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: strings.ToLower(strings.TrimSpace(recipient))}},
+	}
+	if strings.TrimSpace(cursor) != "" {
+		cursorUID, err := parseUID(cursor)
+		if err != nil {
+			return DetailListResult{}, err
+		}
+		if cursorUID == 0 {
+			return DetailListResult{Messages: []MessageDetail{}}, nil
+		}
+		criteria.UID = []imap.UIDSet{uidRange(1, cursorUID)}
+	}
+	data, err := client.UIDSearch(&criteria, nil).Wait()
+	if err != nil {
+		return DetailListResult{}, fmt.Errorf("imapmail: search iCloud recipient details: %w", err)
+	}
+	uids := data.AllUIDs()
+	sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
+	if len(uids) > limit {
+		uids = uids[:limit]
+	}
+	if len(uids) == 0 {
+		return DetailListResult{Messages: []MessageDetail{}}, nil
+	}
+
+	section := &imap.FetchItemBodySection{Peek: true}
+	fetched, err := client.Fetch(uidSetFromUIDs(uids), &imap.FetchOptions{
+		UID: true, Envelope: true, Flags: true, InternalDate: true,
+		BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect()
+	if err != nil {
+		return DetailListResult{}, fmt.Errorf("imapmail: fetch iCloud message details: %w", err)
+	}
+	messages := make([]MessageDetail, 0, len(fetched))
+	for _, item := range fetched {
+		parsed := parseMessageBody(item.FindBodySection(section))
+		detail := detailFromFetch(item)
+		if parsed.HTML != "" {
+			detail.ContentType = "text/html"
+			detail.Content = parsed.HTML
+		} else {
+			detail.ContentType = "text/plain"
+			detail.Content = parsed.Text
+		}
+		messages = append(messages, detail)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		left, _ := strconv.ParseUint(messages[i].ID, 10, 32)
+		right, _ := strconv.ParseUint(messages[j].ID, 10, 32)
+		return left > right
+	})
+	nextCursor := ""
+	if len(messages) == limit {
+		last, _ := strconv.ParseUint(messages[len(messages)-1].ID, 10, 32)
+		if last > 1 {
+			nextCursor = strconv.FormatUint(last-1, 10)
+		}
+	}
+	return DetailListResult{Messages: messages, NextCursor: nextCursor}, nil
+}
+
 func (c Client) connectICloudPassword(ctx context.Context, email, password string) (*imapclient.Client, error) {
 	email = strings.TrimSpace(email)
 	password = strings.TrimSpace(password)

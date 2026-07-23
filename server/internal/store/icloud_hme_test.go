@@ -23,3 +23,14 @@ func TestICloudHMECredentialsDoNotSerializeSecrets(t *testing.T) {
 		t.Fatalf("mail credentials leaked into JSON: %s", mailPayload)
 	}
 }
+
+func TestICloudHMEAliasDoesNotSerializeReceiveKeySecrets(t *testing.T) {
+	payload, err := json.Marshal(ICloudHMEAlias{Email: "alias@icloud.com", ReceiveKeyConfigured: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := string(payload)
+	if strings.Contains(value, "encrypted") || strings.Contains(value, "digest") || strings.Contains(value, `"key"`) {
+		t.Fatalf("alias payload exposes receive key material: %s", value)
+	}
+}

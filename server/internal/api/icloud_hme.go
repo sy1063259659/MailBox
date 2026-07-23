@@ -41,6 +41,7 @@ type iCloudHMEAPI struct {
 	jobWake       chan struct{}
 	jobPaceMu     sync.Mutex
 	lastJobItem   time.Time
+	publicLimiter *iCloudHMEPublicLimiter
 }
 
 func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
@@ -49,7 +50,7 @@ func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
 		newClient: func(cookies map[string]string, host string) (iCloudHMEClient, error) {
 			return icloudhme.NewClient(cookies, host, "", false)
 		},
-		jobWake: make(chan struct{}, 1),
+		jobWake: make(chan struct{}, 1), publicLimiter: newICloudHMEPublicLimiter(),
 	}
 	if database != nil {
 		api.startJobWorker()
@@ -489,9 +490,9 @@ func classifyICloudHMEError(err error) (string, string) {
 		}
 		return "icloud_session_expired", "Apple 会话已失效，请重新登录或导入 Cookie"
 	case strings.Contains(lower, "创建别名"), strings.Contains(lower, "generate"), strings.Contains(lower, "reserve"):
-		return "icloud_alias_create_failed", "隐藏邮箱创建失败：" + message
+		return "icloud_alias_create_failed", "隐藏邮箱创建失败，请稍后重试"
 	default:
-		return "icloud_alias_create_failed", message
+		return "icloud_alias_create_failed", "Apple 服务请求失败，请稍后重试"
 	}
 }
 
@@ -517,7 +518,7 @@ func friendlyICloudHMEError(err error) string {
 	if strings.Contains(strings.ToLower(err.Error()), "login") {
 		return "iCloud IMAP 登录失败，请检查 App 专用密码"
 	}
-	return err.Error()
+	return "iCloud 收件服务请求失败，请稍后重试"
 }
 
 func parseICloudHMEID(raw string) (int64, error) {
@@ -579,14 +580,21 @@ func (api *iCloudHMEAPI) routeSourceAccount(w http.ResponseWriter, r *http.Reque
 func (api *iCloudHMEAPI) routeAlias(w http.ResponseWriter, r *http.Request) {
 	raw := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/icloud-hme/aliases/"), "/")
 	action := ""
-	if strings.HasSuffix(raw, "/delete-apple") {
-		raw = strings.TrimSuffix(raw, "/delete-apple")
-		action = "delete-apple"
+	for _, candidate := range []string{"delete-apple", "receive-key/reveal", "receive-key/reset"} {
+		if strings.HasSuffix(raw, "/"+candidate) {
+			raw = strings.TrimSuffix(raw, "/"+candidate)
+			action = candidate
+			break
+		}
 	}
 	email := decodePathEmail(raw)
 	switch {
 	case r.Method == http.MethodPost && action == "delete-apple":
 		api.deleteAppleAlias(w, r, email)
+	case r.Method == http.MethodPost && action == "receive-key/reveal":
+		api.revealReceiveKey(w, r, email)
+	case r.Method == http.MethodPost && action == "receive-key/reset":
+		api.resetReceiveKey(w, r, email)
 	case r.Method == http.MethodDelete && action == "":
 		api.deleteAlias(w, r, email)
 	default:

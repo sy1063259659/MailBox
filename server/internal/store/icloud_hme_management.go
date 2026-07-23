@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -518,7 +519,9 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 	err := s.pool.QueryRow(ctx, `
 		SELECT a.email, a.source_account_id, s.name, a.anonymous_id, a.label, a.active,
 		       a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
-		       g.name, a.remark, s.app_password_encrypted <> '', a.created_at, a.updated_at
+		       g.name, a.remark, s.app_password_encrypted <> '',
+		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
 		JOIN icloud_hme_groups g ON g.id = a.group_id
@@ -526,7 +529,8 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 	`, normalizeEmail(email)).Scan(
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName, &alias.AnonymousID,
 		&alias.Label, &alias.Active, &alias.AppleStatus, &alias.DeactivatedAt, &alias.DeletedAt,
-		&alias.LastSyncedAt, &alias.Group, &alias.Remark, &alias.MailReady, &alias.CreatedAt, &alias.UpdatedAt,
+		&alias.LastSyncedAt, &alias.Group, &alias.Remark, &alias.MailReady,
+		&alias.ReceiveKeyConfigured, &alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")
@@ -587,9 +591,22 @@ func (s *Store) AddICloudHMEAudit(ctx context.Context, entry ICloudHMEAuditLog) 
 }
 
 func truncateICloudHMEAuditMessage(value string) string {
-	value = strings.TrimSpace(value)
+	value = sanitizeICloudHMEStoredMessage(value)
 	if len([]rune(value)) <= 500 {
 		return value
 	}
 	return string([]rune(value)[:500])
+}
+
+var iCloudHMESensitiveErrorRE = regexp.MustCompile(`(?i)(trusttokens|x-apple|webauth|set-cookie|authorization|bearer|cookie|scnt|session[_-]?id|dsid|password|验证码|otp["'=:\s])`)
+
+func sanitizeICloudHMEStoredMessage(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if iCloudHMESensitiveErrorRE.MatchString(value) || (strings.Contains(value, "HTTP ") && strings.Contains(value, "{")) {
+		return "Apple 会话异常，请重新验证"
+	}
+	return value
 }

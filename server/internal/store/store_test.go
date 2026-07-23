@@ -111,8 +111,11 @@ func TestMigrationsDoNotCreateLegacyGPTAccountsTable(t *testing.T) {
 
 func TestLegacyGPTAccountsTableCleanupIsIdempotent(t *testing.T) {
 	statements := legacyCleanupStatements()
-	if len(statements) != 1 || strings.TrimSpace(statements[0]) != "DROP TABLE IF EXISTS gpt_accounts" {
-		t.Fatalf("legacyCleanupStatements() = %v", statements)
+	joined := strings.Join(statements, "\n")
+	for _, want := range []string{"DROP TABLE IF EXISTS gpt_accounts", "UPDATE icloud_hme_source_accounts", "trustTokens"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("legacyCleanupStatements() missing %q: %v", want, statements)
+		}
 	}
 }
 
@@ -209,6 +212,8 @@ func TestICloudHMEMigrationCreatesIndependentTables(t *testing.T) {
 		"app_password_encrypted TEXT NOT NULL DEFAULT ''",
 		"REFERENCES icloud_hme_source_accounts(id)",
 		"REFERENCES icloud_hme_groups(id)",
+		"receive_key_encrypted TEXT NOT NULL DEFAULT ''",
+		"receive_key_digest TEXT NOT NULL DEFAULT ''",
 	} {
 		if !strings.Contains(statements, want) {
 			t.Fatalf("migrationCreateStatements() missing %q", want)
@@ -243,6 +248,8 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest",
 	} {
 		if !strings.Contains(columns, want) {
 			t.Fatalf("migrationColumnStatements() missing %q", want)

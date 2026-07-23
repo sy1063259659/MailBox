@@ -2066,6 +2066,55 @@ textarea {
   min-height: 0;
 }
 
+.hme-receive-key-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.hme-receive-key-dialog .el-dialog__body {
+  display: grid;
+  gap: 14px;
+}
+
+.hme-receive-key-block {
+  display: grid;
+  gap: 6px;
+}
+
+.hme-receive-key-block > span,
+.hme-receive-key-time {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.hme-receive-key-block > div {
+  min-width: 0;
+  min-height: 42px;
+  padding: 7px 8px 7px 12px;
+  border: 1px solid #dfe5ed;
+  background: #f8fafc;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hme-receive-key-block code {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+  color: #172033;
+  font-size: 13px;
+}
+
+.hme-receive-key-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 @media (max-width: 900px) {
   .hme-source-toolbar,
   .hme-mail-toolbar {

@@ -49,21 +49,23 @@ type ICloudHMESourceCredentials struct {
 }
 
 type ICloudHMEAlias struct {
-	Email             string     `json:"email"`
-	SourceAccountID   int64      `json:"sourceAccountId"`
-	SourceAccountName string     `json:"sourceAccountName"`
-	AnonymousID       string     `json:"anonymousId"`
-	Label             string     `json:"label"`
-	Active            bool       `json:"active"`
-	AppleStatus       string     `json:"appleStatus"`
-	DeactivatedAt     *time.Time `json:"deactivatedAt,omitempty"`
-	DeletedAt         *time.Time `json:"deletedAt,omitempty"`
-	LastSyncedAt      *time.Time `json:"lastSyncedAt,omitempty"`
-	Group             string     `json:"group"`
-	Remark            string     `json:"remark"`
-	MailReady         bool       `json:"mailReady"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
+	Email                string     `json:"email"`
+	SourceAccountID      int64      `json:"sourceAccountId"`
+	SourceAccountName    string     `json:"sourceAccountName"`
+	AnonymousID          string     `json:"anonymousId"`
+	Label                string     `json:"label"`
+	Active               bool       `json:"active"`
+	AppleStatus          string     `json:"appleStatus"`
+	DeactivatedAt        *time.Time `json:"deactivatedAt,omitempty"`
+	DeletedAt            *time.Time `json:"deletedAt,omitempty"`
+	LastSyncedAt         *time.Time `json:"lastSyncedAt,omitempty"`
+	Group                string     `json:"group"`
+	Remark               string     `json:"remark"`
+	MailReady            bool       `json:"mailReady"`
+	ReceiveKeyConfigured bool       `json:"receiveKeyConfigured"`
+	ReceiveKeyUpdatedAt  *time.Time `json:"receiveKeyUpdatedAt,omitempty"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
 }
 
 type ICloudHMEAliasInput struct {
@@ -296,7 +298,7 @@ func (s *Store) SaveICloudHMECookies(ctx context.Context, id int64, cookies map[
 		SET cookies_encrypted = $2, status = $3, status_reason = $4,
 		    last_validated_at = now(), updated_at = now()
 		WHERE id = $1
-	`, id, encrypted, status, strings.TrimSpace(reason))
+	`, id, encrypted, status, sanitizeICloudHMEStoredMessage(reason))
 	if err != nil {
 		return fmt.Errorf("store: save iCloud HME cookies: %w", err)
 	}
@@ -339,7 +341,7 @@ func (s *Store) UpdateICloudHMESourceStatus(ctx context.Context, id int64, statu
 		    last_error_at = CASE WHEN $2 IN ('error', 'reauth_required') THEN now() ELSE last_error_at END,
 		    updated_at = now()
 		WHERE id = $1
-	`, id, status, strings.TrimSpace(reason), aliasTotal, validated)
+	`, id, status, sanitizeICloudHMEStoredMessage(reason), aliasTotal, validated)
 	if err != nil {
 		return fmt.Errorf("store: update iCloud HME source status: %w", err)
 	}
@@ -380,7 +382,9 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.email, a.source_account_id, s.name, a.anonymous_id, a.label, a.active,
 		       a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
-		       g.name, a.remark, s.app_password_encrypted <> '', a.created_at, a.updated_at
+		       g.name, a.remark, s.app_password_encrypted <> '',
+		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
 		JOIN icloud_hme_groups g ON g.id = a.group_id
@@ -398,7 +402,8 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 			&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
 			&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
 			&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
-			&alias.Remark, &alias.MailReady, &alias.CreatedAt, &alias.UpdatedAt,
+			&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
+			&alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME alias: %w", err)
 		}
@@ -441,11 +446,25 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 		if createdAt.IsZero() {
 			createdAt = time.Now()
 		}
+		receiveKeyEncrypted, receiveKeyDigest := "", ""
+		if !existed {
+			receiveKey, err := secure.GenerateReceiveKey()
+			if err != nil {
+				return 0, 0, fmt.Errorf("store: generate iCloud HME receive key: %w", err)
+			}
+			receiveKeyEncrypted, err = secure.EncryptString(s.tokenKey, receiveKey)
+			if err != nil {
+				return 0, 0, fmt.Errorf("store: encrypt iCloud HME receive key: %w", err)
+			}
+			receiveKeyDigest = secure.ReceiveKeyDigest(s.tokenKey, receiveKey)
+		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO icloud_hme_aliases (
-				email, source_account_id, anonymous_id, label, active, apple_status, last_synced_at, group_id, created_at
+				email, source_account_id, anonymous_id, label, active, apple_status, last_synced_at,
+				group_id, receive_key_encrypted, receive_key_digest, receive_key_updated_at, created_at
 			)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN 'active' ELSE 'inactive' END, now(), $6, $7)
+			VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN 'active' ELSE 'inactive' END, now(),
+			        $6, $7, $8, CASE WHEN $7 <> '' THEN now() ELSE NULL END, $9)
 			ON CONFLICT (email) DO UPDATE SET
 				source_account_id = EXCLUDED.source_account_id,
 				anonymous_id = EXCLUDED.anonymous_id,
@@ -456,7 +475,8 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 				deleted_at = CASE WHEN icloud_hme_aliases.apple_status = 'deleted' THEN icloud_hme_aliases.deleted_at ELSE NULL END,
 				last_synced_at = now(),
 				updated_at = now()
-		`, email, sourceID, strings.TrimSpace(input.AnonymousID), strings.TrimSpace(input.Label), input.Active, groupID, createdAt); err != nil {
+		`, email, sourceID, strings.TrimSpace(input.AnonymousID), strings.TrimSpace(input.Label), input.Active,
+			groupID, receiveKeyEncrypted, receiveKeyDigest, createdAt); err != nil {
 			return 0, 0, fmt.Errorf("store: upsert iCloud HME alias: %w", err)
 		}
 		syncedEmails = append(syncedEmails, email)
@@ -506,12 +526,15 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		WHERE a.source_account_id = s.id AND a.group_id = g.id AND lower(a.email) = $1
 		RETURNING a.email, a.source_account_id, s.name, a.anonymous_id, a.label, a.active,
 		          a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
-		          g.name, a.remark, s.app_password_encrypted <> '', a.created_at, a.updated_at
+		          g.name, a.remark, s.app_password_encrypted <> '',
+		          a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		          a.created_at, a.updated_at
 	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
 		&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
 		&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
-		&alias.Remark, &alias.MailReady, &alias.CreatedAt, &alias.UpdatedAt,
+		&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
+		&alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")

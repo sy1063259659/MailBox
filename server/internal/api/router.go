@@ -28,6 +28,8 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/auth/login", methodHandler(http.MethodPost, authAPI.login))
 	mux.HandleFunc("/api/auth/logout", methodHandler(http.MethodPost, authAPI.logout))
 	mux.HandleFunc("/api/auth/me", methodHandler(http.MethodGet, authAPI.me))
+	mux.HandleFunc("/api/public/icloud-hme/mail/latest", publicMailMethodHandler(http.MethodGet, iCloudHMEAPI.publicLatestMail))
+	mux.HandleFunc("/api/public/icloud-hme/mail/history", publicMailMethodHandler(http.MethodGet, iCloudHMEAPI.publicMailHistory))
 
 	mux.HandleFunc("/api/accounts", authRequired(sessions, methodHandler(http.MethodGet, accountAPI.listAccounts)))
 	mux.HandleFunc("/api/accounts/import", authRequired(sessions, methodHandler(http.MethodPost, accountAPI.importAccounts)))
@@ -77,6 +79,8 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-hme/aliases/lifecycle", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.lifecycleAliases)))
 	mux.HandleFunc("/api/icloud-hme/aliases/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudHMEAPI.updateAliasRemark)))
 	mux.HandleFunc("/api/icloud-hme/aliases/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.moveAliases)))
+	mux.HandleFunc("/api/icloud-hme/aliases/receive-keys/generate", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.generateReceiveKeys)))
+	mux.HandleFunc("/api/icloud-hme/aliases/receive-keys/export", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.exportReceiveKeys)))
 	mux.HandleFunc("/api/icloud-hme/aliases/", authRequired(sessions, iCloudHMEAPI.routeAlias))
 	mux.HandleFunc("/api/icloud-hme/mail/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.latestMail)))
 	mux.HandleFunc("/api/icloud-hme/mail/messages", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.mailMessages)))

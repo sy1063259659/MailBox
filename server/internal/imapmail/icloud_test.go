@@ -13,6 +13,13 @@ func TestGetLatestMessageByRecipientValidatesCredentials(t *testing.T) {
 	}
 }
 
+func TestListMessageDetailsByRecipientValidatesCredentials(t *testing.T) {
+	_, err := (Client{}).ListMessageDetailsByRecipient(context.Background(), "", "", "alias@icloud.com", 20, "")
+	if err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("error = %v, want required credentials", err)
+	}
+}
+
 func TestICloudHMEExtendedMethodsValidateInput(t *testing.T) {
 	client := Client{}
 	if _, err := client.ListMessagesByRecipient(context.Background(), "", "", "alias@icloud.com", 20, ""); err == nil || !strings.Contains(err.Error(), "required") {

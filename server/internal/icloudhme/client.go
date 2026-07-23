@@ -37,6 +37,10 @@ const (
 	MaxRetries = 3
 )
 
+func httpStatusError(status int) error {
+	return fmt.Errorf("HTTP %d", status)
+}
+
 var retryDelays = []time.Duration{
 	1 * time.Second,
 	2500 * time.Millisecond,
@@ -279,13 +283,8 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 			cookieHeader := strings.Join(cookieParts, "; ")
 			req.Header.Set("Cookie", cookieHeader)
 			if c.Verbose {
-				c.log(">>> URL: %s", fullURL)
-				c.log(">>> Cookie: %s", cookieHeader[:min(200, len(cookieHeader))])
-				for k, vv := range req.Header {
-					for _, v := range vv {
-						c.log(">>> %s: %s", k, v[:min(100, len(v))])
-					}
-				}
+				c.log(">>> Apple request started")
+				c.log(">>> Headers: [redacted]")
 			}
 		}
 
@@ -310,11 +309,7 @@ func (c *Client) request(method, rawURL string, body any, timeout time.Duration,
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			snippet := string(text)
-			if len(snippet) > 200 {
-				snippet = snippet[:200]
-			}
-			lastErr = fmt.Errorf("HTTP %d: %s", resp.StatusCode, snippet)
+			lastErr = httpStatusError(resp.StatusCode)
 			// 401/403 说明 Cookie 失效,不重试直接返回。
 			if resp.StatusCode == 401 || resp.StatusCode == 403 {
 				return "", lastErr

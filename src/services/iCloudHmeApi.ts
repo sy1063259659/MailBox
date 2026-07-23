@@ -41,7 +41,15 @@ export interface ICloudHMEAlias {
   group: string
   remark: string
   mailReady: boolean
+  receiveKeyConfigured: boolean
+  receiveKeyUpdatedAt?: string
   createdAt: string
+  updatedAt: string
+}
+
+export interface ICloudHMEReceiveKeyRecord {
+  email: string
+  key: string
   updatedAt: string
 }
 
@@ -179,6 +187,30 @@ export async function moveICloudHMEAliases(emails: string[], group: string): Pro
 
 export async function deleteICloudHMEAlias(email: string): Promise<void> {
   await apiDelete(`/icloud-hme/aliases/${encodeURIComponent(email)}`)
+}
+
+export async function generateICloudHMEReceiveKeys(emails: string[]): Promise<number> {
+  const response = await apiPost<{ ok: boolean; generated: number }>('/icloud-hme/aliases/receive-keys/generate', { emails })
+  return response.generated
+}
+
+export async function exportICloudHMEReceiveKeys(emails: string[]): Promise<ICloudHMEReceiveKeyRecord[]> {
+  const response = await apiPost<{ ok: boolean; records: ICloudHMEReceiveKeyRecord[] }>('/icloud-hme/aliases/receive-keys/export', { emails })
+  return response.records
+}
+
+export async function revealICloudHMEReceiveKey(email: string): Promise<ICloudHMEReceiveKeyRecord> {
+  const response = await apiPost<{ ok: boolean; record: ICloudHMEReceiveKeyRecord }>(
+    '/icloud-hme/aliases/' + encodeURIComponent(email) + '/receive-key/reveal',
+  )
+  return response.record
+}
+
+export async function resetICloudHMEReceiveKey(email: string): Promise<ICloudHMEReceiveKeyRecord> {
+  const response = await apiPost<{ ok: boolean; record: ICloudHMEReceiveKeyRecord }>(
+    '/icloud-hme/aliases/' + encodeURIComponent(email) + '/receive-key/reset',
+  )
+  return response.record
 }
 
 export async function getLatestICloudHMEMail(email: string): Promise<ICloudHMEMail> {

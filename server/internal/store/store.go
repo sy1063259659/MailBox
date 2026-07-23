@@ -226,6 +226,9 @@ func migrationCreateStatements() []string {
 			last_synced_at TIMESTAMPTZ,
 			group_id BIGINT NOT NULL REFERENCES icloud_hme_groups(id),
 			remark TEXT NOT NULL DEFAULT '',
+			receive_key_encrypted TEXT NOT NULL DEFAULT '',
+			receive_key_digest TEXT NOT NULL DEFAULT '',
+			receive_key_updated_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -293,6 +296,9 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_updated_at TIMESTAMPTZ`,
 	}
 }
 
@@ -321,6 +327,9 @@ func migrationIndexStatements() []string {
 func legacyCleanupStatements() []string {
 	return []string{
 		`DROP TABLE IF EXISTS gpt_accounts`,
+		`UPDATE icloud_hme_source_accounts
+		 SET status_reason = 'Apple 会话异常，请重新验证', updated_at = now()
+		 WHERE status_reason ~* '(trustTokens|X-APPLE|Bearer|Set-Cookie|webauth-token|scnt)'`,
 	}
 }
 

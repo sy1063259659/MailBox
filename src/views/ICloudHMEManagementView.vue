@@ -5,11 +5,13 @@ import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Ke
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
   completeICloudHMELogin, getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
+  exportICloudHMEReceiveKeys, generateICloudHMEReceiveKeys,
   permanentlyDeleteICloudHMEAlias, refreshICloudHMECode, saveICloudHMEAppPassword,
+  revealICloudHMEReceiveKey, resetICloudHMEReceiveKey,
   saveICloudHMECookies, startICloudHMELogin, syncAllICloudHMESources, syncICloudHMEAliases,
   updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
   type ICloudHMEAlias, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
-  type ICloudHMEMailSummary, type ICloudHMESourceAccount,
+  type ICloudHMEMailSummary, type ICloudHMESourceAccount, type ICloudHMEReceiveKeyRecord,
 } from '@/services/iCloudHmeApi'
 import {
   cacheICloudHMEBody, cacheICloudHMEMessages, deleteICloudHMECacheForAlias,
@@ -31,6 +33,9 @@ const draggingGroupId = ref<number>()
 const renamingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
 const busy = ref(false)
+const receiveKeyBusy = ref(false)
+const receiveKeyDialogVisible = ref(false)
+const receiveKeyRecord = ref<ICloudHMEReceiveKeyRecord>()
 
 const sourceDialogVisible = ref(false)
 const sourceForm = ref({ name: '', appleIdEmail: '', icloudEmail: '', host: 'icloud.com' })
@@ -152,6 +157,70 @@ async function copySelected() {
   if (!targets.length) return ElMessage.warning('没有可复制的隐藏邮箱')
   await navigator.clipboard.writeText(targets.map((item) => item.email).join('\n'))
   ElMessage.success('已复制 ' + targets.length + ' 个隐藏邮箱')
+}
+function receiveMailURL(kind: 'latest' | 'history', record = receiveKeyRecord.value) {
+  if (!record) return ''
+  const url = new URL('/api/public/icloud-hme/mail/' + kind, window.location.origin)
+  url.searchParams.set('address', record.email)
+  url.searchParams.set('key', record.key)
+  if (kind === 'history') url.searchParams.set('limit', '20')
+  return url.toString()
+}
+async function generateSelectedReceiveKeys() {
+  if (!selectedRows.value.length) return ElMessage.warning('请先勾选隐藏邮箱')
+  receiveKeyBusy.value = true
+  try {
+    const generated = await generateICloudHMEReceiveKeys(selectedRows.value.map((item) => item.email))
+    await store.load()
+    generated
+      ? ElMessage.success('已为 ' + generated + ' 个隐藏邮箱生成收件密钥')
+      : ElMessage.info('所选隐藏邮箱均已配置收件密钥')
+  } catch (error) { showError(error, '生成收件密钥失败') } finally { receiveKeyBusy.value = false }
+}
+async function openReceiveKey(alias: ICloudHMEAlias) {
+  receiveKeyBusy.value = true
+  try {
+    if (!alias.receiveKeyConfigured) {
+      await generateICloudHMEReceiveKeys([alias.email])
+      await store.load()
+    }
+    receiveKeyRecord.value = await revealICloudHMEReceiveKey(alias.email)
+    receiveKeyDialogVisible.value = true
+  } catch (error) { showError(error, '读取收件密钥失败') } finally { receiveKeyBusy.value = false }
+}
+function clearReceiveKey() { receiveKeyRecord.value = undefined }
+async function resetReceiveKey() {
+  const current = receiveKeyRecord.value
+  if (!current) return
+  await ElMessageBox.confirm('重置后旧密钥和旧收件链接会立即失效。确定继续？', '重置收件密钥', { type: 'warning' })
+  receiveKeyBusy.value = true
+  try {
+    receiveKeyRecord.value = await resetICloudHMEReceiveKey(current.email)
+    await store.load()
+    ElMessage.success('收件密钥已重置')
+  } catch (error) { showError(error, '重置收件密钥失败') } finally { receiveKeyBusy.value = false }
+}
+async function copyReceiveURL(kind: 'latest' | 'history') {
+  const value = receiveMailURL(kind)
+  if (value) await copyValue(value, kind === 'latest' ? '最新邮件链接' : '历史邮件链接')
+}
+async function exportReceiveKeys() {
+  const targets = selectedRows.value.length ? selectedRows.value : filteredAliases.value
+  if (!targets.length) return ElMessage.warning('没有可导出的隐藏邮箱')
+  receiveKeyBusy.value = true
+  try {
+    const records = await exportICloudHMEReceiveKeys(targets.map((item) => item.email))
+    if (!records.length) return ElMessage.warning('目标隐藏邮箱尚未配置收件密钥')
+    const content = records.map((item) => item.email + '----' + item.key).join('\n')
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(blob)
+    link.download = 'icloud-hme-receive-keys-' + new Date().toISOString().slice(0, 10) + '.txt'
+    link.click()
+    URL.revokeObjectURL(link.href)
+    const skipped = targets.length - records.length
+    ElMessage.success('已导出 ' + records.length + ' 个收件密钥' + (skipped ? '，跳过 ' + skipped + ' 个未配置账号' : ''))
+  } catch (error) { showError(error, '导出收件密钥失败') } finally { receiveKeyBusy.value = false }
 }
 async function createSource() {
   if (!sourceForm.value.name.trim() || !sourceForm.value.appleIdEmail.trim() || !sourceForm.value.icloudEmail.trim()) return ElMessage.warning('请填写完整主账号信息')
@@ -347,6 +416,7 @@ async function deleteSelected() {
   } catch (error) { await store.load(); showError(error, '批量删除失败') } finally { busy.value = false }
 }
 async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
+  if (command === 'receive-key') await openReceiveKey(alias)
   if (command === 'deactivate') await lifecycleSelected('deactivate', [alias])
   if (command === 'reactivate') await lifecycleSelected('reactivate', [alias])
   if (command === 'delete-apple') await permanentlyDeleteAlias(alias)
@@ -512,6 +582,8 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-button type="primary" :icon="Plus" @click="openCreateJob">创建隐藏邮箱</el-button>
           <el-button :icon="Document" @click="jobsDialogVisible = true">创建任务<span v-if="activeJobs.length">（{{ activeJobs.length }}）</span></el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
+          <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
+          <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
           <el-button :icon="FolderOpened" :disabled="!selectedRows.length" @click="openMove">移动分组</el-button>
           <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('deactivate')">停用</el-button>
           <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('reactivate')">恢复</el-button>
@@ -527,7 +599,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
         <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>停用、恢复、复制、移动和本地删除作用于已选项；永久删除仅支持单个</span></div>
-        <el-table v-loading="store.loading || busy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
+        <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
           <el-table-column label="隐藏邮箱" min-width="260" show-overflow-tooltip><template #default="{ row }"><div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }"><span>{{ row.email }}</span><el-button link :icon="CopyDocument" @click.stop="copyValue(row.email)" /></div></template></el-table-column>
@@ -535,12 +607,14 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="label" label="Apple 标签" min-width="165" show-overflow-tooltip />
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
+          <el-table-column label="收件密钥" width="140" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '查看' : '生成' }}</el-button></div></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</template></el-table-column>
           <el-table-column label="操作" width="175" fixed="right" align="center"><template #default="{ row }">
             <el-button size="small" type="primary" :icon="row.mailReady ? View : Key" @click.stop="openMail(row)">{{ row.mailReady ? '邮件' : '配置收件' }}</el-button>
             <el-dropdown trigger="click" @command="handleRowCommand($event, row)"><el-button size="small" :icon="More" />
               <template #dropdown><el-dropdown-menu>
+                <el-dropdown-item command="receive-key" :icon="Key">收件密钥与 API</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'active'" command="deactivate">Apple 停用</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'inactive'" command="reactivate">Apple 恢复</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus !== 'deleted'" command="delete-apple" divided>Apple 永久删除</el-dropdown-item>
@@ -619,6 +693,26 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     <el-dialog v-model="moveDialogVisible" title="移动隐藏邮箱分组" width="420px">
       <el-select v-model="targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select>
       <template #footer><el-button @click="moveDialogVisible = false">取消</el-button><el-button type="primary" :loading="busy" @click="submitMove">确定</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="receiveKeyDialogVisible" title="隐藏邮箱收件密钥" width="660px" class="hme-receive-key-dialog" @closed="clearReceiveKey">
+      <template v-if="receiveKeyRecord">
+        <el-alert title="该密钥仅用于 MailBox 公开收件 API，不是 Apple 邮箱密码。请仅交付给对应购买者。" type="warning" :closable="false" />
+        <div class="hme-receive-key-block">
+          <span>隐藏邮箱</span>
+          <div><code>{{ receiveKeyRecord.email }}</code><el-button link :icon="CopyDocument" @click="copyValue(receiveKeyRecord.email)">复制</el-button></div>
+        </div>
+        <div class="hme-receive-key-block">
+          <span>收件密钥</span>
+          <div><code>{{ receiveKeyRecord.key }}</code><el-button link :icon="CopyDocument" @click="copyValue(receiveKeyRecord.key, '收件密钥')">复制</el-button></div>
+        </div>
+        <div class="hme-receive-key-links">
+          <el-button :icon="Link" @click="copyReceiveURL('latest')">复制最新邮件 URL</el-button>
+          <el-button :icon="Link" @click="copyReceiveURL('history')">复制历史邮件 URL</el-button>
+        </div>
+        <small class="hme-receive-key-time">更新于 {{ formatDateTime(receiveKeyRecord.updatedAt) }}</small>
+      </template>
+      <template #footer><el-button type="danger" plain :loading="receiveKeyBusy" @click="resetReceiveKey">重置密钥</el-button><el-button type="primary" @click="receiveKeyDialogVisible = false">完成</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="mailVisible" width="1120px" class="hme-mail-dialog">

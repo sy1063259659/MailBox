@@ -30,6 +30,11 @@ type ListResult struct {
 	NextCursor string           `json:"nextCursor,omitempty"`
 }
 
+type DetailListResult struct {
+	Messages   []MessageDetail `json:"messages"`
+	NextCursor string          `json:"nextCursor,omitempty"`
+}
+
 type MessageDetail struct {
 	ID          string    `json:"id"`
 	Subject     string    `json:"subject"`
