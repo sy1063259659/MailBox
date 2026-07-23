@@ -276,6 +276,19 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 	}
 }
 
+func TestICloudHMEAutomationCleanupPreservesDailySafetyWindow(t *testing.T) {
+	statements := strings.Join(legacyCleanupStatements(), "\n")
+	for _, want := range []string{
+		"min(finished_at) + interval '24 hours'",
+		"HAVING count(*) >= 5",
+		"icloud_source_wait",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("legacyCleanupStatements() missing %q", want)
+		}
+	}
+}
+
 func TestICloudHMEJobAggregateStatusPreservesCancellation(t *testing.T) {
 	status, finished := iCloudHMEJobAggregateStatus("cancel_requested", 0, 0, 2, 0, 1)
 	if status != "cancel_requested" || finished {

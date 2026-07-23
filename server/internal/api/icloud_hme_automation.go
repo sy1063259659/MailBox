@@ -96,8 +96,8 @@ func (api *iCloudHMEAPI) ensureAutomationInventory(ctx context.Context) {
 	}
 	job, err := api.store.CreateICloudHMEAutomationJob(ctx, settings, shortage)
 	if err != nil {
-		_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "failed",
-			"icloud_no_healthy_source", "没有可用于自动补货的健康 Apple 主账号", nil, 0)
+		_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "waiting",
+			"icloud_source_wait", "主账号正在冷却、已达到 24 小时安全上限或需要重新验证", settings.NextCreateAt, 0)
 		return
 	}
 	_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "scheduled", "",

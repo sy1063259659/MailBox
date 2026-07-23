@@ -407,6 +407,22 @@ func legacyCleanupStatements() []string {
 		   GROUP BY source_account_id
 		 ) latest
 		 WHERE source.id = latest.source_account_id`,
+		`UPDATE icloud_hme_source_accounts source
+		 SET next_create_at = GREATEST(COALESCE(source.next_create_at, now()), limits.next_create_at),
+		     updated_at = now()
+		 FROM (
+		   SELECT source_account_id, min(finished_at) + interval '24 hours' AS next_create_at
+		   FROM icloud_hme_create_job_items
+		   WHERE status = 'completed' AND finished_at >= now() - interval '24 hours'
+		   GROUP BY source_account_id
+		   HAVING count(*) >= 5
+		 ) limits
+		 WHERE source.id = limits.source_account_id`,
+		`UPDATE icloud_hme_automation_events
+		 SET result = 'waiting', error_code = 'icloud_source_wait',
+		     message = '主账号正在冷却或已达到 24 小时安全上限，队列将自动等待'
+		 WHERE error_code = 'icloud_no_healthy_source'
+		   AND event_type = 'queue'`,
 	}
 }
 
