@@ -24,26 +24,11 @@ func (c Client) GetLatestMessageByRecipient(ctx context.Context, email, password
 		return MessageDetail{}, errors.New("imapmail: iCloud email, app password and recipient are required")
 	}
 
-	dial := c.Dial
-	if dial == nil {
-		dial = defaultDial
-	}
-	address := c.Address
-	if address == "" || address == defaultAddress {
-		address = defaultICloudAddress
-	}
-	client, err := dial(ctx, address)
+	client, err := c.connectICloudPassword(ctx, email, password)
 	if err != nil {
-		return MessageDetail{}, fmt.Errorf("imapmail: dial iCloud: %w", err)
+		return MessageDetail{}, err
 	}
 	defer client.Close()
-
-	if err := client.Login(email, password).Wait(); err != nil {
-		return MessageDetail{}, fmt.Errorf("imapmail: iCloud login: %w", err)
-	}
-	if _, err := client.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
-		return MessageDetail{}, fmt.Errorf("imapmail: select iCloud Inbox: %w", err)
-	}
 
 	data, err := client.UIDSearch(&imap.SearchCriteria{
 		Header: []imap.SearchCriteriaHeaderField{{Key: "To", Value: recipient}},
@@ -260,19 +245,41 @@ func (c Client) connectICloudPassword(ctx context.Context, email, password strin
 	if address == "" || address == defaultAddress {
 		address = defaultICloudAddress
 	}
-	client, err := dial(ctx, address)
-	if err != nil {
-		return nil, fmt.Errorf("imapmail: dial iCloud: %w", err)
+
+	var loginErr error
+	for _, username := range iCloudLoginUsernames(email) {
+		client, err := dial(ctx, address)
+		if err != nil {
+			return nil, fmt.Errorf("imapmail: dial iCloud: %w", err)
+		}
+		if err := client.Login(username, password).Wait(); err != nil {
+			loginErr = err
+			client.Close()
+			continue
+		}
+		if _, err := client.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("imapmail: select iCloud Inbox: %w", err)
+		}
+		return client, nil
 	}
-	if err := client.Login(email, password).Wait(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("imapmail: iCloud login: %w", err)
+	if loginErr != nil {
+		return nil, fmt.Errorf("imapmail: iCloud login: %w", loginErr)
 	}
-	if _, err := client.Select("INBOX", &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
-		client.Close()
-		return nil, fmt.Errorf("imapmail: select iCloud Inbox: %w", err)
+	return nil, errors.New("imapmail: iCloud login username is required")
+}
+
+func iCloudLoginUsernames(email string) []string {
+	email = strings.TrimSpace(email)
+	if email == "" {
+		return nil
 	}
-	return client, nil
+	local, _, hasDomain := strings.Cut(email, "@")
+	local = strings.TrimSpace(local)
+	if hasDomain && local != "" && !strings.EqualFold(local, email) {
+		return []string{local, email}
+	}
+	return []string{email}
 }
 
 func fetchICloudMessage(client *imapclient.Client, uid imap.UID) (MessageDetail, error) {
