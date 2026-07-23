@@ -512,7 +512,12 @@ function exportAliases(format: 'txt' | 'csv') {
 async function openMail(alias: ICloudHMEAlias) {
   if (!alias.mailReady) {
     const source = store.sources.find((item) => item.id === alias.sourceAccountId)
-    if (source) openCredential(source, 'appPassword')
+    if (source) {
+      ElMessage.info('请先为该 Apple 主账号配置 App 专用密码，保存后即可在后台查看邮件')
+      openCredential(source, 'appPassword')
+    } else {
+      ElMessage.warning('未找到该隐藏邮箱所属的 Apple 主账号')
+    }
     return
   }
   mailAlias.value = alias
@@ -525,6 +530,18 @@ async function openMail(alias: ICloudHMEAlias) {
   verificationCode.value = ''
   if (selectedMail.value) await selectMail(selectedMail.value, true)
   await refreshMailList()
+}
+async function openSelectedMail() {
+  if (selectedRows.value.length !== 1) return ElMessage.warning('请选择一个隐藏邮箱查看邮件')
+  await openMail(selectedRows.value[0])
+}
+async function openMailFromReceiveKey() {
+  const email = receiveKeyRecord.value?.email
+  if (!email) return
+  const alias = store.aliases.find((item) => item.email === email)
+  if (!alias) return ElMessage.warning('隐藏邮箱记录不存在')
+  receiveKeyDialogVisible.value = false
+  await openMail(alias)
 }
 async function refreshMailList(loadMore = false) {
   if (!mailAlias.value || mailListLoading.value) return
@@ -664,6 +681,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-button :loading="automationSaving" @click="toggleAutomation">{{ automation?.enabled ? '暂停自动补货' : '恢复自动补货' }}</el-button>
           <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
+          <el-button :icon="View" :disabled="selectedRows.length !== 1" @click="openSelectedMail">查看邮件</el-button>
           <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
           <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
           <el-button :icon="FolderOpened" :disabled="!selectedRows.length" @click="openMove">移动分组</el-button>
@@ -697,8 +715,8 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</template></el-table-column>
-          <el-table-column label="操作" width="175" fixed="right" align="center"><template #default="{ row }">
-            <el-button size="small" type="primary" :icon="row.mailReady ? View : Key" @click.stop="openMail(row)">{{ row.mailReady ? '邮件' : '配置收件' }}</el-button>
+          <el-table-column label="操作" width="190" fixed="right" align="center"><template #default="{ row }">
+            <el-button size="small" type="primary" :icon="View" :disabled="row.appleStatus === 'deleted'" @click.stop="openMail(row)">查看邮件</el-button>
             <el-dropdown trigger="click" @command="handleRowCommand($event, row)"><el-button size="small" :icon="More" />
               <template #dropdown><el-dropdown-menu>
                 <el-dropdown-item command="receive-key" :icon="Key">收件密钥与 API</el-dropdown-item>
@@ -816,6 +834,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <div><code>{{ receiveKeyRecord.key }}</code><el-button link :icon="CopyDocument" @click="copyValue(receiveKeyRecord.key, '收件密钥')">复制</el-button></div>
         </div>
         <div class="hme-receive-key-links">
+          <el-button type="primary" :icon="View" @click="openMailFromReceiveKey">后台查看邮件</el-button>
           <el-button :icon="Link" @click="copyReceiveURL('latest')">复制最新邮件 URL</el-button>
           <el-button :icon="Link" @click="copyReceiveURL('history')">复制历史邮件 URL</el-button>
         </div>
