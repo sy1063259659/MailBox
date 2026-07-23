@@ -55,6 +55,21 @@ func TestNetworkRetryDelay(t *testing.T) {
 	}
 }
 
+func TestAutomatedFixedJobStillUsesAutomationSourceSelection(t *testing.T) {
+	sourceID := int64(7)
+	manual := store.ICloudHMECreateJob{
+		Mode: store.ICloudHMEJobModeFixed, SourceAccountID: &sourceID, Origin: "manual",
+	}
+	automated := manual
+	automated.Origin = "automation"
+	if !usesFixedICloudHMESource(manual) {
+		t.Fatal("manual fixed job should use its configured source")
+	}
+	if usesFixedICloudHMESource(automated) {
+		t.Fatal("automated job must pass through cooldown-aware source selection")
+	}
+}
+
 func TestExtractICloudHMEVerificationCode(t *testing.T) {
 	tests := []struct {
 		name    string

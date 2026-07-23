@@ -417,7 +417,7 @@ func legacyCleanupStatements() []string {
 		`UPDATE icloud_hme_automation_events
 		 SET result = 'waiting', error_code = 'icloud_source_wait',
 		     message = '主账号正在等待下一次单项探测，队列将自动继续'
-		 WHERE error_code = 'icloud_no_healthy_source'
+		 WHERE error_code IN ('icloud_no_healthy_source', 'icloud_source_wait')
 		   AND event_type = 'queue'`,
 	}
 }

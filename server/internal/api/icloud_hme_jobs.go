@@ -229,7 +229,7 @@ func randomICloudHMEDelay() time.Duration {
 }
 
 func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHMECreateJob, item store.ICloudHMECreateJobItem) (int64, string, string, error) {
-	if job.Mode == store.ICloudHMEJobModeFixed && job.SourceAccountID != nil {
+	if usesFixedICloudHMESource(job) {
 		email, err := api.createOrRecoverJobAlias(ctx, *job.SourceAccountID, item.Label, job.GroupName)
 		if err != nil {
 			return *job.SourceAccountID, "", classifyICloudHMECode(err), err
@@ -272,6 +272,12 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 		}
 	}
 	return lastSourceID, "", classifyICloudHMECode(lastErr), lastErr
+}
+
+func usesFixedICloudHMESource(job store.ICloudHMECreateJob) bool {
+	return job.Origin != "automation" &&
+		job.Mode == store.ICloudHMEJobModeFixed &&
+		job.SourceAccountID != nil
 }
 
 func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID int64, label, group string) (string, error) {
