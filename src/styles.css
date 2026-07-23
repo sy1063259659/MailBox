@@ -1803,6 +1803,10 @@ textarea {
 }
 
 @media (max-width: 720px) {
+  .hme-automation-summary {
+    grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
   .hme-source-create {
     grid-template-columns: 1fr;
   }
@@ -1810,6 +1814,38 @@ textarea {
 /* iCloud Hide My Email management */
 .hme-action-row {
   gap: 8px;
+}
+
+.hme-automation-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(130px, 1fr));
+  gap: 1px;
+  margin-bottom: 14px;
+  overflow: hidden;
+  border: 1px solid #e5e7eb;
+  background: #e5e7eb;
+}
+
+.hme-automation-summary > div {
+  min-width: 0;
+  padding: 12px 14px;
+  background: #fff;
+}
+
+.hme-automation-summary span {
+  display: block;
+  margin-bottom: 5px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.hme-automation-summary strong {
+  display: block;
+  overflow: hidden;
+  color: #111827;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .hme-filter-row,

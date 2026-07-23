@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, More, Plus, Refresh, Setting, View } from '@element-plus/icons-vue'
+import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, More, Refresh, Setting, View } from '@element-plus/icons-vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
   completeICloudHMELogin, getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
@@ -10,8 +10,11 @@ import {
   revealICloudHMEReceiveKey, resetICloudHMEReceiveKey,
   saveICloudHMECookies, startICloudHMELogin, syncAllICloudHMESources, syncICloudHMEAliases,
   updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
+  getICloudHMEAutomation, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
+  updateICloudHMEInventoryStatus,
   type ICloudHMEAlias, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
   type ICloudHMEMailSummary, type ICloudHMESourceAccount, type ICloudHMEReceiveKeyRecord,
+  type ICloudHMEAutomation, type ICloudHMEAutomationEvent,
 } from '@/services/iCloudHmeApi'
 import {
   cacheICloudHMEBody, cacheICloudHMEMessages, deleteICloudHMECacheForAlias,
@@ -36,6 +39,17 @@ const busy = ref(false)
 const receiveKeyBusy = ref(false)
 const receiveKeyDialogVisible = ref(false)
 const receiveKeyRecord = ref<ICloudHMEReceiveKeyRecord>()
+const automation = ref<ICloudHMEAutomation>()
+const automationDialogVisible = ref(false)
+const automationEventsVisible = ref(false)
+const automationEvents = ref<ICloudHMEAutomationEvent[]>([])
+const automationSaving = ref(false)
+const automationForm = ref({
+  enabled: false,
+  targetAvailableCount: 20,
+  targetGroup: ICLOUD_HME_DEFAULT_GROUP,
+  labelPrefix: 'MailBox',
+})
 
 const sourceDialogVisible = ref(false)
 const sourceForm = ref({ name: '', appleIdEmail: '', icloudEmail: '', host: 'icloud.com' })
@@ -50,9 +64,6 @@ const credentialSaving = ref(false)
 const loginChallengeId = ref('')
 const loginStep = ref<'password' | 'otp'>('password')
 
-const createDialogVisible = ref(false)
-const createForm = ref({ mode: 'fixed' as 'fixed' | 'pool', sourceId: 0, labelPrefix: 'MailBox', count: 1, group: ICLOUD_HME_DEFAULT_GROUP })
-const creatingJob = ref(false)
 const jobsDialogVisible = ref(false)
 const selectedJob = ref<ICloudHMEJob>()
 const jobActionId = ref<number>()
@@ -87,8 +98,6 @@ const groupCounts = computed(() => {
   store.aliases.forEach((alias) => counts.set(alias.group, (counts.get(alias.group) ?? 0) + 1))
   return counts
 })
-const healthySources = computed(() => store.sources.filter((source) => source.cookieConfigured && source.status === 'active'))
-const activeJobs = computed(() => store.jobs.filter((job) => ['pending', 'running', 'cancel_requested'].includes(job.status)))
 const filteredMailMessages = computed(() => {
   const query = mailKeyword.value.trim().toLowerCase()
   if (!query) return mailMessages.value
@@ -111,19 +120,87 @@ let jobPolling = false
 watch([keyword, sourceFilter, statusFilter, () => store.selectedGroup], () => { page.value = 1; selectedRows.value = [] })
 watch(() => filteredAliases.value.length, (total) => { page.value = Math.min(page.value, Math.max(1, Math.ceil(total / pageSize.value))) })
 onMounted(async () => {
-  try { await store.load() } catch (error) { showError(error, '加载隐藏邮箱失败') }
-  jobPollTimer = window.setInterval(pollJobs, 2500)
+  try {
+    await Promise.all([store.load(), loadAutomation()])
+  } catch (error) { showError(error, '加载隐藏邮箱失败') }
+  jobPollTimer = window.setInterval(pollJobs, 15000)
 })
 onBeforeUnmount(() => { if (jobPollTimer) window.clearInterval(jobPollTimer) })
 
 async function pollJobs() {
-  if (jobPolling || (!activeJobs.value.length && !jobsDialogVisible.value)) return
+  if (jobPolling) return
   jobPolling = true
   try {
-    await store.loadJobs()
+    await Promise.all([store.loadJobs(), loadAutomation()])
     if (selectedJob.value) selectedJob.value = await getICloudHMEJob(selectedJob.value.id)
   } catch { /* Background polling stays silent. */ }
   finally { jobPolling = false }
+}
+
+async function loadAutomation() {
+  automation.value = await getICloudHMEAutomation()
+}
+
+function openAutomationSettings() {
+  const current = automation.value
+  automationForm.value = {
+    enabled: current?.enabled ?? false,
+    targetAvailableCount: current?.targetAvailableCount ?? 20,
+    targetGroup: current?.targetGroup || ICLOUD_HME_DEFAULT_GROUP,
+    labelPrefix: current?.labelPrefix || 'MailBox',
+  }
+  automationDialogVisible.value = true
+}
+
+async function saveAutomation() {
+  automationSaving.value = true
+  try {
+    automation.value = await updateICloudHMEAutomation(automationForm.value)
+    automationDialogVisible.value = false
+    ElMessage.success(automation.value.enabled ? '自动补货已启用' : '自动补货设置已保存')
+  } catch (error) { showError(error, '保存自动补货设置失败') }
+  finally { automationSaving.value = false }
+}
+
+async function toggleAutomation() {
+  if (!automation.value) return openAutomationSettings()
+  automationSaving.value = true
+  try {
+    automation.value = await updateICloudHMEAutomation({
+      enabled: !automation.value.enabled,
+      targetAvailableCount: automation.value.targetAvailableCount,
+      targetGroup: automation.value.targetGroup,
+      labelPrefix: automation.value.labelPrefix,
+    })
+    ElMessage.success(automation.value.enabled ? '自动补货已恢复' : '自动补货已暂停')
+  } catch (error) { showError(error, '更新自动补货状态失败') }
+  finally { automationSaving.value = false }
+}
+
+async function openAutomationEvents() {
+  automationEventsVisible.value = true
+  try { automationEvents.value = await listICloudHMEAutomationEvents() }
+  catch (error) { showError(error, '加载运行记录失败') }
+}
+
+async function markInventory(status: 'available' | 'reserved' | 'sold') {
+  if (!selectedRows.value.length) return ElMessage.warning('请先勾选隐藏邮箱')
+  busy.value = true
+  try {
+    await updateICloudHMEInventoryStatus(selectedRows.value.map((item) => item.email), status)
+    selectedRows.value = []
+    await Promise.all([store.load(), loadAutomation()])
+    ElMessage.success(status === 'sold' ? '已标记为已售' : status === 'reserved' ? '已标记为预留' : '已恢复为可售')
+  } catch (error) { showError(error, '更新库存状态失败') }
+  finally { busy.value = false }
+}
+
+function inventoryText(status: ICloudHMEAlias['inventoryStatus']) {
+  return status === 'sold' ? '已售' : status === 'reserved' ? '预留' : '可售'
+}
+
+function inventoryType(status: ICloudHMEAlias['inventoryStatus']) {
+  return status === 'sold' ? 'info' : status === 'reserved' ? 'warning' : 'success'
 }
 async function selectJob(job?: ICloudHMEJob) {
   if (!job) {
@@ -138,8 +215,8 @@ function showError(error: unknown, fallback: string) { ElMessage.error(error ins
 function handleSelection(rows: ICloudHMEAlias[]) { selectedRows.value = rows }
 function groupCount(group: ICloudHMEGroup) { return groupCounts.value.get(group.name) ?? 0 }
 function canDeleteGroup(group: ICloudHMEGroup) { return group.name !== ICLOUD_HME_DEFAULT_GROUP && groupCount(group) === 0 }
-function sourceStatusType(status: string) { return status === 'active' ? 'success' : status === 'pending' ? 'warning' : 'danger' }
-function sourceStatusText(status: string) { return status === 'active' ? '会话正常' : status === 'pending' ? '待配置' : '需处理' }
+function sourceStatusType(status: string) { return status === 'active' ? 'success' : ['pending', 'cooldown'].includes(status) ? 'warning' : 'danger' }
+function sourceStatusText(status: string) { return status === 'active' ? '会话正常' : status === 'cooldown' ? '创建冷却' : status === 'pending' ? '待配置' : '需处理' }
 function aliasStatusType(status: ICloudHMEAlias['appleStatus']) { return status === 'active' ? 'success' : status === 'inactive' ? 'warning' : status === 'deleted' ? 'danger' : 'info' }
 function aliasStatusText(status: ICloudHMEAlias['appleStatus']) { return { active: '已启用', inactive: '已停用', deleted: '已永久删除', unknown: '状态未知' }[status] }
 function jobStatusText(status: ICloudHMEJob['status']) { return { pending: '等待中', running: '执行中', cancel_requested: '取消中', completed: '已完成', partial_failed: '部分失败', cancelled: '已取消' }[status] }
@@ -304,37 +381,6 @@ async function deleteSource(source: ICloudHMESourceAccount) {
   await ElMessageBox.confirm('确定删除主账号“' + source.name + '”？只有没有隐藏邮箱时才能删除。', '删除主账号', { type: 'warning' })
   try { await store.deleteSource(source.id); ElMessage.success('主账号已删除') }
   catch (error) { showError(error, '删除主账号失败') }
-}
-function openCreateJob() {
-  if (!store.sources.length) {
-    sourceDialogVisible.value = true
-    return ElMessage.warning('请先添加并配置 Apple 主账号')
-  }
-  createForm.value = {
-    mode: healthySources.value.length > 1 ? 'pool' : 'fixed',
-    sourceId: healthySources.value[0]?.id ?? 0,
-    labelPrefix: 'MailBox',
-    count: 1,
-    group: store.selectedGroup || ICLOUD_HME_DEFAULT_GROUP,
-  }
-  createDialogVisible.value = true
-}
-async function submitCreateJob() {
-  if (createForm.value.mode === 'fixed' && !createForm.value.sourceId) return ElMessage.warning('请选择主账号')
-  creatingJob.value = true
-  try {
-    const job = await store.createJob({
-      mode: createForm.value.mode,
-      sourceAccountId: createForm.value.mode === 'fixed' ? createForm.value.sourceId : undefined,
-      labelPrefix: createForm.value.labelPrefix,
-      count: createForm.value.count,
-      group: createForm.value.group,
-    })
-    createDialogVisible.value = false
-    jobsDialogVisible.value = true
-    selectedJob.value = job
-    ElMessage.success('创建任务已提交，页面关闭后仍会继续执行')
-  } catch (error) { showError(error, '创建任务失败') } finally { creatingJob.value = false }
 }
 async function cancelJob(job: ICloudHMEJob) {
   jobActionId.value = job.id
@@ -577,14 +623,26 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     <main class="faka-main">
       <MailboxTopbar :search-value="keyword" workspace-mode="accounts" placeholder="搜索隐藏邮箱、主账号、标签、分组或备注..." @search-input="keyword = $event" />
       <section class="faka-card">
+        <div class="hme-automation-summary">
+          <div><span>可售库存</span><strong>{{ automation?.availableCount ?? 0 }} / {{ automation?.targetAvailableCount ?? 20 }}</strong></div>
+          <div><span>待创建</span><strong>{{ automation?.pendingCount ?? 0 }}</strong></div>
+          <div><span>预留 / 已售</span><strong>{{ automation?.reservedCount ?? 0 }} / {{ automation?.soldCount ?? 0 }}</strong></div>
+          <div><span>自动化</span><el-tag :type="automation?.enabled ? 'success' : 'info'">{{ automation?.enabled ? '运行中' : '已暂停' }}</el-tag></div>
+          <div><span>下次执行</span><strong>{{ automation?.nextCreateAt ? formatDateTime(automation.nextCreateAt) : '等待可用主账号' }}</strong></div>
+        </div>
         <div class="faka-action-row hme-action-row">
           <el-button :icon="Setting" @click="sourceDialogVisible = true">主账号管理</el-button>
-          <el-button type="primary" :icon="Plus" @click="openCreateJob">创建隐藏邮箱</el-button>
-          <el-button :icon="Document" @click="jobsDialogVisible = true">创建任务<span v-if="activeJobs.length">（{{ activeJobs.length }}）</span></el-button>
+          <el-button type="primary" :icon="Setting" @click="openAutomationSettings">自动补货设置</el-button>
+          <el-button :loading="automationSaving" @click="toggleAutomation">{{ automation?.enabled ? '暂停自动补货' : '恢复自动补货' }}</el-button>
+          <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
           <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
           <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
           <el-button :icon="FolderOpened" :disabled="!selectedRows.length" @click="openMove">移动分组</el-button>
+          <el-dropdown @command="markInventory">
+            <el-button :disabled="!selectedRows.length">库存状态<el-icon class="el-icon--right"><More /></el-icon></el-button>
+            <template #dropdown><el-dropdown-menu><el-dropdown-item command="available">恢复可售</el-dropdown-item><el-dropdown-item command="reserved">标记预留</el-dropdown-item><el-dropdown-item command="sold">标记已售</el-dropdown-item></el-dropdown-menu></template>
+          </el-dropdown>
           <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('deactivate')">停用</el-button>
           <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('reactivate')">恢复</el-button>
           <el-dropdown @command="exportAliases">
@@ -608,6 +666,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="140" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '查看' : '生成' }}</el-button></div></template></el-table-column>
+          <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</template></el-table-column>
           <el-table-column label="操作" width="175" fixed="right" align="center"><template #default="{ row }">
@@ -626,6 +685,28 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <div class="faka-pagination"><span>Total {{ filteredAliases.length }}</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" size="small" layout="sizes, prev, pager, next" :total="filteredAliases.length" :page-sizes="[20, 50, 100]" /></div>
       </section>
     </main>
+    <el-dialog v-model="automationDialogVisible" title="自动补货设置" width="560px">
+      <el-form label-position="top">
+        <el-alert title="系统每分钟检查库存；真正创建会按每个主账号 15–30 分钟随机间隔、24 小时最多 5 个执行。遇到 Apple 限流会自动冷却并单次探测。" type="info" :closable="false" />
+        <el-form-item label="自动补货"><el-switch v-model="automationForm.enabled" active-text="启用" inactive-text="暂停" /></el-form-item>
+        <el-form-item label="目标可售库存"><el-input-number v-model="automationForm.targetAvailableCount" :min="0" :max="10000" /></el-form-item>
+        <el-form-item label="新邮箱分组"><el-select v-model="automationForm.targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>
+        <el-form-item label="Apple 标签前缀"><el-input v-model="automationForm.labelPrefix" maxlength="80" show-word-limit /></el-form-item>
+      </el-form>
+      <template #footer><el-button @click="automationDialogVisible = false">取消</el-button><el-button type="primary" :loading="automationSaving" @click="saveAutomation">保存</el-button></template>
+    </el-dialog>
+
+    <el-dialog v-model="automationEventsVisible" title="自动补货运行记录" width="960px">
+      <el-table :data="automationEvents" max-height="520">
+        <el-table-column label="时间" width="170"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
+        <el-table-column prop="sourceName" label="主账号" width="145"><template #default="{ row }">{{ row.sourceName || '系统' }}</template></el-table-column>
+        <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="row.result === 'success' ? 'success' : row.result === 'deferred' ? 'warning' : row.result === 'failed' ? 'danger' : 'info'">{{ row.result }}</el-tag></template></el-table-column>
+        <el-table-column prop="errorCode" label="分类" min-width="175" show-overflow-tooltip />
+        <el-table-column prop="message" label="说明" min-width="250" show-overflow-tooltip />
+        <el-table-column label="下次执行" width="170"><template #default="{ row }">{{ row.nextAttemptAt ? formatDateTime(row.nextAttemptAt) : '—' }}</template></el-table-column>
+      </el-table>
+    </el-dialog>
+
     <el-dialog v-model="sourceDialogVisible" title="Apple 主账号管理" width="1180px" class="hme-source-dialog">
       <div class="hme-source-toolbar">
         <div class="hme-source-create"><el-input v-model="sourceForm.name" placeholder="账号名称" /><el-input v-model="sourceForm.appleIdEmail" placeholder="Apple ID" /><el-input v-model="sourceForm.icloudEmail" placeholder="实际 iCloud 邮箱" /><el-select v-model="sourceForm.host"><el-option label="国际区" value="icloud.com" /><el-option label="中国区" value="icloud.com.cn" /></el-select><el-button type="primary" :loading="sourceCreating" @click="createSource">添加</el-button></div>
@@ -639,6 +720,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-table-column label="iCloud+" width="105" align="center"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : row.status === 'icloud_plus_required' ? 'danger' : 'info'">{{ row.status === 'active' ? '已验证' : row.status === 'icloud_plus_required' ? '未开通' : '未验证' }}</el-tag></template></el-table-column>
         <el-table-column label="别名" width="65" align="center"><template #default="{ row }">{{ row.aliasTotal }}</template></el-table-column>
         <el-table-column label="最近活动" min-width="170"><template #default="{ row }"><div class="hme-source-dates"><span>验证 {{ row.lastValidatedAt ? formatDateTime(row.lastValidatedAt) : '无' }}</span><span>同步 {{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '无' }}</span><span>创建 {{ row.lastCreatedAt ? formatDateTime(row.lastCreatedAt) : '无' }}</span><span v-if="row.lastErrorAt">异常 {{ formatDateTime(row.lastErrorAt) }}</span></div></template></el-table-column>
+        <el-table-column label="自动补货" min-width="175"><template #default="{ row }"><div class="hme-source-dates"><span>{{ row.automationEnabled ? (row.status === 'cooldown' ? '冷却中' : '可参与') : '已暂停' }}</span><span v-if="row.nextCreateAt">下次 {{ formatDateTime(row.nextCreateAt) }}</span><span v-if="row.lastLimitAt">限流 {{ formatDateTime(row.lastLimitAt) }}</span></div></template></el-table-column>
         <el-table-column label="操作" width="390" fixed="right"><template #default="{ row }">
           <el-button size="small" :icon="Link" @click="openCredential(row, 'cookies')">Cookie</el-button>
           <el-button size="small" @click="openCredential(row, 'login')">登录</el-button>
@@ -661,18 +743,6 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <template v-else><el-alert title="使用 Apple 账户生成的 App 专用密码供 IMAP 收件。" type="info" :closable="false" /><el-form-item label="App 专用密码"><el-input v-model="credentialForm.appPassword" type="password" show-password /></el-form-item></template>
       </el-form>
       <template #footer><el-button @click="credentialDialogVisible = false">取消</el-button><el-button type="primary" :loading="credentialSaving" @click="saveCredential">{{ credentialMode === 'login' && loginStep === 'otp' ? '验证并完成' : credentialMode === 'appPassword' ? '保存' : '继续' }}</el-button></template>
-    </el-dialog>
-
-    <el-dialog v-model="createDialogVisible" title="创建 iCloud 隐藏邮箱" width="560px">
-      <el-form label-position="top">
-        <el-form-item label="分配方式"><el-segmented v-model="createForm.mode" :options="[{ label: '固定主账号', value: 'fixed' }, { label: '健康账号池', value: 'pool' }]" /></el-form-item>
-        <el-form-item v-if="createForm.mode === 'fixed'" label="Apple 主账号"><el-select v-model="createForm.sourceId" style="width:100%"><el-option v-for="source in store.sources" :key="source.id" :label="source.name + ' · ' + source.aliasTotal + ' 个别名'" :value="source.id" :disabled="!source.cookieConfigured || source.status !== 'active'" /></el-select></el-form-item>
-        <el-alert v-else title="只使用会话正常的主账号，并按当前别名数量从少到多分配。" type="info" :closable="false" />
-        <el-form-item label="Apple 标签前缀"><el-input v-model="createForm.labelPrefix" maxlength="80" show-word-limit /><small>实际标签为“前缀 #序号”，用于重启恢复与防重。</small></el-form-item>
-        <el-form-item label="创建数量"><el-input-number v-model="createForm.count" :min="1" :max="20" /></el-form-item>
-        <el-form-item label="本地分组"><el-select v-model="createForm.group" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>
-      </el-form>
-      <template #footer><el-button @click="createDialogVisible = false">取消</el-button><el-button type="primary" :loading="creatingJob" @click="submitCreateJob">提交创建任务</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="jobsDialogVisible" title="隐藏邮箱创建任务" width="1000px" class="hme-jobs-dialog">

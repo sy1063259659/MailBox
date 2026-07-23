@@ -96,9 +96,10 @@ func (api *iCloudHMEAPI) retryJob(w http.ResponseWriter, r *http.Request, id int
 func (api *iCloudHMEAPI) startJobWorker() {
 	_ = api.store.RecoverICloudHMEJobs(context.Background())
 	go func() {
-		ticker := time.NewTicker(15 * time.Second)
+		ticker := time.NewTicker(time.Minute)
 		defer ticker.Stop()
 		for {
+			api.ensureAutomationInventory(context.Background())
 			api.runAvailableJobs()
 			select {
 			case <-api.jobWake:
@@ -150,6 +151,10 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 		}
 		sourceID, email, code, processErr := api.processJobItem(ctx, job, item)
 		if processErr != nil {
+			if job.Origin == "automation" && api.handleAutomationFailure(ctx, job, item, sourceID, code, processErr) {
+				_, _ = api.store.RefreshICloudHMEJobProgress(ctx, job.ID)
+				return
+			}
 			var sourcePointer *int64
 			if sourceID > 0 {
 				sourcePointer = &sourceID
@@ -161,6 +166,12 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 			})
 		} else {
 			_ = api.store.CompleteICloudHMEJobItem(ctx, item.ID, sourceID, email)
+			if job.Origin == "automation" {
+				next := time.Now().Add(randomAutomationCreateDelay())
+				_ = api.store.MarkICloudHMEAutomationSuccess(ctx, sourceID, next)
+				_ = api.store.AddICloudHMEAutomationEvent(ctx, &sourceID, &item.ID, "create", "success", "",
+					"隐藏邮箱创建成功", &next, item.Attempts)
+			}
 			_ = api.store.AddICloudHMEAudit(ctx, store.ICloudHMEAuditLog{
 				Actor: job.CreatedBy, Action: "create_alias", TargetType: "alias",
 				Target: email, Result: "success",
@@ -225,23 +236,40 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 		}
 		return *job.SourceAccountID, email, "", nil
 	}
-	sources, err := api.store.HealthyICloudHMESources(ctx)
+	var sources []store.ICloudHMESourceCredentials
+	var err error
+	if job.Origin == "automation" {
+		sources, err = api.store.EligibleICloudHMEAutomationSources(ctx)
+	} else {
+		sources, err = api.store.HealthyICloudHMESources(ctx)
+	}
 	if err != nil {
 		return 0, "", "internal_error", err
 	}
 	if len(sources) == 0 {
+		if job.Origin == "automation" {
+			return 0, "", "icloud_no_eligible_source", errNoEligibleAutomationSource
+		}
 		return 0, "", "icloud_no_healthy_source", errors.New("没有可用的健康 Apple 主账号")
 	}
 	var lastErr error
 	var lastSourceID int64
 	for _, source := range sources {
 		lastSourceID = source.ID
+		if job.Origin == "automation" {
+			_ = api.store.MarkICloudHMEAutomationAttempt(ctx, source.ID)
+		}
 		email, err := api.createOrRecoverJobAlias(ctx, source.ID, item.Label, job.GroupName)
 		if err == nil {
 			return source.ID, email, "", nil
 		}
 		lastErr = err
-		_ = api.store.MarkICloudHMESourceActivity(ctx, source.ID, "create", err)
+		if job.Origin != "automation" {
+			_ = api.store.MarkICloudHMESourceActivity(ctx, source.ID, "create", err)
+		}
+		if job.Origin == "automation" {
+			break
+		}
 	}
 	return lastSourceID, "", classifyICloudHMECode(lastErr), lastErr
 }

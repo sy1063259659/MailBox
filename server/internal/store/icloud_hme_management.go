@@ -28,6 +28,7 @@ type ICloudHMECreateJob struct {
 	FailedCount     int                      `json:"failedCount"`
 	CancelledCount  int                      `json:"cancelledCount"`
 	CreatedBy       string                   `json:"createdBy"`
+	Origin          string                   `json:"origin"`
 	ErrorMessage    string                   `json:"errorMessage,omitempty"`
 	StartedAt       *time.Time               `json:"startedAt,omitempty"`
 	FinishedAt      *time.Time               `json:"finishedAt,omitempty"`
@@ -51,6 +52,8 @@ type ICloudHMECreateJobItem struct {
 	FinishedAt      *time.Time `json:"finishedAt,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	UpdatedAt       time.Time  `json:"updatedAt"`
+	NextAttemptAt   *time.Time `json:"nextAttemptAt,omitempty"`
+	RetryClass      string     `json:"retryClass,omitempty"`
 }
 
 type ICloudHMECreateJobInput struct {
@@ -60,6 +63,8 @@ type ICloudHMECreateJobInput struct {
 	GroupName       string
 	Count           int
 	CreatedBy       string
+	Origin          string
+	SequenceStart   int
 }
 
 type ICloudHMEAuditLog struct {
@@ -96,6 +101,9 @@ func (s *Store) CreateICloudHMEJob(ctx context.Context, input ICloudHMECreateJob
 		return ICloudHMECreateJob{}, errors.New("标签前缀最多 80 个字符")
 	}
 	input.GroupName = normalizeICloudHMEGroup(input.GroupName)
+	if input.Origin != "automation" {
+		input.Origin = "manual"
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -112,12 +120,22 @@ func (s *Store) CreateICloudHMEJob(ctx context.Context, input ICloudHMECreateJob
 			)
 		`, *input.SourceAccountID).Scan(&healthySourceExists)
 	} else {
-		err = tx.QueryRow(ctx, `
-			SELECT EXISTS(
-				SELECT 1 FROM icloud_hme_source_accounts
-				WHERE status = 'active' AND cookies_encrypted <> ''
-			)
-		`).Scan(&healthySourceExists)
+		if input.Origin == "automation" {
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM icloud_hme_source_accounts
+					WHERE automation_enabled AND status IN ('active', 'cooldown')
+					  AND cookies_encrypted <> ''
+				)
+			`).Scan(&healthySourceExists)
+		} else {
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS(
+					SELECT 1 FROM icloud_hme_source_accounts
+					WHERE status = 'active' AND cookies_encrypted <> ''
+				)
+			`).Scan(&healthySourceExists)
+		}
 	}
 	if err != nil {
 		return ICloudHMECreateJob{}, fmt.Errorf("store: validate iCloud HME job source: %w", err)
@@ -129,21 +147,21 @@ func (s *Store) CreateICloudHMEJob(ctx context.Context, input ICloudHMECreateJob
 	var job ICloudHMECreateJob
 	err = tx.QueryRow(ctx, `
 		INSERT INTO icloud_hme_create_jobs (
-			mode, source_account_id, label_prefix, group_name, requested_count, created_by
-		) VALUES ($1, $2, $3, $4, $5, $6)
+			mode, source_account_id, label_prefix, group_name, requested_count, created_by, origin
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, mode, source_account_id, label_prefix, group_name, requested_count,
 		          status, completed_count, failed_count, cancelled_count, created_by,
-		          error_message, started_at, finished_at, created_at, updated_at
-	`, input.Mode, input.SourceAccountID, input.LabelPrefix, input.GroupName, input.Count, strings.TrimSpace(input.CreatedBy)).Scan(
+		          origin, error_message, started_at, finished_at, created_at, updated_at
+	`, input.Mode, input.SourceAccountID, input.LabelPrefix, input.GroupName, input.Count, strings.TrimSpace(input.CreatedBy), input.Origin).Scan(
 		&job.ID, &job.Mode, &job.SourceAccountID, &job.LabelPrefix, &job.GroupName, &job.RequestedCount,
 		&job.Status, &job.CompletedCount, &job.FailedCount, &job.CancelledCount, &job.CreatedBy,
-		&job.ErrorMessage, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
+		&job.Origin, &job.ErrorMessage, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
 	)
 	if err != nil {
 		return ICloudHMECreateJob{}, fmt.Errorf("store: create iCloud HME job: %w", err)
 	}
 	for sequence := 1; sequence <= input.Count; sequence++ {
-		label := fmt.Sprintf("%s #%d", input.LabelPrefix, sequence)
+		label := fmt.Sprintf("%s #%d", input.LabelPrefix, input.SequenceStart+sequence)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO icloud_hme_create_job_items (job_id, sequence, source_account_id, label)
 			VALUES ($1, $2, $3, $4)
@@ -164,7 +182,7 @@ func (s *Store) ListICloudHMEJobs(ctx context.Context, limit int) ([]ICloudHMECr
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, mode, source_account_id, label_prefix, group_name, requested_count,
 		       status, completed_count, failed_count, cancelled_count, created_by,
-		       error_message, started_at, finished_at, created_at, updated_at
+		       origin, error_message, started_at, finished_at, created_at, updated_at
 		FROM icloud_hme_create_jobs
 		ORDER BY created_at DESC, id DESC
 		LIMIT $1
@@ -190,7 +208,7 @@ func (s *Store) GetICloudHMEJob(ctx context.Context, id int64) (ICloudHMECreateJ
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, mode, source_account_id, label_prefix, group_name, requested_count,
 		       status, completed_count, failed_count, cancelled_count, created_by,
-		       error_message, started_at, finished_at, created_at, updated_at
+		       origin, error_message, started_at, finished_at, created_at, updated_at
 		FROM icloud_hme_create_jobs WHERE id = $1
 	`, id).Scan(
 		&job.ID, &job.Mode, &job.SourceAccountID, &job.LabelPrefix, &job.GroupName, &job.RequestedCount,
@@ -205,7 +223,8 @@ func (s *Store) GetICloudHMEJob(ctx context.Context, id int64) (ICloudHMECreateJ
 	}
 	rows, err := s.pool.Query(ctx, `
 		SELECT id, job_id, sequence, source_account_id, label, email, status, attempts,
-		       error_code, error_message, started_at, finished_at, created_at, updated_at
+		       error_code, error_message, started_at, finished_at, created_at, updated_at,
+		       next_attempt_at, retry_class
 		FROM icloud_hme_create_job_items WHERE job_id = $1 ORDER BY sequence ASC
 	`, id)
 	if err != nil {
@@ -219,6 +238,7 @@ func (s *Store) GetICloudHMEJob(ctx context.Context, id int64) (ICloudHMECreateJ
 			&item.ID, &item.JobID, &item.Sequence, &item.SourceAccountID, &item.Label,
 			&item.Email, &item.Status, &item.Attempts, &item.ErrorCode, &item.ErrorMessage,
 			&item.StartedAt, &item.FinishedAt, &item.CreatedAt, &item.UpdatedAt,
+			&item.NextAttemptAt, &item.RetryClass,
 		); err != nil {
 			return ICloudHMECreateJob{}, fmt.Errorf("store: scan iCloud HME job item: %w", err)
 		}
@@ -231,7 +251,7 @@ func scanICloudHMEJob(row interface{ Scan(...any) error }, job *ICloudHMECreateJ
 	if err := row.Scan(
 		&job.ID, &job.Mode, &job.SourceAccountID, &job.LabelPrefix, &job.GroupName, &job.RequestedCount,
 		&job.Status, &job.CompletedCount, &job.FailedCount, &job.CancelledCount, &job.CreatedBy,
-		&job.ErrorMessage, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
+		&job.Origin, &job.ErrorMessage, &job.StartedAt, &job.FinishedAt, &job.CreatedAt, &job.UpdatedAt,
 	); err != nil {
 		return fmt.Errorf("store: scan iCloud HME job: %w", err)
 	}
@@ -248,7 +268,14 @@ func (s *Store) NextRunnableICloudHMEJob(ctx context.Context) (ICloudHMECreateJo
 	var id int64
 	err = tx.QueryRow(ctx, `
 		SELECT id FROM icloud_hme_create_jobs
-		WHERE status = 'pending'
+		WHERE status IN ('pending', 'running')
+		  AND (origin <> 'automation' OR EXISTS (
+		        SELECT 1 FROM icloud_hme_automation_settings WHERE id = 1 AND enabled
+		      ))
+		  AND EXISTS (SELECT 1 FROM icloud_hme_create_job_items item
+		              WHERE item.job_id = icloud_hme_create_jobs.id
+		                AND item.status = 'pending'
+		                AND (item.next_attempt_at IS NULL OR item.next_attempt_at <= now()))
 		ORDER BY created_at ASC, id ASC
 		FOR UPDATE SKIP LOCKED LIMIT 1
 	`).Scan(&id)
@@ -280,15 +307,18 @@ func (s *Store) ClaimNextICloudHMEJobItem(ctx context.Context, jobID int64) (ICl
 	var item ICloudHMECreateJobItem
 	err = tx.QueryRow(ctx, `
 		SELECT id, job_id, sequence, source_account_id, label, email, status, attempts,
-		       error_code, error_message, started_at, finished_at, created_at, updated_at
+		       error_code, error_message, started_at, finished_at, created_at, updated_at,
+		       next_attempt_at, retry_class
 		FROM icloud_hme_create_job_items
 		WHERE job_id = $1 AND status = 'pending'
+		  AND (next_attempt_at IS NULL OR next_attempt_at <= now())
 		ORDER BY sequence ASC
 		FOR UPDATE SKIP LOCKED LIMIT 1
 	`, jobID).Scan(
 		&item.ID, &item.JobID, &item.Sequence, &item.SourceAccountID, &item.Label,
 		&item.Email, &item.Status, &item.Attempts, &item.ErrorCode, &item.ErrorMessage,
 		&item.StartedAt, &item.FinishedAt, &item.CreatedAt, &item.UpdatedAt,
+		&item.NextAttemptAt, &item.RetryClass,
 	)
 	if err != nil {
 		return ICloudHMECreateJobItem{}, err
@@ -299,11 +329,13 @@ func (s *Store) ClaimNextICloudHMEJobItem(ctx context.Context, jobID int64) (ICl
 		    finished_at = NULL, error_code = '', error_message = '', updated_at = now()
 		WHERE id = $1
 		RETURNING id, job_id, sequence, source_account_id, label, email, status, attempts,
-		          error_code, error_message, started_at, finished_at, created_at, updated_at
+		          error_code, error_message, started_at, finished_at, created_at, updated_at,
+		          next_attempt_at, retry_class
 	`, item.ID).Scan(
 		&item.ID, &item.JobID, &item.Sequence, &item.SourceAccountID, &item.Label,
 		&item.Email, &item.Status, &item.Attempts, &item.ErrorCode, &item.ErrorMessage,
 		&item.StartedAt, &item.FinishedAt, &item.CreatedAt, &item.UpdatedAt,
+		&item.NextAttemptAt, &item.RetryClass,
 	)
 	if err != nil {
 		return ICloudHMECreateJobItem{}, fmt.Errorf("store: claim iCloud HME item: %w", err)
@@ -521,6 +553,7 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 		       a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
 		       g.name, a.remark, s.app_password_encrypted <> '',
 		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		       a.inventory_status, a.sold_at,
 		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
@@ -530,7 +563,8 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName, &alias.AnonymousID,
 		&alias.Label, &alias.Active, &alias.AppleStatus, &alias.DeactivatedAt, &alias.DeletedAt,
 		&alias.LastSyncedAt, &alias.Group, &alias.Remark, &alias.MailReady,
-		&alias.ReceiveKeyConfigured, &alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
+		&alias.ReceiveKeyConfigured, &alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus,
+		&alias.SoldAt, &alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")

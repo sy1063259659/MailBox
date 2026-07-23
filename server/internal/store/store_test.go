@@ -234,6 +234,8 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS icloud_hme_create_jobs",
 		"CREATE TABLE IF NOT EXISTS icloud_hme_create_job_items",
 		"CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_automation_settings",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_automation_events",
 		"UNIQUE(job_id, sequence)",
 		"ON DELETE SET NULL",
 	} {
@@ -250,6 +252,9 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at",
+		"icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at",
 	} {
 		if !strings.Contains(columns, want) {
 			t.Fatalf("migrationColumnStatements() missing %q", want)

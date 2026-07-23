@@ -480,6 +480,8 @@ func classifyICloudHMEError(err error) (string, string) {
 	message := err.Error()
 	lower := strings.ToLower(message)
 	switch {
+	case strings.Contains(lower, "reached the limit of addresses"), strings.Contains(lower, "try again later") && strings.Contains(lower, "limit"):
+		return "icloud_alias_rate_limited", "Apple 暂时限制创建，系统将冷却后自动重试"
 	case strings.Contains(lower, "需要提供 otp"), strings.Contains(lower, "需要 otp"), strings.Contains(lower, "双重认证"):
 		return "icloud_otp_required", "Apple 账号需要双重认证验证码"
 	case strings.Contains(lower, "icloud+") || strings.Contains(lower, "premiummailsettings"):

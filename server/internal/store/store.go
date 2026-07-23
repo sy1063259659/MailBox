@@ -277,6 +277,29 @@ func migrationCreateStatements() []string {
 			error_code TEXT NOT NULL DEFAULT '',
 			message TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_settings (
+			id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			enabled BOOLEAN NOT NULL DEFAULT false,
+			target_available_count INTEGER NOT NULL DEFAULT 20,
+			target_group TEXT NOT NULL DEFAULT '默认分组',
+			label_prefix TEXT NOT NULL DEFAULT 'MailBox',
+			error_window_started_at TIMESTAMPTZ,
+			error_window_count INTEGER NOT NULL DEFAULT 0,
+			updated_by TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_events (
+			id BIGSERIAL PRIMARY KEY,
+			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			job_item_id BIGINT REFERENCES icloud_hme_create_job_items(id) ON DELETE SET NULL,
+			event_type TEXT NOT NULL,
+			result TEXT NOT NULL,
+			error_code TEXT NOT NULL DEFAULT '',
+			message TEXT NOT NULL DEFAULT '',
+			next_attempt_at TIMESTAMPTZ,
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`}
 }
 
@@ -292,6 +315,14 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS automation_enabled BOOLEAN NOT NULL DEFAULT true`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS create_window_started_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS create_window_success_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS cooldown_level INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS consecutive_limit_count INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_limit_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_auto_attempt_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
@@ -299,6 +330,11 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_updated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status TEXT NOT NULL DEFAULT 'available'`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_create_jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'`,
+		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS retry_class TEXT NOT NULL DEFAULT ''`,
 	}
 }
 
@@ -321,6 +357,9 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_status ON icloud_hme_aliases(apple_status)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_jobs_status ON icloud_hme_create_jobs(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_status ON icloud_hme_create_job_items(job_id, status, sequence)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_due ON icloud_hme_create_job_items(status, next_attempt_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_inventory ON icloud_hme_aliases(inventory_status, apple_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_automation_events_created ON icloud_hme_automation_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`}
 }
 
@@ -330,6 +369,44 @@ func legacyCleanupStatements() []string {
 		`UPDATE icloud_hme_source_accounts
 		 SET status_reason = 'Apple 会话异常，请重新验证', updated_at = now()
 		 WHERE status_reason ~* '(trustTokens|X-APPLE|Bearer|Set-Cookie|webauth-token|scnt)'`,
+		`INSERT INTO icloud_hme_automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
+		`UPDATE icloud_hme_create_job_items
+		 SET status = 'pending', retry_class = 'rate_limit',
+		     error_code = 'icloud_alias_rate_limited',
+		     next_attempt_at = COALESCE(finished_at, updated_at, now()) + interval '6 hours',
+		     finished_at = NULL, updated_at = now()
+		 WHERE status = 'failed'
+		   AND (error_code = 'icloud_alias_rate_limited'
+		        OR error_message ILIKE '%reached the limit of addresses%')`,
+		`UPDATE icloud_hme_create_jobs job
+		 SET status = 'pending', origin = 'automation', finished_at = NULL, updated_at = now()
+		 WHERE EXISTS (
+		   SELECT 1 FROM icloud_hme_create_job_items item
+		   WHERE item.job_id = job.id AND item.status = 'pending'
+		 ) AND job.status IN ('partial_failed', 'failed')`,
+		`UPDATE icloud_hme_source_accounts source
+		 SET status = 'cooldown', status_reason = 'Apple 暂时限制创建，系统将在冷却后自动探测',
+		     next_create_at = GREATEST(
+		       latest.next_attempt_at,
+		       COALESCE((
+		         SELECT min(item.finished_at) + interval '24 hours'
+		         FROM icloud_hme_create_job_items item
+		         WHERE item.source_account_id = source.id
+		           AND item.status = 'completed'
+		           AND item.finished_at >= now() - interval '24 hours'
+		         HAVING count(*) >= 5
+		       ), latest.next_attempt_at)
+		     ),
+		     cooldown_level = GREATEST(cooldown_level, 1),
+		     consecutive_limit_count = GREATEST(consecutive_limit_count, 1),
+		     last_limit_at = COALESCE(last_limit_at, now()), updated_at = now()
+		 FROM (
+		   SELECT source_account_id, max(next_attempt_at) AS next_attempt_at
+		   FROM icloud_hme_create_job_items
+		   WHERE retry_class = 'rate_limit' AND source_account_id IS NOT NULL
+		   GROUP BY source_account_id
+		 ) latest
+		 WHERE source.id = latest.source_account_id`,
 	}
 }
 

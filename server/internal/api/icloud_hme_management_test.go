@@ -22,6 +22,39 @@ func TestRandomICloudHMEDelayStaysInsideSafetyWindow(t *testing.T) {
 	}
 }
 
+func TestRandomAutomationCreateDelayStaysInsideSafetyWindow(t *testing.T) {
+	for i := 0; i < 200; i++ {
+		delay := randomAutomationCreateDelay()
+		if delay < 15*time.Minute || delay > 30*time.Minute {
+			t.Fatalf("delay = %v, want 15m..30m", delay)
+		}
+	}
+}
+
+func TestAutomationRetryClassification(t *testing.T) {
+	tests := []struct {
+		message string
+		want    string
+	}{
+		{"You have reached the limit of addresses you can create right now. Please try again later.", "rate_limit"},
+		{"HTTP 401", "session"},
+		{"未开通 iCloud+", "icloud_plus"},
+		{"request timeout", "network"},
+		{"unexpected reserve payload", "protocol"},
+	}
+	for _, test := range tests {
+		if got := classifyAutomationRetry(assertError(test.message)); got != test.want {
+			t.Fatalf("classifyAutomationRetry(%q) = %q, want %q", test.message, got, test.want)
+		}
+	}
+}
+
+func TestNetworkRetryDelay(t *testing.T) {
+	if networkRetryDelay(1) != 15*time.Minute || networkRetryDelay(2) != time.Hour || networkRetryDelay(3) != 6*time.Hour {
+		t.Fatal("network retry schedule changed")
+	}
+}
+
 func TestExtractICloudHMEVerificationCode(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -38,6 +38,12 @@ type ICloudHMESourceAccount struct {
 	LastSyncedAt          *time.Time `json:"lastSyncedAt,omitempty"`
 	LastCreatedAt         *time.Time `json:"lastCreatedAt,omitempty"`
 	LastErrorAt           *time.Time `json:"lastErrorAt,omitempty"`
+	AutomationEnabled     bool       `json:"automationEnabled"`
+	NextCreateAt          *time.Time `json:"nextCreateAt,omitempty"`
+	CooldownLevel         int        `json:"cooldownLevel"`
+	ConsecutiveLimitCount int        `json:"consecutiveLimitCount"`
+	LastLimitAt           *time.Time `json:"lastLimitAt,omitempty"`
+	LastAutoAttemptAt     *time.Time `json:"lastAutoAttemptAt,omitempty"`
 	CreatedAt             time.Time  `json:"createdAt"`
 	UpdatedAt             time.Time  `json:"updatedAt"`
 }
@@ -64,6 +70,8 @@ type ICloudHMEAlias struct {
 	MailReady            bool       `json:"mailReady"`
 	ReceiveKeyConfigured bool       `json:"receiveKeyConfigured"`
 	ReceiveKeyUpdatedAt  *time.Time `json:"receiveKeyUpdatedAt,omitempty"`
+	InventoryStatus      string     `json:"inventoryStatus"`
+	SoldAt               *time.Time `json:"soldAt,omitempty"`
 	CreatedAt            time.Time  `json:"createdAt"`
 	UpdatedAt            time.Time  `json:"updatedAt"`
 }
@@ -185,7 +193,10 @@ func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESou
 		SELECT id, name, apple_id_email, icloud_email, host,
 		       cookies_encrypted <> '', app_password_encrypted <> '',
 		       status, status_reason, alias_total, last_validated_at,
-		       last_synced_at, last_created_at, last_error_at, created_at, updated_at
+		       last_synced_at, last_created_at, last_error_at,
+		       automation_enabled, next_create_at, cooldown_level,
+		       consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+		       created_at, updated_at
 		FROM icloud_hme_source_accounts
 		ORDER BY created_at DESC, id DESC
 	`)
@@ -202,7 +213,9 @@ func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESou
 			&account.CookieConfigured, &account.AppPasswordConfigured,
 			&account.Status, &account.StatusReason, &account.AliasTotal,
 			&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
-			&account.LastErrorAt, &account.CreatedAt, &account.UpdatedAt,
+			&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
+			&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
+			&account.LastAutoAttemptAt, &account.CreatedAt, &account.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME source account: %w", err)
 		}
@@ -230,13 +243,17 @@ func (s *Store) CreateICloudHMESourceAccount(ctx context.Context, name, appleIDE
 		RETURNING id, name, apple_id_email, icloud_email, host,
 		          false, false, status, status_reason, alias_total,
 		          last_validated_at, last_synced_at, last_created_at, last_error_at,
+		          automation_enabled, next_create_at, cooldown_level,
+		          consecutive_limit_count, last_limit_at, last_auto_attempt_at,
 		          created_at, updated_at
 	`, name, appleIDEmail, iCloudEmail, host).Scan(
 		&account.ID, &account.Name, &account.AppleIDEmail, &account.ICloudEmail, &account.Host,
 		&account.CookieConfigured, &account.AppPasswordConfigured,
 		&account.Status, &account.StatusReason, &account.AliasTotal,
 		&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
-		&account.LastErrorAt, &account.CreatedAt, &account.UpdatedAt,
+		&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
+		&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
+		&account.LastAutoAttemptAt, &account.CreatedAt, &account.UpdatedAt,
 	)
 	if err != nil {
 		return ICloudHMESourceAccount{}, fmt.Errorf("store: create iCloud HME source account: %w", err)
@@ -251,7 +268,10 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		SELECT id, name, apple_id_email, icloud_email, host,
 		       cookies_encrypted, app_password_encrypted,
 		       status, status_reason, alias_total, last_validated_at,
-		       last_synced_at, last_created_at, last_error_at, created_at, updated_at
+		       last_synced_at, last_created_at, last_error_at,
+		       automation_enabled, next_create_at, cooldown_level,
+		       consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+		       created_at, updated_at
 		FROM icloud_hme_source_accounts
 		WHERE id = $1
 	`, id).Scan(
@@ -259,7 +279,9 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		&encryptedCookies, &encryptedAppPassword,
 		&credentials.Status, &credentials.StatusReason, &credentials.AliasTotal,
 		&credentials.LastValidatedAt, &credentials.LastSyncedAt, &credentials.LastCreatedAt,
-		&credentials.LastErrorAt, &credentials.CreatedAt, &credentials.UpdatedAt,
+		&credentials.LastErrorAt, &credentials.AutomationEnabled, &credentials.NextCreateAt,
+		&credentials.CooldownLevel, &credentials.ConsecutiveLimitCount, &credentials.LastLimitAt,
+		&credentials.LastAutoAttemptAt, &credentials.CreatedAt, &credentials.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMESourceCredentials{}, errors.New("iCloud 主账号不存在")
@@ -296,6 +318,8 @@ func (s *Store) SaveICloudHMECookies(ctx context.Context, id int64, cookies map[
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
 		SET cookies_encrypted = $2, status = $3, status_reason = $4,
+		    automation_enabled = CASE WHEN $3 = 'active' THEN true ELSE automation_enabled END,
+		    next_create_at = CASE WHEN $3 = 'active' THEN now() ELSE next_create_at END,
 		    last_validated_at = now(), updated_at = now()
 		WHERE id = $1
 	`, id, encrypted, status, sanitizeICloudHMEStoredMessage(reason))
@@ -384,6 +408,7 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 		       a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
 		       g.name, a.remark, s.app_password_encrypted <> '',
 		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		       a.inventory_status, a.sold_at,
 		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
@@ -403,7 +428,8 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 			&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
 			&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
 			&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
-			&alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
+			&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
+			&alias.CreatedAt, &alias.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME alias: %w", err)
 		}
@@ -528,13 +554,15 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		          a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
 		          g.name, a.remark, s.app_password_encrypted <> '',
 		          a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		          a.inventory_status, a.sold_at,
 		          a.created_at, a.updated_at
 	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
 		&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
 		&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
 		&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
-		&alias.ReceiveKeyUpdatedAt, &alias.CreatedAt, &alias.UpdatedAt,
+		&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
+		&alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")

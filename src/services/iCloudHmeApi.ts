@@ -23,6 +23,12 @@ export interface ICloudHMESourceAccount {
   lastSyncedAt?: string
   lastCreatedAt?: string
   lastErrorAt?: string
+  automationEnabled: boolean
+  nextCreateAt?: string
+  cooldownLevel: number
+  consecutiveLimitCount: number
+  lastLimitAt?: string
+  lastAutoAttemptAt?: string
   createdAt: string
   updatedAt: string
 }
@@ -43,8 +49,39 @@ export interface ICloudHMEAlias {
   mailReady: boolean
   receiveKeyConfigured: boolean
   receiveKeyUpdatedAt?: string
+  inventoryStatus: 'available' | 'reserved' | 'sold'
+  soldAt?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface ICloudHMEAutomation {
+  enabled: boolean
+  targetAvailableCount: number
+  targetGroup: string
+  labelPrefix: string
+  availableCount: number
+  reservedCount: number
+  soldCount: number
+  pendingCount: number
+  nextCreateAt?: string
+  lastSuccessAt?: string
+  lastLimitAt?: string
+  updatedBy: string
+  updatedAt: string
+}
+
+export interface ICloudHMEAutomationEvent {
+  id: number
+  sourceAccountId?: number
+  sourceName?: string
+  eventType: string
+  result: string
+  errorCode?: string
+  message?: string
+  nextAttemptAt?: string
+  retryCount: number
+  createdAt: string
 }
 
 export interface ICloudHMEReceiveKeyRecord {
@@ -85,6 +122,8 @@ export interface ICloudHMEJobItem {
   finishedAt?: string
   createdAt: string
   updatedAt: string
+  nextAttemptAt?: string
+  retryClass?: string
 }
 
 export interface ICloudHMEJob {
@@ -99,6 +138,7 @@ export interface ICloudHMEJob {
   failedCount: number
   cancelledCount: number
   createdBy: string
+  origin: 'manual' | 'automation'
   errorMessage?: string
   startedAt?: string
   finishedAt?: string
@@ -165,6 +205,37 @@ export async function deleteICloudHMESource(id: number): Promise<void> {
 export async function listICloudHMEAliases(): Promise<ICloudHMEAlias[]> {
   const response = await apiGet<{ ok: boolean; aliases: ICloudHMEAlias[] }>('/icloud-hme/aliases')
   return response.aliases
+}
+
+export async function getICloudHMEAutomation(): Promise<ICloudHMEAutomation> {
+  const response = await apiGet<{ ok: boolean; automation: ICloudHMEAutomation }>('/icloud-hme/automation')
+  return response.automation
+}
+
+export async function updateICloudHMEAutomation(input: {
+  enabled: boolean
+  targetAvailableCount: number
+  targetGroup: string
+  labelPrefix: string
+}): Promise<ICloudHMEAutomation> {
+  const response = await apiRequest<{ ok: boolean; automation: ICloudHMEAutomation }>('/icloud-hme/automation', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+  return response.automation
+}
+
+export async function listICloudHMEAutomationEvents(): Promise<ICloudHMEAutomationEvent[]> {
+  const response = await apiGet<{ ok: boolean; events: ICloudHMEAutomationEvent[] }>('/icloud-hme/automation/events')
+  return response.events
+}
+
+export async function updateICloudHMEInventoryStatus(
+  emails: string[],
+  status: 'available' | 'reserved' | 'sold',
+): Promise<void> {
+  await apiPost('/icloud-hme/aliases/inventory-status', { emails, status })
 }
 
 export async function createICloudHMEAlias(id: number, label: string, group: string): Promise<string> {
