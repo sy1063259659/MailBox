@@ -56,6 +56,9 @@ export const useICloudHmeStore = defineStore('iCloudHme', {
     async loadJobs() {
       this.jobs = await listICloudHMEJobs()
     },
+    async loadSources() {
+      this.sources = await listICloudHMESourceAccounts()
+    },
     async createJob(input: {
       mode: 'fixed' | 'pool'
       sourceAccountId?: number

@@ -34,7 +34,69 @@ type ICloudHMEAutomationEvent struct {
 	Message         string     `json:"message,omitempty"`
 	NextAttemptAt   *time.Time `json:"nextAttemptAt,omitempty"`
 	RetryCount      int        `json:"retryCount"`
+	ProbeStage      int        `json:"probeStage"`
+	IntervalSeconds int        `json:"intervalSeconds"`
+	RecoverySeconds int        `json:"recoverySeconds"`
+	TargetMinSecs   int        `json:"targetIntervalMinSeconds"`
+	TargetMaxSecs   int        `json:"targetIntervalMaxSeconds"`
 	CreatedAt       time.Time  `json:"createdAt"`
+}
+
+type ICloudHMEProbeState struct {
+	Stage               int
+	SuccessStreak       int
+	SuccessTarget       int
+	StableStage         int
+	RecoveryMode        bool
+	LimitStartedAt      *time.Time
+	LastCreatedAt       *time.Time
+	LastLimitStage      int
+	LastIntervalSeconds int
+	LastRecoverySeconds int
+}
+
+type ICloudHMEProbeTransition struct {
+	AttemptStage    int
+	Stage           int
+	SuccessStreak   int
+	SuccessTarget   int
+	StableStage     int
+	RecoveryMode    bool
+	IntervalSeconds int
+	RecoverySeconds int
+}
+
+type ICloudHMEProbeEventMetrics struct {
+	Stage           int
+	IntervalSeconds int
+	RecoverySeconds int
+	TargetMinSecs   int
+	TargetMaxSecs   int
+}
+
+type ICloudHMEProbeLimit struct {
+	Next            time.Time
+	CooldownLevel   int
+	Stage           int
+	IntervalSeconds int
+}
+
+func iCloudHMEAutomationCooldownDelay(level int) time.Duration {
+	delays := [...]time.Duration{
+		10 * time.Minute,
+		15 * time.Minute,
+		20 * time.Minute,
+		30 * time.Minute,
+		45 * time.Minute,
+		60 * time.Minute,
+	}
+	if level < 1 {
+		level = 1
+	}
+	if level > len(delays) {
+		level = len(delays)
+	}
+	return delays[level-1]
 }
 
 func (s *Store) GetICloudHMEAutomation(ctx context.Context) (ICloudHMEAutomationSettings, error) {
@@ -98,7 +160,9 @@ func (s *Store) ListICloudHMEAutomationEvents(ctx context.Context, limit int) ([
 	rows, err := s.pool.Query(ctx, `
 		SELECT event.id, event.source_account_id, COALESCE(source.name, ''), event.event_type,
 		       event.result, event.error_code, event.message, event.next_attempt_at,
-		       event.retry_count, event.created_at
+		       event.retry_count, event.probe_stage, event.interval_seconds,
+		       event.recovery_seconds, event.target_interval_min_seconds,
+		       event.target_interval_max_seconds, event.created_at
 		FROM icloud_hme_automation_events event
 		LEFT JOIN icloud_hme_source_accounts source ON source.id = event.source_account_id
 		ORDER BY event.created_at DESC, event.id DESC LIMIT $1
@@ -112,7 +176,9 @@ func (s *Store) ListICloudHMEAutomationEvents(ctx context.Context, limit int) ([
 		var event ICloudHMEAutomationEvent
 		if err := rows.Scan(&event.ID, &event.SourceAccountID, &event.SourceName, &event.EventType,
 			&event.Result, &event.ErrorCode, &event.Message, &event.NextAttemptAt,
-			&event.RetryCount, &event.CreatedAt); err != nil {
+			&event.RetryCount, &event.ProbeStage, &event.IntervalSeconds,
+			&event.RecoverySeconds, &event.TargetMinSecs, &event.TargetMaxSecs,
+			&event.CreatedAt); err != nil {
 			return nil, err
 		}
 		result = append(result, event)
@@ -120,13 +186,25 @@ func (s *Store) ListICloudHMEAutomationEvents(ctx context.Context, limit int) ([
 	return result, rows.Err()
 }
 
-func (s *Store) AddICloudHMEAutomationEvent(ctx context.Context, sourceID *int64, itemID *int64, eventType, result, code, message string, next *time.Time, retry int) error {
+func (s *Store) AddICloudHMEAutomationEvent(
+	ctx context.Context,
+	sourceID *int64,
+	itemID *int64,
+	eventType, result, code, message string,
+	next *time.Time,
+	retry int,
+	metrics ICloudHMEProbeEventMetrics,
+) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO icloud_hme_automation_events
-			(source_account_id, job_item_id, event_type, result, error_code, message, next_attempt_at, retry_count)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			(source_account_id, job_item_id, event_type, result, error_code, message,
+			 next_attempt_at, retry_count, probe_stage, interval_seconds,
+			 recovery_seconds, target_interval_min_seconds, target_interval_max_seconds)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 	`, sourceID, itemID, eventType, result, strings.TrimSpace(code),
-		truncateICloudHMEAuditMessage(message), next, retry)
+		truncateICloudHMEAuditMessage(message), next, retry, metrics.Stage,
+		metrics.IntervalSeconds, metrics.RecoverySeconds, metrics.TargetMinSecs,
+		metrics.TargetMaxSecs)
 	return err
 }
 
@@ -225,11 +303,37 @@ func (s *Store) DelayICloudHMESourceAutomation(ctx context.Context, sourceID int
 	return err
 }
 
-func (s *Store) MarkICloudHMEAutomationSuccess(ctx context.Context, sourceID int64, next time.Time) error {
+func (s *Store) GetICloudHMEProbeState(ctx context.Context, sourceID int64) (ICloudHMEProbeState, error) {
+	var state ICloudHMEProbeState
+	err := s.pool.QueryRow(ctx, `
+		SELECT probe_stage, probe_success_streak, probe_success_target,
+		       probe_stable_stage, probe_recovery_mode, probe_limit_started_at,
+		       last_created_at, probe_last_limit_stage,
+		       probe_last_interval_seconds, probe_last_recovery_seconds
+		FROM icloud_hme_source_accounts WHERE id = $1
+	`, sourceID).Scan(
+		&state.Stage, &state.SuccessStreak, &state.SuccessTarget,
+		&state.StableStage, &state.RecoveryMode, &state.LimitStartedAt,
+		&state.LastCreatedAt, &state.LastLimitStage,
+		&state.LastIntervalSeconds, &state.LastRecoverySeconds,
+	)
+	return state, err
+}
+
+func (s *Store) MarkICloudHMEAutomationSuccess(
+	ctx context.Context,
+	sourceID int64,
+	next time.Time,
+	transition ICloudHMEProbeTransition,
+) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
 		SET status = 'active', status_reason = '', next_create_at = $2,
 		    cooldown_level = 0, consecutive_limit_count = 0, last_created_at = now(),
+		    probe_stage = $3, probe_success_streak = $4, probe_success_target = $5,
+		    probe_stable_stage = $6, probe_recovery_mode = $7,
+		    probe_limit_started_at = NULL, probe_last_interval_seconds = $8,
+		    probe_last_recovery_seconds = $9,
 		    create_window_started_at = CASE
 		      WHEN create_window_started_at IS NULL OR create_window_started_at < now() - interval '24 hours'
 		      THEN now() ELSE create_window_started_at END,
@@ -238,35 +342,36 @@ func (s *Store) MarkICloudHMEAutomationSuccess(ctx context.Context, sourceID int
 		      THEN 1 ELSE create_window_success_count + 1 END,
 		    updated_at = now()
 		WHERE id = $1
-	`, sourceID, next)
+	`, sourceID, next, transition.Stage, transition.SuccessStreak,
+		transition.SuccessTarget, transition.StableStage, transition.RecoveryMode,
+		transition.IntervalSeconds, transition.RecoverySeconds)
 	return err
 }
 
-func (s *Store) MarkICloudHMEAutomationLimited(ctx context.Context, sourceID int64) (time.Time, int, error) {
-	var level int
+func (s *Store) MarkICloudHMEAutomationLimited(ctx context.Context, sourceID int64) (ICloudHMEProbeLimit, error) {
+	var result ICloudHMEProbeLimit
 	err := s.pool.QueryRow(ctx, `
 		UPDATE icloud_hme_source_accounts
 		SET cooldown_level = LEAST(cooldown_level + 1, 6),
 		    consecutive_limit_count = consecutive_limit_count + 1,
 		    last_limit_at = now(), status = 'cooldown',
 		    status_reason = 'Apple 暂时限制创建，系统将在冷却后自动探测',
+		    probe_last_limit_stage = probe_stage,
+		    probe_limit_started_at = COALESCE(probe_limit_started_at, now()),
+		    probe_success_streak = 0,
 		    updated_at = now()
-		WHERE id = $1 RETURNING cooldown_level
-	`, sourceID).Scan(&level)
+		WHERE id = $1
+		RETURNING cooldown_level, probe_stage,
+		          CASE WHEN last_created_at IS NULL THEN 0
+		               ELSE GREATEST(0, EXTRACT(EPOCH FROM (now() - last_created_at))::integer)
+		          END
+	`, sourceID).Scan(&result.CooldownLevel, &result.Stage, &result.IntervalSeconds)
 	if err != nil {
-		return time.Time{}, 0, err
+		return ICloudHMEProbeLimit{}, err
 	}
-	delays := []time.Duration{
-		5 * time.Minute,
-		15 * time.Minute,
-		30 * time.Minute,
-		time.Hour,
-		2 * time.Hour,
-		4 * time.Hour,
-	}
-	next := time.Now().Add(delays[level-1])
-	_, err = s.pool.Exec(ctx, `UPDATE icloud_hme_source_accounts SET next_create_at = $2 WHERE id = $1`, sourceID, next)
-	return next, level, err
+	result.Next = time.Now().Add(iCloudHMEAutomationCooldownDelay(result.CooldownLevel))
+	_, err = s.pool.Exec(ctx, `UPDATE icloud_hme_source_accounts SET next_create_at = $2 WHERE id = $1`, sourceID, result.Next)
+	return result, err
 }
 
 func (s *Store) PauseICloudHMESourceAutomation(ctx context.Context, sourceID int64, status, reason string) error {

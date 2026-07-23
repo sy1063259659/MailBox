@@ -98,6 +98,13 @@ const groupCounts = computed(() => {
   store.aliases.forEach((alias) => counts.set(alias.group, (counts.get(alias.group) ?? 0) + 1))
   return counts
 })
+const primaryProbeSource = computed(() => store.sources
+  .filter((source) => source.automationEnabled)
+  .sort((left, right) => {
+    const leftTime = left.nextCreateAt ? new Date(left.nextCreateAt).getTime() : Number.MAX_SAFE_INTEGER
+    const rightTime = right.nextCreateAt ? new Date(right.nextCreateAt).getTime() : Number.MAX_SAFE_INTEGER
+    return leftTime - rightTime
+  })[0])
 const filteredMailMessages = computed(() => {
   const query = mailKeyword.value.trim().toLowerCase()
   if (!query) return mailMessages.value
@@ -131,7 +138,7 @@ async function pollJobs() {
   if (jobPolling) return
   jobPolling = true
   try {
-    await Promise.all([store.loadJobs(), loadAutomation()])
+    await Promise.all([store.loadJobs(), store.loadSources(), loadAutomation()])
     if (selectedJob.value) selectedJob.value = await getICloudHMEJob(selectedJob.value.id)
   } catch { /* Background polling stays silent. */ }
   finally { jobPolling = false }
@@ -217,6 +224,25 @@ function groupCount(group: ICloudHMEGroup) { return groupCounts.value.get(group.
 function canDeleteGroup(group: ICloudHMEGroup) { return group.name !== ICLOUD_HME_DEFAULT_GROUP && groupCount(group) === 0 }
 function sourceStatusType(status: string) { return status === 'active' ? 'success' : ['pending', 'cooldown'].includes(status) ? 'warning' : 'danger' }
 function sourceStatusText(status: string) { return status === 'active' ? '会话正常' : status === 'cooldown' ? '创建冷却' : status === 'pending' ? '待配置' : '需处理' }
+function probeRangeText(stage: number) {
+  return ['8–12 分钟', '6–8 分钟', '4–6 分钟'][Math.min(2, Math.max(0, stage))] || '8–12 分钟'
+}
+function probeStableText(stage: number) {
+  return stage >= 0 ? probeRangeText(stage) : '采样中'
+}
+function formatProbeDuration(seconds: number) {
+  if (!seconds) return '—'
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = seconds / 60
+  return minutes < 60 ? `${minutes.toFixed(minutes < 10 ? 1 : 0)} 分钟` : `${(minutes / 60).toFixed(1)} 小时`
+}
+function eventProbeRange(event: ICloudHMEAutomationEvent) {
+  if (event.probeStage < 0) return '—'
+  if (event.targetIntervalMinSeconds && event.targetIntervalMaxSeconds) {
+    return `${event.targetIntervalMinSeconds / 60}–${event.targetIntervalMaxSeconds / 60} 分钟`
+  }
+  return probeRangeText(event.probeStage)
+}
 function aliasStatusType(status: ICloudHMEAlias['appleStatus']) { return status === 'active' ? 'success' : status === 'inactive' ? 'warning' : status === 'deleted' ? 'danger' : 'info' }
 function aliasStatusText(status: ICloudHMEAlias['appleStatus']) { return { active: '已启用', inactive: '已停用', deleted: '已永久删除', unknown: '状态未知' }[status] }
 function jobStatusText(status: ICloudHMEJob['status']) { return { pending: '等待中', running: '执行中', cancel_requested: '取消中', completed: '已完成', partial_failed: '部分失败', cancelled: '已取消' }[status] }
@@ -629,6 +655,8 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <div><span>预留 / 已售</span><strong>{{ automation?.reservedCount ?? 0 }} / {{ automation?.soldCount ?? 0 }}</strong></div>
           <div><span>自动化</span><el-tag :type="automation?.enabled ? 'success' : 'info'">{{ automation?.enabled ? '运行中' : '已暂停' }}</el-tag></div>
           <div><span>下次执行</span><strong>{{ automation?.nextCreateAt ? formatDateTime(automation.nextCreateAt) : '等待可用主账号' }}</strong></div>
+          <div><span>当前探测区间</span><strong>{{ primaryProbeSource ? probeRangeText(primaryProbeSource.probeStage) : '等待主账号' }}</strong></div>
+          <div><span>暂定稳定区间</span><strong>{{ primaryProbeSource ? probeStableText(primaryProbeSource.probeStableStage) : '采样中' }}</strong></div>
         </div>
         <div class="faka-action-row hme-action-row">
           <el-button :icon="Setting" @click="sourceDialogVisible = true">主账号管理</el-button>
@@ -687,7 +715,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     </main>
     <el-dialog v-model="automationDialogVisible" title="自动补货设置" width="560px">
       <el-form label-position="top">
-        <el-alert title="系统每分钟检查库存；正常创建间隔为 15–30 分钟。遇到 Apple 限流后只做单次探测，按 5/15/30 分钟、1/2/4 小时逐级退避。" type="info" :closable="false" />
+        <el-alert title="系统从 8–12 分钟开始探测；连续成功后逐步缩短到 6–8、4–6 分钟。遇到 Apple 限流后只做单次探测，按 10/15/20/30/45/60 分钟逐级等待。" type="info" :closable="false" />
         <el-form-item label="自动补货"><el-switch v-model="automationForm.enabled" active-text="启用" inactive-text="暂停" /></el-form-item>
         <el-form-item label="目标可售库存"><el-input-number v-model="automationForm.targetAvailableCount" :min="0" :max="10000" /></el-form-item>
         <el-form-item label="新邮箱分组"><el-select v-model="automationForm.targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>
@@ -701,8 +729,11 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-table-column label="时间" width="170"><template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template></el-table-column>
         <el-table-column prop="sourceName" label="主账号" width="145"><template #default="{ row }">{{ row.sourceName || '系统' }}</template></el-table-column>
         <el-table-column label="结果" width="110"><template #default="{ row }"><el-tag :type="row.result === 'success' ? 'success' : row.result === 'deferred' ? 'warning' : row.result === 'failed' ? 'danger' : 'info'">{{ row.result }}</el-tag></template></el-table-column>
-        <el-table-column prop="errorCode" label="分类" min-width="175" show-overflow-tooltip />
-        <el-table-column prop="message" label="说明" min-width="250" show-overflow-tooltip />
+        <el-table-column label="探测区间" width="125"><template #default="{ row }">{{ eventProbeRange(row) }}</template></el-table-column>
+        <el-table-column label="实际间隔" width="115"><template #default="{ row }">{{ formatProbeDuration(row.intervalSeconds) }}</template></el-table-column>
+        <el-table-column label="恢复耗时" width="115"><template #default="{ row }">{{ formatProbeDuration(row.recoverySeconds) }}</template></el-table-column>
+        <el-table-column prop="errorCode" label="分类" min-width="165" show-overflow-tooltip />
+        <el-table-column prop="message" label="说明" min-width="210" show-overflow-tooltip />
         <el-table-column label="下次执行" width="170"><template #default="{ row }">{{ row.nextAttemptAt ? formatDateTime(row.nextAttemptAt) : '—' }}</template></el-table-column>
       </el-table>
     </el-dialog>
@@ -720,7 +751,15 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-table-column label="iCloud+" width="105" align="center"><template #default="{ row }"><el-tag :type="row.status === 'active' ? 'success' : row.status === 'icloud_plus_required' ? 'danger' : 'info'">{{ row.status === 'active' ? '已验证' : row.status === 'icloud_plus_required' ? '未开通' : '未验证' }}</el-tag></template></el-table-column>
         <el-table-column label="别名" width="65" align="center"><template #default="{ row }">{{ row.aliasTotal }}</template></el-table-column>
         <el-table-column label="最近活动" min-width="170"><template #default="{ row }"><div class="hme-source-dates"><span>验证 {{ row.lastValidatedAt ? formatDateTime(row.lastValidatedAt) : '无' }}</span><span>同步 {{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '无' }}</span><span>创建 {{ row.lastCreatedAt ? formatDateTime(row.lastCreatedAt) : '无' }}</span><span v-if="row.lastErrorAt">异常 {{ formatDateTime(row.lastErrorAt) }}</span></div></template></el-table-column>
-        <el-table-column label="自动补货" min-width="175"><template #default="{ row }"><div class="hme-source-dates"><span>{{ row.automationEnabled ? (row.status === 'cooldown' ? '冷却中' : '可参与') : '已暂停' }}</span><span v-if="row.nextCreateAt">下次 {{ formatDateTime(row.nextCreateAt) }}</span><span v-if="row.lastLimitAt">限流 {{ formatDateTime(row.lastLimitAt) }}</span></div></template></el-table-column>
+        <el-table-column label="自动补货" min-width="235"><template #default="{ row }"><div class="hme-source-dates">
+          <span>{{ row.automationEnabled ? (row.status === 'cooldown' ? '冷却中' : row.probeRecoveryMode ? '恢复验证中' : '可参与') : '已暂停' }}</span>
+          <span>当前 {{ probeRangeText(row.probeStage) }} · {{ row.probeSuccessStreak }}/{{ row.probeSuccessTarget }} 次</span>
+          <span>暂定稳定 {{ probeStableText(row.probeStableStage) }}</span>
+          <span v-if="row.probeLastIntervalSeconds">上次间隔 {{ formatProbeDuration(row.probeLastIntervalSeconds) }}</span>
+          <span v-if="row.probeLastRecoverySeconds">上次恢复 {{ formatProbeDuration(row.probeLastRecoverySeconds) }}</span>
+          <span v-if="row.nextCreateAt">下次 {{ formatDateTime(row.nextCreateAt) }}</span>
+          <span v-if="row.lastLimitAt">限流 {{ formatDateTime(row.lastLimitAt) }}</span>
+        </div></template></el-table-column>
         <el-table-column label="操作" width="390" fixed="right"><template #default="{ row }">
           <el-button size="small" :icon="Link" @click="openCredential(row, 'cookies')">Cookie</el-button>
           <el-button size="small" @click="openCredential(row, 'login')">登录</el-button>

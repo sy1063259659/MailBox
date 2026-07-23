@@ -23,11 +23,71 @@ func TestRandomICloudHMEDelayStaysInsideSafetyWindow(t *testing.T) {
 }
 
 func TestRandomAutomationCreateDelayStaysInsideSafetyWindow(t *testing.T) {
-	for i := 0; i < 200; i++ {
-		delay := randomAutomationCreateDelay()
-		if delay < 15*time.Minute || delay > 30*time.Minute {
-			t.Fatalf("delay = %v, want 15m..30m", delay)
+	for stage, target := range automationProbeRanges {
+		for i := 0; i < 200; i++ {
+			delay := randomAutomationCreateDelay(stage)
+			if delay < target.min || delay > target.max {
+				t.Fatalf("stage %d delay = %v, want %v..%v", stage, delay, target.min, target.max)
+			}
 		}
+	}
+}
+
+func TestAutomationProbeAdvancesAfterThreeSuccesses(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	state := store.ICloudHMEProbeState{Stage: 0, SuccessTarget: 3, StableStage: -1}
+	for index := 0; index < 3; index++ {
+		transition := nextAutomationProbeSuccess(state, now.Add(time.Duration(index)*10*time.Minute))
+		state.Stage = transition.Stage
+		state.SuccessStreak = transition.SuccessStreak
+		state.SuccessTarget = transition.SuccessTarget
+		state.StableStage = transition.StableStage
+		state.RecoveryMode = transition.RecoveryMode
+	}
+	if state.Stage != 1 || state.SuccessStreak != 0 || state.SuccessTarget != 3 {
+		t.Fatalf("state after three successes = %+v, want stage 1 reset for next probe", state)
+	}
+	for index := 0; index < 3; index++ {
+		transition := nextAutomationProbeSuccess(state, now.Add(time.Hour+time.Duration(index)*7*time.Minute))
+		state.Stage = transition.Stage
+		state.SuccessStreak = transition.SuccessStreak
+		state.SuccessTarget = transition.SuccessTarget
+		state.StableStage = transition.StableStage
+		state.RecoveryMode = transition.RecoveryMode
+	}
+	if state.Stage != 2 || state.SuccessStreak != 0 || state.SuccessTarget != 5 {
+		t.Fatalf("state after second stage = %+v, want stage 2 with five-success target", state)
+	}
+}
+
+func TestAutomationProbeRecoveryBacksOffAndRequiresFiveSuccesses(t *testing.T) {
+	now := time.Date(2026, 7, 23, 12, 0, 0, 0, time.UTC)
+	limitedAt := now.Add(-30 * time.Minute)
+	lastCreated := now.Add(-45 * time.Minute)
+	state := store.ICloudHMEProbeState{
+		Stage: 2, SuccessTarget: 5, StableStage: 0, LimitStartedAt: &limitedAt,
+		LastCreatedAt: &lastCreated, LastLimitStage: 2,
+	}
+	recovered := nextAutomationProbeSuccess(state, now)
+	if recovered.Stage != 1 || !recovered.RecoveryMode || recovered.SuccessTarget != 5 ||
+		recovered.SuccessStreak != 0 || recovered.RecoverySeconds != int((30*time.Minute)/time.Second) {
+		t.Fatalf("recovery transition = %+v", recovered)
+	}
+
+	state = store.ICloudHMEProbeState{
+		Stage: recovered.Stage, SuccessTarget: recovered.SuccessTarget,
+		StableStage: recovered.StableStage, RecoveryMode: recovered.RecoveryMode,
+	}
+	for index := 1; index <= 5; index++ {
+		transition := nextAutomationProbeSuccess(state, now.Add(time.Duration(index)*7*time.Minute))
+		state.Stage = transition.Stage
+		state.SuccessStreak = transition.SuccessStreak
+		state.SuccessTarget = transition.SuccessTarget
+		state.StableStage = transition.StableStage
+		state.RecoveryMode = transition.RecoveryMode
+	}
+	if state.Stage != 2 || state.StableStage != 1 || state.RecoveryMode {
+		t.Fatalf("state after recovery proof = %+v, want stable stage 1 and retry stage 2", state)
 	}
 }
 

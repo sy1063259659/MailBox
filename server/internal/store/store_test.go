@@ -254,7 +254,12 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status",
 		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak",
+		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stable_stage",
 		"icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at",
+		"icloud_hme_automation_events ADD COLUMN IF NOT EXISTS interval_seconds",
+		"icloud_hme_automation_events ADD COLUMN IF NOT EXISTS recovery_seconds",
 	} {
 		if !strings.Contains(columns, want) {
 			t.Fatalf("migrationColumnStatements() missing %q", want)
@@ -279,11 +284,14 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
 	statements := strings.Join(legacyCleanupStatements(), "\n")
 	for _, want := range []string{
-		"interval '5 minutes'",
+		"interval '10 minutes'",
 		"interval '15 minutes'",
-		"interval '4 hours'",
+		"interval '20 minutes'",
+		"interval '45 minutes'",
+		"interval '1 hour'",
 		"status = 'pending' AND retry_class = 'rate_limit'",
 		"icloud_source_wait",
+		"probe_policy_version = 1",
 	} {
 		if !strings.Contains(statements, want) {
 			t.Fatalf("legacyCleanupStatements() missing %q", want)

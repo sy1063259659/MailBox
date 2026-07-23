@@ -167,10 +167,25 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 		} else {
 			_ = api.store.CompleteICloudHMEJobItem(ctx, item.ID, sourceID, email)
 			if job.Origin == "automation" {
-				next := time.Now().Add(randomAutomationCreateDelay())
-				_ = api.store.MarkICloudHMEAutomationSuccess(ctx, sourceID, next)
-				_ = api.store.AddICloudHMEAutomationEvent(ctx, &sourceID, &item.ID, "create", "success", "",
-					"隐藏邮箱创建成功", &next, item.Attempts)
+				now := time.Now()
+				probeState, stateErr := api.store.GetICloudHMEProbeState(ctx, sourceID)
+				if stateErr != nil {
+					probeState = store.ICloudHMEProbeState{
+						Stage: 0, SuccessTarget: 3, StableStage: -1, LastLimitStage: -1,
+					}
+				}
+				transition := nextAutomationProbeSuccess(probeState, now)
+				next := now.Add(randomAutomationCreateDelay(transition.Stage))
+				_ = api.store.MarkICloudHMEAutomationSuccess(ctx, sourceID, next, transition)
+				_ = api.store.AddICloudHMEAutomationEvent(
+					ctx, &sourceID, &item.ID, "create", "success", "",
+					"隐藏邮箱创建成功", &next, item.Attempts,
+					automationProbeEventMetrics(
+						transition.AttemptStage,
+						transition.IntervalSeconds,
+						transition.RecoverySeconds,
+					),
+				)
 			}
 			_ = api.store.AddICloudHMEAudit(ctx, store.ICloudHMEAuditLog{
 				Actor: job.CreatedBy, Action: "create_alias", TargetType: "alias",

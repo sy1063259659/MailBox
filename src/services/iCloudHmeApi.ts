@@ -29,6 +29,14 @@ export interface ICloudHMESourceAccount {
   consecutiveLimitCount: number
   lastLimitAt?: string
   lastAutoAttemptAt?: string
+  probeStage: number
+  probeSuccessStreak: number
+  probeSuccessTarget: number
+  probeStableStage: number
+  probeRecoveryMode: boolean
+  probeLastIntervalSeconds: number
+  probeLastRecoverySeconds: number
+  probeLastLimitStage: number
   createdAt: string
   updatedAt: string
 }
@@ -81,6 +89,11 @@ export interface ICloudHMEAutomationEvent {
   message?: string
   nextAttemptAt?: string
   retryCount: number
+  probeStage: number
+  intervalSeconds: number
+  recoverySeconds: number
+  targetIntervalMinSeconds: number
+  targetIntervalMaxSeconds: number
   createdAt: string
 }
 

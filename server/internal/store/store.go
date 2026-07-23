@@ -211,6 +211,16 @@ func migrationCreateStatements() []string {
 			status_reason TEXT NOT NULL DEFAULT '',
 			alias_total INTEGER NOT NULL DEFAULT 0,
 			last_validated_at TIMESTAMPTZ,
+			probe_policy_version INTEGER NOT NULL DEFAULT 1,
+			probe_stage INTEGER NOT NULL DEFAULT 0,
+			probe_success_streak INTEGER NOT NULL DEFAULT 0,
+			probe_success_target INTEGER NOT NULL DEFAULT 3,
+			probe_stable_stage INTEGER NOT NULL DEFAULT -1,
+			probe_recovery_mode BOOLEAN NOT NULL DEFAULT false,
+			probe_limit_started_at TIMESTAMPTZ,
+			probe_last_interval_seconds INTEGER NOT NULL DEFAULT 0,
+			probe_last_recovery_seconds INTEGER NOT NULL DEFAULT 0,
+			probe_last_limit_stage INTEGER NOT NULL DEFAULT -1,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -299,6 +309,11 @@ func migrationCreateStatements() []string {
 			message TEXT NOT NULL DEFAULT '',
 			next_attempt_at TIMESTAMPTZ,
 			retry_count INTEGER NOT NULL DEFAULT 0,
+			probe_stage INTEGER NOT NULL DEFAULT -1,
+			interval_seconds INTEGER NOT NULL DEFAULT 0,
+			recovery_seconds INTEGER NOT NULL DEFAULT 0,
+			target_interval_min_seconds INTEGER NOT NULL DEFAULT 0,
+			target_interval_max_seconds INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`}
 }
@@ -323,6 +338,17 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS consecutive_limit_count INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_limit_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_auto_attempt_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_policy_version INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ALTER COLUMN probe_policy_version SET DEFAULT 1`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_target INTEGER NOT NULL DEFAULT 3`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stable_stage INTEGER NOT NULL DEFAULT -1`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_recovery_mode BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_limit_started_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_interval_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_recovery_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_limit_stage INTEGER NOT NULL DEFAULT -1`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
@@ -335,6 +361,11 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_create_jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS retry_class TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS probe_stage INTEGER NOT NULL DEFAULT -1`,
+		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS interval_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS recovery_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS target_interval_min_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS target_interval_max_seconds INTEGER NOT NULL DEFAULT 0`,
 	}
 }
 
@@ -400,12 +431,12 @@ func legacyCleanupStatements() []string {
 		`UPDATE icloud_hme_source_accounts source
 		 SET next_create_at = GREATEST(now(), COALESCE(last_limit_at, now()) +
 		       CASE
-		         WHEN cooldown_level <= 1 THEN interval '5 minutes'
+		         WHEN cooldown_level <= 1 THEN interval '10 minutes'
 		         WHEN cooldown_level = 2 THEN interval '15 minutes'
-		         WHEN cooldown_level = 3 THEN interval '30 minutes'
-		         WHEN cooldown_level = 4 THEN interval '1 hour'
-		         WHEN cooldown_level = 5 THEN interval '2 hours'
-		         ELSE interval '4 hours'
+		         WHEN cooldown_level = 3 THEN interval '20 minutes'
+		         WHEN cooldown_level = 4 THEN interval '30 minutes'
+		         WHEN cooldown_level = 5 THEN interval '45 minutes'
+		         ELSE interval '1 hour'
 		       END),
 		     updated_at = now()
 		 WHERE cooldown_level > 0 AND last_limit_at IS NOT NULL`,
@@ -419,6 +450,40 @@ func legacyCleanupStatements() []string {
 		     message = '主账号正在等待下一次单项探测，队列将自动继续'
 		 WHERE error_code IN ('icloud_no_healthy_source', 'icloud_source_wait')
 		   AND event_type = 'queue'`,
+		`UPDATE icloud_hme_create_job_items item
+		 SET next_attempt_at = LEAST(
+		       COALESCE(item.next_attempt_at, now() + interval '8 minutes'),
+		       now() + interval '8 minutes'
+		     ),
+		     updated_at = now()
+		 FROM icloud_hme_create_jobs job
+		 WHERE item.job_id = job.id
+		   AND job.origin = 'automation'
+		   AND item.status = 'pending'
+		   AND item.retry_class = 'source_wait'
+		   AND EXISTS (
+		     SELECT 1 FROM icloud_hme_source_accounts source
+		     WHERE source.probe_policy_version = 0
+		   )`,
+		`UPDATE icloud_hme_source_accounts
+		 SET probe_policy_version = 1,
+		     probe_stage = 0,
+		     probe_success_streak = 0,
+		     probe_success_target = 3,
+		     probe_stable_stage = -1,
+		     probe_recovery_mode = cooldown_level > 0,
+		     probe_limit_started_at = CASE
+		       WHEN cooldown_level > 0 THEN COALESCE(last_limit_at, now())
+		       ELSE NULL
+		     END,
+		     probe_last_limit_stage = CASE WHEN cooldown_level > 0 THEN 0 ELSE -1 END,
+		     next_create_at = CASE
+		       WHEN automation_enabled AND status = 'active'
+		       THEN LEAST(COALESCE(next_create_at, now() + interval '8 minutes'), now() + interval '8 minutes')
+		       ELSE next_create_at
+		     END,
+		     updated_at = now()
+		 WHERE probe_policy_version = 0`,
 	}
 }
 

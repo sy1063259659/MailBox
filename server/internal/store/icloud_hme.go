@@ -44,6 +44,14 @@ type ICloudHMESourceAccount struct {
 	ConsecutiveLimitCount int        `json:"consecutiveLimitCount"`
 	LastLimitAt           *time.Time `json:"lastLimitAt,omitempty"`
 	LastAutoAttemptAt     *time.Time `json:"lastAutoAttemptAt,omitempty"`
+	ProbeStage            int        `json:"probeStage"`
+	ProbeSuccessStreak    int        `json:"probeSuccessStreak"`
+	ProbeSuccessTarget    int        `json:"probeSuccessTarget"`
+	ProbeStableStage      int        `json:"probeStableStage"`
+	ProbeRecoveryMode     bool       `json:"probeRecoveryMode"`
+	ProbeLastIntervalSecs int        `json:"probeLastIntervalSeconds"`
+	ProbeLastRecoverySecs int        `json:"probeLastRecoverySeconds"`
+	ProbeLastLimitStage   int        `json:"probeLastLimitStage"`
 	CreatedAt             time.Time  `json:"createdAt"`
 	UpdatedAt             time.Time  `json:"updatedAt"`
 }
@@ -196,6 +204,10 @@ func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESou
 		       last_synced_at, last_created_at, last_error_at,
 		       automation_enabled, next_create_at, cooldown_level,
 		       consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+		       probe_stage, probe_success_streak, probe_success_target,
+		       probe_stable_stage, probe_recovery_mode,
+		       probe_last_interval_seconds, probe_last_recovery_seconds,
+		       probe_last_limit_stage,
 		       created_at, updated_at
 		FROM icloud_hme_source_accounts
 		ORDER BY created_at DESC, id DESC
@@ -215,7 +227,10 @@ func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESou
 			&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
 			&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
 			&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
-			&account.LastAutoAttemptAt, &account.CreatedAt, &account.UpdatedAt,
+			&account.LastAutoAttemptAt, &account.ProbeStage, &account.ProbeSuccessStreak,
+			&account.ProbeSuccessTarget, &account.ProbeStableStage, &account.ProbeRecoveryMode,
+			&account.ProbeLastIntervalSecs, &account.ProbeLastRecoverySecs,
+			&account.ProbeLastLimitStage, &account.CreatedAt, &account.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME source account: %w", err)
 		}
@@ -245,6 +260,10 @@ func (s *Store) CreateICloudHMESourceAccount(ctx context.Context, name, appleIDE
 		          last_validated_at, last_synced_at, last_created_at, last_error_at,
 		          automation_enabled, next_create_at, cooldown_level,
 		          consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+		          probe_stage, probe_success_streak, probe_success_target,
+		          probe_stable_stage, probe_recovery_mode,
+		          probe_last_interval_seconds, probe_last_recovery_seconds,
+		          probe_last_limit_stage,
 		          created_at, updated_at
 	`, name, appleIDEmail, iCloudEmail, host).Scan(
 		&account.ID, &account.Name, &account.AppleIDEmail, &account.ICloudEmail, &account.Host,
@@ -253,7 +272,10 @@ func (s *Store) CreateICloudHMESourceAccount(ctx context.Context, name, appleIDE
 		&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
 		&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
 		&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
-		&account.LastAutoAttemptAt, &account.CreatedAt, &account.UpdatedAt,
+		&account.LastAutoAttemptAt, &account.ProbeStage, &account.ProbeSuccessStreak,
+		&account.ProbeSuccessTarget, &account.ProbeStableStage, &account.ProbeRecoveryMode,
+		&account.ProbeLastIntervalSecs, &account.ProbeLastRecoverySecs,
+		&account.ProbeLastLimitStage, &account.CreatedAt, &account.UpdatedAt,
 	)
 	if err != nil {
 		return ICloudHMESourceAccount{}, fmt.Errorf("store: create iCloud HME source account: %w", err)
@@ -271,6 +293,10 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		       last_synced_at, last_created_at, last_error_at,
 		       automation_enabled, next_create_at, cooldown_level,
 		       consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+		       probe_stage, probe_success_streak, probe_success_target,
+		       probe_stable_stage, probe_recovery_mode,
+		       probe_last_interval_seconds, probe_last_recovery_seconds,
+		       probe_last_limit_stage,
 		       created_at, updated_at
 		FROM icloud_hme_source_accounts
 		WHERE id = $1
@@ -281,7 +307,10 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		&credentials.LastValidatedAt, &credentials.LastSyncedAt, &credentials.LastCreatedAt,
 		&credentials.LastErrorAt, &credentials.AutomationEnabled, &credentials.NextCreateAt,
 		&credentials.CooldownLevel, &credentials.ConsecutiveLimitCount, &credentials.LastLimitAt,
-		&credentials.LastAutoAttemptAt, &credentials.CreatedAt, &credentials.UpdatedAt,
+		&credentials.LastAutoAttemptAt, &credentials.ProbeStage, &credentials.ProbeSuccessStreak,
+		&credentials.ProbeSuccessTarget, &credentials.ProbeStableStage, &credentials.ProbeRecoveryMode,
+		&credentials.ProbeLastIntervalSecs, &credentials.ProbeLastRecoverySecs,
+		&credentials.ProbeLastLimitStage, &credentials.CreatedAt, &credentials.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMESourceCredentials{}, errors.New("iCloud 主账号不存在")

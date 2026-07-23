@@ -97,16 +97,138 @@ func (api *iCloudHMEAPI) ensureAutomationInventory(ctx context.Context) {
 	job, err := api.store.CreateICloudHMEAutomationJob(ctx, settings, shortage)
 	if err != nil {
 		_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "waiting",
-			"icloud_source_wait", "主账号正在等待下一次单项探测或需要重新验证", settings.NextCreateAt, 0)
+			"icloud_source_wait", "主账号正在等待下一次单项探测或需要重新验证",
+			settings.NextCreateAt, 0, noProbeEventMetrics())
 		return
 	}
 	_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "scheduled", "",
-		"已按库存缺口加入自动创建队列", nil, 0)
+		"已按库存缺口加入自动创建队列", nil, 0, noProbeEventMetrics())
 	_ = job
 }
 
-func randomAutomationCreateDelay() time.Duration {
-	return 15*time.Minute + time.Duration(rand.Int63n(int64(15*time.Minute)+1))
+type automationProbeRange struct {
+	min time.Duration
+	max time.Duration
+}
+
+var automationProbeRanges = [...]automationProbeRange{
+	{min: 8 * time.Minute, max: 12 * time.Minute},
+	{min: 6 * time.Minute, max: 8 * time.Minute},
+	{min: 4 * time.Minute, max: 6 * time.Minute},
+}
+
+func clampAutomationProbeStage(stage int) int {
+	if stage < 0 {
+		return 0
+	}
+	if stage >= len(automationProbeRanges) {
+		return len(automationProbeRanges) - 1
+	}
+	return stage
+}
+
+func automationProbeRangeForStage(stage int) automationProbeRange {
+	return automationProbeRanges[clampAutomationProbeStage(stage)]
+}
+
+func randomAutomationCreateDelay(stage int) time.Duration {
+	target := automationProbeRangeForStage(stage)
+	span := int64(target.max - target.min)
+	if span <= 0 {
+		return target.min
+	}
+	return target.min + time.Duration(rand.Int63n(span+1))
+}
+
+func automationProbeEventMetrics(stage, intervalSeconds, recoverySeconds int) store.ICloudHMEProbeEventMetrics {
+	target := automationProbeRangeForStage(stage)
+	return store.ICloudHMEProbeEventMetrics{
+		Stage:           clampAutomationProbeStage(stage),
+		IntervalSeconds: intervalSeconds,
+		RecoverySeconds: recoverySeconds,
+		TargetMinSecs:   int(target.min / time.Second),
+		TargetMaxSecs:   int(target.max / time.Second),
+	}
+}
+
+func noProbeEventMetrics() store.ICloudHMEProbeEventMetrics {
+	return store.ICloudHMEProbeEventMetrics{Stage: -1}
+}
+
+func nextAutomationProbeSuccess(
+	state store.ICloudHMEProbeState,
+	now time.Time,
+) store.ICloudHMEProbeTransition {
+	stage := clampAutomationProbeStage(state.Stage)
+	stableStage := state.StableStage
+	if stableStage < -1 || stableStage >= len(automationProbeRanges) {
+		stableStage = -1
+	}
+	intervalSeconds := 0
+	if state.LastCreatedAt != nil && now.After(*state.LastCreatedAt) {
+		intervalSeconds = int(now.Sub(*state.LastCreatedAt) / time.Second)
+	}
+
+	if state.LimitStartedAt != nil {
+		failedStage := clampAutomationProbeStage(state.LastLimitStage)
+		if failedStage > 0 {
+			stage = failedStage - 1
+		} else {
+			stage = 0
+		}
+		recoverySeconds := 0
+		if now.After(*state.LimitStartedAt) {
+			recoverySeconds = int(now.Sub(*state.LimitStartedAt) / time.Second)
+		}
+		return store.ICloudHMEProbeTransition{
+			AttemptStage:    clampAutomationProbeStage(state.Stage),
+			Stage:           stage,
+			SuccessStreak:   0,
+			SuccessTarget:   5,
+			StableStage:     stableStage,
+			RecoveryMode:    true,
+			IntervalSeconds: intervalSeconds,
+			RecoverySeconds: recoverySeconds,
+		}
+	}
+
+	target := state.SuccessTarget
+	if target < 1 {
+		target = 3
+	}
+	if stage == len(automationProbeRanges)-1 && !state.RecoveryMode {
+		target = 5
+	}
+	streak := state.SuccessStreak + 1
+	recoveryMode := state.RecoveryMode
+	if streak >= target {
+		if recoveryMode || stage == len(automationProbeRanges)-1 {
+			stableStage = stage
+			recoveryMode = false
+		}
+		if stage < len(automationProbeRanges)-1 {
+			stage++
+			streak = 0
+			if stage == len(automationProbeRanges)-1 {
+				target = 5
+			} else {
+				target = 3
+			}
+		} else {
+			streak = target
+			target = 5
+		}
+	}
+	return store.ICloudHMEProbeTransition{
+		AttemptStage:    clampAutomationProbeStage(state.Stage),
+		Stage:           stage,
+		SuccessStreak:   streak,
+		SuccessTarget:   target,
+		StableStage:     stableStage,
+		RecoveryMode:    recoveryMode,
+		IntervalSeconds: intervalSeconds,
+		RecoverySeconds: state.LastRecoverySeconds,
+	}
 }
 
 func classifyAutomationRetry(err error) string {
@@ -167,11 +289,12 @@ func (api *iCloudHMEAPI) handleAutomationFailure(
 	}
 	switch retryClass {
 	case "rate_limit":
-		next, _, err := api.store.MarkICloudHMEAutomationLimited(ctx, sourceID)
+		limited, err := api.store.MarkICloudHMEAutomationLimited(ctx, sourceID)
 		if err == nil {
-			_ = api.store.DeferICloudHMEJobItem(ctx, item.ID, sourcePointer, retryClass, code, processErr.Error(), next)
+			_ = api.store.DeferICloudHMEJobItem(ctx, item.ID, sourcePointer, retryClass, code, processErr.Error(), limited.Next)
 			_ = api.store.AddICloudHMEAutomationEvent(ctx, sourcePointer, &item.ID, "create", "deferred", code,
-				"Apple 暂时限制创建，冷却后将单次探测", &next, item.Attempts)
+				"Apple 暂时限制创建，冷却后将单次探测", &limited.Next, item.Attempts,
+				automationProbeEventMetrics(limited.Stage, limited.IntervalSeconds, 0))
 			return true
 		}
 	case "network":
@@ -181,7 +304,7 @@ func (api *iCloudHMEAPI) handleAutomationFailure(
 			_ = api.store.DeferICloudHMEJobItem(ctx, item.ID, sourcePointer, retryClass, code,
 				"Apple 网络服务暂时不可用，已安排重试", next)
 			_ = api.store.AddICloudHMEAutomationEvent(ctx, sourcePointer, &item.ID, "create", "deferred", code,
-				"网络错误，已安排有限重试", &next, item.Attempts)
+				"网络错误，已安排有限重试", &next, item.Attempts, noProbeEventMetrics())
 			return true
 		}
 	case "session", "icloud_plus":
@@ -194,14 +317,15 @@ func (api *iCloudHMEAPI) handleAutomationFailure(
 		_ = api.store.DeferICloudHMEJobItem(ctx, item.ID, sourcePointer, retryClass, code,
 			"主账号已暂停，等待其他健康账号接管", next)
 		_ = api.store.AddICloudHMEAutomationEvent(ctx, sourcePointer, &item.ID, "source", "paused", code,
-			"主账号自动补货已暂停", nil, item.Attempts)
+			"主账号自动补货已暂停", nil, item.Attempts, noProbeEventMetrics())
 		return true
 	case "protocol":
 		paused, _ := api.store.RecordICloudHMEAutomationProtocolFailure(ctx)
 		if paused {
 			_ = api.store.FailICloudHMEJobItem(ctx, item.ID, sourcePointer, code, processErr.Error())
 			_ = api.store.AddICloudHMEAutomationEvent(ctx, sourcePointer, &item.ID, "safety", "paused", code,
-				"同类协议异常一小时内连续出现 3 次，自动补货已暂停", nil, item.Attempts)
+				"同类协议异常一小时内连续出现 3 次，自动补货已暂停",
+				nil, item.Attempts, noProbeEventMetrics())
 			return true
 		}
 	}
