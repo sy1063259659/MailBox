@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
@@ -233,7 +234,7 @@ func (c Client) ListMessageDetailsByRecipient(ctx context.Context, email, passwo
 
 func (c Client) connectICloudPassword(ctx context.Context, email, password string) (*imapclient.Client, error) {
 	email = strings.TrimSpace(email)
-	password = strings.TrimSpace(password)
+	password = normalizeICloudAppPassword(password)
 	if email == "" || password == "" {
 		return nil, errors.New("imapmail: iCloud email and app password are required")
 	}
@@ -267,6 +268,23 @@ func (c Client) connectICloudPassword(ctx context.Context, email, password strin
 		return nil, fmt.Errorf("imapmail: iCloud login: %w", loginErr)
 	}
 	return nil, errors.New("imapmail: iCloud login username is required")
+}
+
+func (c Client) ValidateICloudPassword(ctx context.Context, email, password string) error {
+	client, err := c.connectICloudPassword(ctx, email, password)
+	if err != nil {
+		return err
+	}
+	return client.Close()
+}
+
+func normalizeICloudAppPassword(password string) string {
+	return strings.Map(func(char rune) rune {
+		if unicode.IsSpace(char) {
+			return -1
+		}
+		return char
+	}, password)
 }
 
 func iCloudLoginUsernames(email string) []string {

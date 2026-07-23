@@ -191,6 +191,20 @@ func (api *iCloudHMEAPI) saveAppPassword(w http.ResponseWriter, r *http.Request,
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	credentials, err := api.store.GetICloudHMESourceCredentials(r.Context(), id)
+	if err != nil {
+		WriteError(w, 400, "bad_request", err.Error())
+		return
+	}
+	if err := api.mailClient.ValidateICloudPassword(r.Context(), credentials.ICloudEmail, req.AppPassword); err != nil {
+		WriteError(
+			w,
+			http.StatusBadRequest,
+			"icloud_app_password_invalid",
+			"Apple 拒绝该 App 专用密码，请重新生成，并确认实际 iCloud 邮箱填写正确",
+		)
+		return
+	}
 	if err := api.store.SaveICloudHMEAppPassword(r.Context(), id, req.AppPassword); err != nil {
 		WriteError(w, 400, "bad_request", err.Error())
 		return

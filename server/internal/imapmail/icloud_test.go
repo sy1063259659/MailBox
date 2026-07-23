@@ -43,3 +43,9 @@ func TestICloudLoginUsernamesKeepsUsernameWithoutDomain(t *testing.T) {
 		t.Fatalf("usernames = %#v", usernames)
 	}
 }
+
+func TestNormalizeICloudAppPasswordRemovesWhitespace(t *testing.T) {
+	if got := normalizeICloudAppPassword(" abcd-efgh \n-ijkl-mnop "); got != "abcd-efgh-ijkl-mnop" {
+		t.Fatalf("normalized password = %q", got)
+	}
+}
