@@ -225,7 +225,7 @@ function canDeleteGroup(group: ICloudHMEGroup) { return group.name !== ICLOUD_HM
 function sourceStatusType(status: string) { return status === 'active' ? 'success' : ['pending', 'cooldown'].includes(status) ? 'warning' : 'danger' }
 function sourceStatusText(status: string) { return status === 'active' ? '会话正常' : status === 'cooldown' ? '创建冷却' : status === 'pending' ? '待配置' : '需处理' }
 function probeRangeText(stage: number) {
-  return ['8–12 分钟', '6–8 分钟', '4–6 分钟'][Math.min(2, Math.max(0, stage))] || '8–12 分钟'
+  return ['5–7 分钟', '3–5 分钟', '2–3 分钟'][Math.min(2, Math.max(0, stage))] || '5–7 分钟'
 }
 function probeStableText(stage: number) {
   return stage >= 0 ? probeRangeText(stage) : '采样中'
@@ -733,7 +733,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     </main>
     <el-dialog v-model="automationDialogVisible" title="自动补货设置" width="560px">
       <el-form label-position="top">
-        <el-alert title="系统从 8–12 分钟开始探测；连续成功后逐步缩短到 6–8、4–6 分钟。遇到 Apple 限流后只做单次探测，按 10/15/20/30/45/60 分钟逐级等待。" type="info" :closable="false" />
+        <el-alert title="系统从 5–7 分钟开始探测；连续成功后逐步缩短到 3–5、2–3 分钟。遇到 Apple 限流后只做单次探测，按 5/8/12/20/30/45 分钟逐级等待。" type="info" :closable="false" />
         <el-form-item label="自动补货"><el-switch v-model="automationForm.enabled" active-text="启用" inactive-text="暂停" /></el-form-item>
         <el-form-item label="目标可售库存"><el-input-number v-model="automationForm.targetAvailableCount" :min="0" :max="10000" /></el-form-item>
         <el-form-item label="新邮箱分组"><el-select v-model="automationForm.targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>

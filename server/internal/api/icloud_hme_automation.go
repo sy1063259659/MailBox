@@ -112,9 +112,9 @@ type automationProbeRange struct {
 }
 
 var automationProbeRanges = [...]automationProbeRange{
-	{min: 8 * time.Minute, max: 12 * time.Minute},
-	{min: 6 * time.Minute, max: 8 * time.Minute},
-	{min: 4 * time.Minute, max: 6 * time.Minute},
+	{min: 5 * time.Minute, max: 7 * time.Minute},
+	{min: 3 * time.Minute, max: 5 * time.Minute},
+	{min: 2 * time.Minute, max: 3 * time.Minute},
 }
 
 func clampAutomationProbeStage(stage int) int {

@@ -83,12 +83,12 @@ type ICloudHMEProbeLimit struct {
 
 func iCloudHMEAutomationCooldownDelay(level int) time.Duration {
 	delays := [...]time.Duration{
-		10 * time.Minute,
-		15 * time.Minute,
+		5 * time.Minute,
+		8 * time.Minute,
+		12 * time.Minute,
 		20 * time.Minute,
 		30 * time.Minute,
 		45 * time.Minute,
-		60 * time.Minute,
 	}
 	if level < 1 {
 		level = 1
