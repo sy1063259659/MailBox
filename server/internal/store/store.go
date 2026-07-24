@@ -211,7 +211,7 @@ func migrationCreateStatements() []string {
 			status_reason TEXT NOT NULL DEFAULT '',
 			alias_total INTEGER NOT NULL DEFAULT 0,
 			last_validated_at TIMESTAMPTZ,
-			probe_policy_version INTEGER NOT NULL DEFAULT 1,
+			probe_policy_version INTEGER NOT NULL DEFAULT 2,
 			probe_stage INTEGER NOT NULL DEFAULT 0,
 			probe_success_streak INTEGER NOT NULL DEFAULT 0,
 			probe_success_target INTEGER NOT NULL DEFAULT 3,
@@ -339,7 +339,7 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_limit_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_auto_attempt_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_policy_version INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ALTER COLUMN probe_policy_version SET DEFAULT 1`,
+		`ALTER TABLE icloud_hme_source_accounts ALTER COLUMN probe_policy_version SET DEFAULT 2`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_target INTEGER NOT NULL DEFAULT 3`,
@@ -484,6 +484,94 @@ func legacyCleanupStatements() []string {
 		     END,
 		     updated_at = now()
 		 WHERE probe_policy_version = 0`,
+		`WITH pending AS (
+		   SELECT item.id, job.label_prefix,
+		          row_number() OVER (PARTITION BY job.label_prefix ORDER BY item.id) AS row_number_value
+		   FROM icloud_hme_create_job_items item
+		   JOIN icloud_hme_create_jobs job ON job.id = item.job_id
+		   WHERE job.origin = 'automation' AND item.status IN ('pending', 'running')
+		 ),
+		 prefixes AS (
+		   SELECT DISTINCT label_prefix FROM pending
+		 ),
+		 max_sequences AS (
+		   SELECT prefix.label_prefix, COALESCE((
+		     SELECT max(suffix::integer)
+		     FROM (
+		       SELECT substring(alias.label FROM char_length(prefix.label_prefix) + 3) AS suffix
+		       FROM icloud_hme_aliases alias
+		       WHERE left(alias.label, char_length(prefix.label_prefix) + 2) = prefix.label_prefix || ' #'
+		       UNION ALL
+		       SELECT substring(item.label FROM char_length(prefix.label_prefix) + 3) AS suffix
+		       FROM icloud_hme_create_job_items item
+		       WHERE left(item.label, char_length(prefix.label_prefix) + 2) = prefix.label_prefix || ' #'
+		     ) labels
+		     WHERE suffix ~ '^[0-9]+$'
+		   ), 0) AS max_sequence
+		   FROM prefixes prefix
+		 ),
+		 assignments AS (
+		   SELECT pending.id,
+		          pending.label_prefix || ' #' ||
+		          (max_sequences.max_sequence + pending.row_number_value)::text AS label
+		   FROM pending
+		   JOIN max_sequences USING (label_prefix)
+		 )
+		 UPDATE icloud_hme_create_job_items item
+		 SET label = assignments.label, updated_at = now()
+		 FROM assignments
+		 WHERE item.id = assignments.id
+		   AND EXISTS (
+		     SELECT 1 FROM icloud_hme_source_accounts source
+		     WHERE source.probe_policy_version < 2
+		   )`,
+		`WITH ranked AS (
+		   SELECT item.id,
+		          row_number() OVER (
+		            PARTITION BY lower(item.email)
+		            ORDER BY COALESCE(item.finished_at, item.updated_at), item.id
+		          ) AS occurrence
+		   FROM icloud_hme_create_job_items item
+		   JOIN icloud_hme_create_jobs job ON job.id = item.job_id
+		   WHERE job.origin = 'automation'
+		     AND item.status = 'completed' AND item.email <> ''
+		 )
+		 UPDATE icloud_hme_automation_events event
+		 SET result = 'recovered',
+		     message = '恢复已有隐藏邮箱，未新增库存'
+		 FROM ranked
+		 WHERE event.job_item_id = ranked.id
+		   AND ranked.occurrence > 1
+		   AND event.event_type = 'create' AND event.result = 'success'
+		   AND EXISTS (
+		     SELECT 1 FROM icloud_hme_source_accounts source
+		     WHERE source.probe_policy_version < 2
+		   )`,
+		`UPDATE icloud_hme_source_accounts source
+		 SET probe_policy_version = 2,
+		     probe_stage = 0,
+		     probe_success_streak = 0,
+		     probe_success_target = 3,
+		     probe_stable_stage = -1,
+		     probe_recovery_mode = cooldown_level > 0,
+		     probe_limit_started_at = CASE
+		       WHEN cooldown_level > 0 THEN COALESCE(last_limit_at, now())
+		       ELSE NULL
+		     END,
+		     last_created_at = (
+		       SELECT max(alias.created_at)
+		       FROM icloud_hme_aliases alias
+		       WHERE alias.source_account_id = source.id
+		     ),
+		     next_create_at = CASE
+		       WHEN automation_enabled AND status = 'active' THEN now() + interval '8 minutes'
+		       ELSE next_create_at
+		     END,
+		     updated_at = now()
+		 WHERE probe_policy_version < 2`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_active_job_item_label
+		 ON icloud_hme_create_job_items(label)
+		 WHERE status IN ('pending', 'running')`,
 	}
 }
 

@@ -292,6 +292,10 @@ func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
 		"status = 'pending' AND retry_class = 'rate_limit'",
 		"icloud_source_wait",
 		"probe_policy_version = 1",
+		"probe_policy_version = 2",
+		"row_number() OVER (PARTITION BY job.label_prefix ORDER BY item.id)",
+		"恢复已有隐藏邮箱，未新增库存",
+		"idx_icloud_hme_active_job_item_label",
 	} {
 		if !strings.Contains(statements, want) {
 			t.Fatalf("legacyCleanupStatements() missing %q", want)

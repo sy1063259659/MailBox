@@ -237,16 +237,10 @@ func (s *Store) CreateICloudHMEAutomationJob(ctx context.Context, settings IClou
 	if count > 20 {
 		count = 20
 	}
-	var sequenceStart int
-	if err := s.pool.QueryRow(ctx, `
-		SELECT count(*) FROM icloud_hme_aliases WHERE label LIKE $1
-	`, settings.LabelPrefix+" #%").Scan(&sequenceStart); err != nil {
-		return ICloudHMECreateJob{}, err
-	}
 	return s.CreateICloudHMEJob(ctx, ICloudHMECreateJobInput{
 		Mode: ICloudHMEJobModePool, LabelPrefix: settings.LabelPrefix,
 		GroupName: settings.TargetGroup, Count: count, CreatedBy: "automation",
-		Origin: "automation", SequenceStart: sequenceStart,
+		Origin: "automation",
 	})
 }
 
@@ -345,6 +339,17 @@ func (s *Store) MarkICloudHMEAutomationSuccess(
 	`, sourceID, next, transition.Stage, transition.SuccessStreak,
 		transition.SuccessTarget, transition.StableStage, transition.RecoveryMode,
 		transition.IntervalSeconds, transition.RecoverySeconds)
+	return err
+}
+
+func (s *Store) MarkICloudHMEAutomationRecovered(ctx context.Context, sourceID int64, next time.Time) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE icloud_hme_source_accounts
+		SET status = 'active', status_reason = '', next_create_at = $2,
+		    cooldown_level = 0, consecutive_limit_count = 0,
+		    probe_limit_started_at = NULL, updated_at = now()
+		WHERE id = $1
+	`, sourceID, next)
 	return err
 }
 

@@ -64,7 +64,6 @@ type ICloudHMECreateJobInput struct {
 	Count           int
 	CreatedBy       string
 	Origin          string
-	SequenceStart   int
 }
 
 type ICloudHMEAuditLog struct {
@@ -110,6 +109,26 @@ func (s *Store) CreateICloudHMEJob(ctx context.Context, input ICloudHMECreateJob
 		return ICloudHMECreateJob{}, fmt.Errorf("store: begin create iCloud HME job: %w", err)
 	}
 	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "icloud-hme-label:"+input.LabelPrefix); err != nil {
+		return ICloudHMECreateJob{}, fmt.Errorf("store: lock iCloud HME label sequence: %w", err)
+	}
+	var sequenceStart int
+	if err := tx.QueryRow(ctx, `
+		WITH labels AS (
+			SELECT substring(label FROM char_length($1) + 3) AS suffix
+			FROM icloud_hme_aliases
+			WHERE left(label, char_length($1) + 2) = $1 || ' #'
+			UNION ALL
+			SELECT substring(item.label FROM char_length($1) + 3) AS suffix
+			FROM icloud_hme_create_job_items item
+			WHERE left(item.label, char_length($1) + 2) = $1 || ' #'
+		)
+		SELECT COALESCE(max(suffix::integer), 0)
+		FROM labels WHERE suffix ~ '^[0-9]+$'
+	`, input.LabelPrefix).Scan(&sequenceStart); err != nil {
+		return ICloudHMECreateJob{}, fmt.Errorf("store: allocate iCloud HME label sequence: %w", err)
+	}
 
 	var healthySourceExists bool
 	if input.Mode == ICloudHMEJobModeFixed {
@@ -161,7 +180,7 @@ func (s *Store) CreateICloudHMEJob(ctx context.Context, input ICloudHMECreateJob
 		return ICloudHMECreateJob{}, fmt.Errorf("store: create iCloud HME job: %w", err)
 	}
 	for sequence := 1; sequence <= input.Count; sequence++ {
-		label := fmt.Sprintf("%s #%d", input.LabelPrefix, input.SequenceStart+sequence)
+		label := fmt.Sprintf("%s #%d", input.LabelPrefix, sequenceStart+sequence)
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO icloud_hme_create_job_items (job_id, sequence, source_account_id, label)
 			VALUES ($1, $2, $3, $4)

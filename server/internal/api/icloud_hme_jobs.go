@@ -149,7 +149,7 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 		if err != nil {
 			return
 		}
-		sourceID, email, code, processErr := api.processJobItem(ctx, job, item)
+		sourceID, email, created, code, processErr := api.processJobItem(ctx, job, item)
 		if processErr != nil {
 			if job.Origin == "automation" && api.handleAutomationFailure(ctx, job, item, sourceID, code, processErr) {
 				_, _ = api.store.RefreshICloudHMEJobProgress(ctx, job.ID)
@@ -174,18 +174,28 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 						Stage: 0, SuccessTarget: 3, StableStage: -1, LastLimitStage: -1,
 					}
 				}
-				transition := nextAutomationProbeSuccess(probeState, now)
-				next := now.Add(randomAutomationCreateDelay(transition.Stage))
-				_ = api.store.MarkICloudHMEAutomationSuccess(ctx, sourceID, next, transition)
-				_ = api.store.AddICloudHMEAutomationEvent(
-					ctx, &sourceID, &item.ID, "create", "success", "",
-					"隐藏邮箱创建成功", &next, item.Attempts,
-					automationProbeEventMetrics(
-						transition.AttemptStage,
-						transition.IntervalSeconds,
-						transition.RecoverySeconds,
-					),
-				)
+				if created {
+					transition := nextAutomationProbeSuccess(probeState, now)
+					next := now.Add(randomAutomationCreateDelay(transition.Stage))
+					_ = api.store.MarkICloudHMEAutomationSuccess(ctx, sourceID, next, transition)
+					_ = api.store.AddICloudHMEAutomationEvent(
+						ctx, &sourceID, &item.ID, "create", "success", "",
+						"隐藏邮箱创建成功", &next, item.Attempts,
+						automationProbeEventMetrics(
+							transition.AttemptStage,
+							transition.IntervalSeconds,
+							transition.RecoverySeconds,
+						),
+					)
+				} else {
+					next := now.Add(randomAutomationCreateDelay(probeState.Stage))
+					_ = api.store.MarkICloudHMEAutomationRecovered(ctx, sourceID, next)
+					_ = api.store.AddICloudHMEAutomationEvent(
+						ctx, &sourceID, &item.ID, "create", "recovered", "",
+						"恢复已有隐藏邮箱，未新增库存", &next, item.Attempts,
+						automationProbeEventMetrics(probeState.Stage, 0, 0),
+					)
+				}
 			}
 			_ = api.store.AddICloudHMEAudit(ctx, store.ICloudHMEAuditLog{
 				Actor: job.CreatedBy, Action: "create_alias", TargetType: "alias",
@@ -243,13 +253,13 @@ func randomICloudHMEDelay() time.Duration {
 	return iCloudHMEJobMinDelay + time.Duration(rand.Int63n(span+1))
 }
 
-func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHMECreateJob, item store.ICloudHMECreateJobItem) (int64, string, string, error) {
+func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHMECreateJob, item store.ICloudHMECreateJobItem) (int64, string, bool, string, error) {
 	if usesFixedICloudHMESource(job) {
-		email, err := api.createOrRecoverJobAlias(ctx, *job.SourceAccountID, item.Label, job.GroupName)
+		email, created, err := api.createOrRecoverJobAlias(ctx, *job.SourceAccountID, item.Label, job.GroupName)
 		if err != nil {
-			return *job.SourceAccountID, "", classifyICloudHMECode(err), err
+			return *job.SourceAccountID, "", false, classifyICloudHMECode(err), err
 		}
-		return *job.SourceAccountID, email, "", nil
+		return *job.SourceAccountID, email, created, "", nil
 	}
 	var sources []store.ICloudHMESourceCredentials
 	var err error
@@ -259,13 +269,13 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 		sources, err = api.store.HealthyICloudHMESources(ctx)
 	}
 	if err != nil {
-		return 0, "", "internal_error", err
+		return 0, "", false, "internal_error", err
 	}
 	if len(sources) == 0 {
 		if job.Origin == "automation" {
-			return 0, "", "icloud_no_eligible_source", errNoEligibleAutomationSource
+			return 0, "", false, "icloud_no_eligible_source", errNoEligibleAutomationSource
 		}
-		return 0, "", "icloud_no_healthy_source", errors.New("没有可用的健康 Apple 主账号")
+		return 0, "", false, "icloud_no_healthy_source", errors.New("没有可用的健康 Apple 主账号")
 	}
 	var lastErr error
 	var lastSourceID int64
@@ -274,9 +284,9 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 		if job.Origin == "automation" {
 			_ = api.store.MarkICloudHMEAutomationAttempt(ctx, source.ID)
 		}
-		email, err := api.createOrRecoverJobAlias(ctx, source.ID, item.Label, job.GroupName)
+		email, created, err := api.createOrRecoverJobAlias(ctx, source.ID, item.Label, job.GroupName)
 		if err == nil {
-			return source.ID, email, "", nil
+			return source.ID, email, created, "", nil
 		}
 		lastErr = err
 		if job.Origin != "automation" {
@@ -286,7 +296,7 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 			break
 		}
 	}
-	return lastSourceID, "", classifyICloudHMECode(lastErr), lastErr
+	return lastSourceID, "", false, classifyICloudHMECode(lastErr), lastErr
 }
 
 func usesFixedICloudHMESource(job store.ICloudHMECreateJob) bool {
@@ -295,7 +305,7 @@ func usesFixedICloudHMESource(job store.ICloudHMECreateJob) bool {
 		job.SourceAccountID != nil
 }
 
-func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID int64, label, group string) (string, error) {
+func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID int64, label, group string) (string, bool, error) {
 	api.aliasCreateMu.Lock()
 	defer api.aliasCreateMu.Unlock()
 	lock := api.lockForSource(sourceID)
@@ -304,39 +314,39 @@ func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID i
 
 	client, _, err := api.clientForSource(ctx, sourceID)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	if err := client.ValidateSession(); err != nil {
 		api.markSourceError(ctx, sourceID, err)
-		return "", err
+		return "", false, err
 	}
 	aliases, err := client.ListAliases()
 	if err != nil {
 		api.markSourceError(ctx, sourceID, err)
-		return "", err
+		return "", false, err
 	}
 	if _, _, err := api.syncAliasList(ctx, sourceID, aliases, group); err != nil {
-		return "", err
+		return "", false, err
 	}
 	for _, alias := range aliases {
 		if strings.TrimSpace(alias.Label) == strings.TrimSpace(label) {
-			return alias.Email, nil
+			return alias.Email, false, nil
 		}
 	}
 	created, err := client.CreateAlias(label, 5)
 	if err != nil {
 		api.markSourceError(ctx, sourceID, err)
-		return "", err
+		return "", false, err
 	}
 	_, _, err = api.store.UpsertICloudHMEAliases(ctx, sourceID, []store.ICloudHMEAliasInput{{
 		Email: created.Email, Label: created.Label, Active: true, CreatedAt: parseICloudHMETime(created.CreatedAt),
 	}}, group)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	_ = api.store.SaveICloudHMECookies(ctx, sourceID, client.GetCookies(), "active", "")
 	_ = api.store.MarkICloudHMESourceActivity(ctx, sourceID, "create", nil)
-	return created.Email, nil
+	return created.Email, true, nil
 }
 
 func (api *iCloudHMEAPI) syncSource(ctx context.Context, sourceID int64, group string) (int, int, error) {
