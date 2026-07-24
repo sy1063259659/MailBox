@@ -37,6 +37,7 @@ const renamingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
 const busy = ref(false)
 const receiveKeyBusy = ref(false)
+const receiveURLBusyEmails = ref(new Set<string>())
 const receiveKeyDialogVisible = ref(false)
 const receiveKeyRecord = ref<ICloudHMEReceiveKeyRecord>()
 const automation = ref<ICloudHMEAutomation>()
@@ -268,6 +269,42 @@ function receiveMailURL(kind: 'latest' | 'history', record = receiveKeyRecord.va
   url.searchParams.set('key', record.key)
   if (kind === 'history') url.searchParams.set('limit', '20')
   return url.toString()
+}
+async function receiveKeyRecordsForAliases(targets: ICloudHMEAlias[]) {
+  const missing = targets.filter((item) => !item.receiveKeyConfigured)
+  if (missing.length) {
+    await generateICloudHMEReceiveKeys(missing.map((item) => item.email))
+    await store.load()
+  }
+  const records = await exportICloudHMEReceiveKeys(targets.map((item) => item.email))
+  const byEmail = new Map(records.map((item) => [item.email.toLowerCase(), item]))
+  return targets.map((item) => byEmail.get(item.email.toLowerCase())).filter((item): item is ICloudHMEReceiveKeyRecord => Boolean(item))
+}
+async function copyLatestReceiveURLs() {
+  const requested = selectedRows.value.length ? [...selectedRows.value] : [...filteredAliases.value]
+  const targets = requested.filter((item) => item.appleStatus === 'active')
+  if (!targets.length) return ElMessage.warning('没有可复制取件 URL 的启用邮箱')
+  receiveKeyBusy.value = true
+  try {
+    const records = await receiveKeyRecordsForAliases(targets)
+    if (!records.length) return ElMessage.warning('目标隐藏邮箱尚未配置收件密钥')
+    await navigator.clipboard.writeText(records.map((item) => receiveMailURL('latest', item)).join('\n'))
+    const skipped = requested.length - records.length
+    ElMessage.success('已复制 ' + records.length + ' 个最新取件 URL' + (skipped ? '，跳过 ' + skipped + ' 个不可用邮箱' : ''))
+  } catch (error) { showError(error, '复制最新取件 URL 失败') } finally { receiveKeyBusy.value = false }
+}
+async function copyLatestReceiveURL(alias: ICloudHMEAlias) {
+  if (alias.appleStatus !== 'active') return ElMessage.warning('该隐藏邮箱当前不可用')
+  receiveURLBusyEmails.value = new Set(receiveURLBusyEmails.value).add(alias.email)
+  try {
+    const records = await receiveKeyRecordsForAliases([alias])
+    if (!records[0]) return ElMessage.warning('该隐藏邮箱尚未配置收件密钥')
+    await copyValue(receiveMailURL('latest', records[0]), '最新取件 URL')
+  } catch (error) { showError(error, '复制最新取件 URL 失败') } finally {
+    const next = new Set(receiveURLBusyEmails.value)
+    next.delete(alias.email)
+    receiveURLBusyEmails.value = next
+  }
 }
 async function generateSelectedReceiveKeys() {
   if (!selectedRows.value.length) return ElMessage.warning('请先勾选隐藏邮箱')
@@ -681,6 +718,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-button :loading="automationSaving" @click="toggleAutomation">{{ automation?.enabled ? '暂停自动补货' : '恢复自动补货' }}</el-button>
           <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
+          <el-button type="primary" plain :icon="Link" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs">复制最新取件 URL</el-button>
           <el-button :icon="View" :disabled="selectedRows.length !== 1" @click="openSelectedMail">查看邮件</el-button>
           <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
           <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
@@ -702,7 +740,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-select v-model="statusFilter" style="width:160px"><el-option label="全部状态" value="all" /><el-option label="已启用" value="active" /><el-option label="已停用" value="inactive" /><el-option label="已永久删除" value="deleted" /><el-option label="状态未知" value="unknown" /></el-select>
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
-        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>停用、恢复、复制、移动和本地删除作用于已选项；永久删除仅支持单个</span></div>
+        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、复制最新取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
         <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
@@ -711,7 +749,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="label" label="Apple 标签" min-width="165" show-overflow-tooltip />
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
-          <el-table-column label="收件密钥" width="140" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '查看' : '生成' }}</el-button></div></template></el-table-column>
+          <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>
           <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</template></el-table-column>
