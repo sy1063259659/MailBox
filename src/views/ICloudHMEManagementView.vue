@@ -24,6 +24,8 @@ import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
 
+const ICLOUD_HME_PUBLIC_MAIL_ORIGIN = 'https://inbox-api.xyue.online'
+
 const store = useICloudHmeStore()
 const keyword = ref('')
 const sourceFilter = ref<number | 'all'>('all')
@@ -264,7 +266,7 @@ async function copySelected() {
 }
 function receiveMailURL(kind: 'latest' | 'history', record = receiveKeyRecord.value) {
   if (!record) return ''
-  const url = new URL('/api/public/icloud-hme/mail/' + kind, window.location.origin)
+  const url = new URL('/api/public/icloud-hme/mail/' + kind, ICLOUD_HME_PUBLIC_MAIL_ORIGIN)
   url.searchParams.set('address', record.email)
   url.searchParams.set('key', record.key)
   if (kind === 'history') url.searchParams.set('limit', '20')
