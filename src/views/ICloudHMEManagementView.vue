@@ -280,7 +280,7 @@ async function receiveKeyRecordsForAliases(targets: ICloudHMEAlias[]) {
   const byEmail = new Map(records.map((item) => [item.email.toLowerCase(), item]))
   return targets.map((item) => byEmail.get(item.email.toLowerCase())).filter((item): item is ICloudHMEReceiveKeyRecord => Boolean(item))
 }
-async function copyLatestReceiveURLs() {
+async function copyLatestReceiveURLs(format: 'url' | 'email-url' = 'url') {
   const requested = selectedRows.value.length ? [...selectedRows.value] : [...filteredAliases.value]
   const targets = requested.filter((item) => item.appleStatus === 'active')
   if (!targets.length) return ElMessage.warning('没有可复制取件 URL 的启用邮箱')
@@ -288,10 +288,17 @@ async function copyLatestReceiveURLs() {
   try {
     const records = await receiveKeyRecordsForAliases(targets)
     if (!records.length) return ElMessage.warning('目标隐藏邮箱尚未配置收件密钥')
-    await navigator.clipboard.writeText(records.map((item) => receiveMailURL('latest', item)).join('\n'))
+    const content = records.map((item) => {
+      const url = receiveMailURL('latest', item)
+      return format === 'email-url' ? item.email + '---' + url : url
+    }).join('\n')
+    await navigator.clipboard.writeText(content)
     const skipped = requested.length - records.length
-    ElMessage.success('已复制 ' + records.length + ' 个最新取件 URL' + (skipped ? '，跳过 ' + skipped + ' 个不可用邮箱' : ''))
-  } catch (error) { showError(error, '复制最新取件 URL 失败') } finally { receiveKeyBusy.value = false }
+    const label = format === 'email-url' ? '条邮箱和取件 URL' : '个最新取件 URL'
+    ElMessage.success('已复制 ' + records.length + ' ' + label + (skipped ? '，跳过 ' + skipped + ' 个不可用邮箱' : ''))
+  } catch (error) {
+    showError(error, format === 'email-url' ? '复制邮箱和取件 URL 失败' : '复制最新取件 URL 失败')
+  } finally { receiveKeyBusy.value = false }
 }
 async function copyLatestReceiveURL(alias: ICloudHMEAlias) {
   if (alias.appleStatus !== 'active') return ElMessage.warning('该隐藏邮箱当前不可用')
@@ -719,6 +726,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
           <el-button type="primary" plain :icon="Link" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs">复制最新取件 URL</el-button>
+          <el-button :icon="Files" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs('email-url')">复制邮箱---取件 URL</el-button>
           <el-button :icon="View" :disabled="selectedRows.length !== 1" @click="openSelectedMail">查看邮件</el-button>
           <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
           <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
@@ -740,7 +748,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-select v-model="statusFilter" style="width:160px"><el-option label="全部状态" value="all" /><el-option label="已启用" value="active" /><el-option label="已停用" value="inactive" /><el-option label="已永久删除" value="deleted" /><el-option label="状态未知" value="unknown" /></el-select>
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
-        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、复制最新取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
+        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、取件 URL、邮箱---取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
         <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
