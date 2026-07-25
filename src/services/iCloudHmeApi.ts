@@ -59,6 +59,11 @@ export interface ICloudHMEAlias {
   receiveKeyUpdatedAt?: string
   inventoryStatus: 'available' | 'reserved' | 'sold'
   soldAt?: string
+  gptStatus: 'unregistered' | 'plus' | 'deactivated'
+  gptPlusActivatedAt?: string
+  gptDeactivatedAt?: string
+  gptLastScannedAt?: string
+  gptScanError?: string
   createdAt: string
   updatedAt: string
 }
@@ -95,6 +100,13 @@ export interface ICloudHMEAutomationEvent {
   targetIntervalMinSeconds: number
   targetIntervalMaxSeconds: number
   createdAt: string
+}
+
+export interface ICloudHMEGPTScanResult {
+  scanned: number
+  plusFound: number
+  bannedFound: number
+  errors: number
 }
 
 export interface ICloudHMEReceiveKeyRecord {
@@ -242,6 +254,11 @@ export async function updateICloudHMEAutomation(input: {
 export async function listICloudHMEAutomationEvents(): Promise<ICloudHMEAutomationEvent[]> {
   const response = await apiGet<{ ok: boolean; events: ICloudHMEAutomationEvent[] }>('/icloud-hme/automation/events')
   return response.events
+}
+
+export async function scanICloudHMEGPTStatus(): Promise<ICloudHMEGPTScanResult> {
+  const response = await apiPost<{ ok: boolean; result: ICloudHMEGPTScanResult }>('/icloud-hme/gpt-status/scan')
+  return response.result
 }
 
 export async function updateICloudHMEInventoryStatus(

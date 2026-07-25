@@ -569,6 +569,8 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 		       g.name, a.remark, s.app_password_encrypted <> '',
 		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
 		       a.inventory_status, a.sold_at,
+		       a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
+		       a.gpt_last_scanned_at, a.gpt_scan_error,
 		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
@@ -579,7 +581,9 @@ func (s *Store) GetICloudHMEAlias(ctx context.Context, email string) (ICloudHMEA
 		&alias.Label, &alias.Active, &alias.AppleStatus, &alias.DeactivatedAt, &alias.DeletedAt,
 		&alias.LastSyncedAt, &alias.Group, &alias.Remark, &alias.MailReady,
 		&alias.ReceiveKeyConfigured, &alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus,
-		&alias.SoldAt, &alias.CreatedAt, &alias.UpdatedAt,
+		&alias.SoldAt, &alias.GPTStatus, &alias.GPTPlusActivatedAt,
+		&alias.GPTDeactivatedAt, &alias.GPTLastScannedAt, &alias.GPTScanError,
+		&alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")

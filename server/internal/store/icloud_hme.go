@@ -80,6 +80,11 @@ type ICloudHMEAlias struct {
 	ReceiveKeyUpdatedAt  *time.Time `json:"receiveKeyUpdatedAt,omitempty"`
 	InventoryStatus      string     `json:"inventoryStatus"`
 	SoldAt               *time.Time `json:"soldAt,omitempty"`
+	GPTStatus            string     `json:"gptStatus"`
+	GPTPlusActivatedAt   *time.Time `json:"gptPlusActivatedAt,omitempty"`
+	GPTDeactivatedAt     *time.Time `json:"gptDeactivatedAt,omitempty"`
+	GPTLastScannedAt     *time.Time `json:"gptLastScannedAt,omitempty"`
+	GPTScanError         string     `json:"gptScanError,omitempty"`
 	CreatedAt            time.Time  `json:"createdAt"`
 	UpdatedAt            time.Time  `json:"updatedAt"`
 }
@@ -438,6 +443,8 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 		       g.name, a.remark, s.app_password_encrypted <> '',
 		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
 		       a.inventory_status, a.sold_at,
+		       a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
+		       a.gpt_last_scanned_at, a.gpt_scan_error,
 		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
@@ -458,6 +465,8 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 			&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
 			&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
 			&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
+			&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
+			&alias.GPTLastScannedAt, &alias.GPTScanError,
 			&alias.CreatedAt, &alias.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME alias: %w", err)
@@ -584,6 +593,8 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		          g.name, a.remark, s.app_password_encrypted <> '',
 		          a.receive_key_encrypted <> '', a.receive_key_updated_at,
 		          a.inventory_status, a.sold_at,
+		          a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
+		          a.gpt_last_scanned_at, a.gpt_scan_error,
 		          a.created_at, a.updated_at
 	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
@@ -591,6 +602,8 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
 		&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
 		&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
+		&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
+		&alias.GPTLastScannedAt, &alias.GPTScanError,
 		&alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

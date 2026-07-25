@@ -2110,6 +2110,38 @@ textarea {
   white-space: nowrap;
 }
 
+.hme-gpt-status-cell {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.hme-gpt-status-cell > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.hme-gpt-status-cell span,
+.hme-gpt-status-cell small {
+  color: #64748b;
+}
+
+.hme-gpt-status-cell strong {
+  color: #172033;
+  font-weight: 600;
+}
+
+.hme-gpt-status-cell .danger-text {
+  overflow: hidden;
+  color: #dc2626;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .hme-receive-key-dialog .el-dialog__body {
   display: grid;
   gap: 14px;

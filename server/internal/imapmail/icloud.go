@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/emersion/go-imap/v2"
@@ -230,6 +231,73 @@ func (c Client) ListMessageDetailsByRecipient(ctx context.Context, email, passwo
 		}
 	}
 	return DetailListResult{Messages: messages, NextCursor: nextCursor}, nil
+}
+
+// ListICloudOpenAIStatusMessages searches the source mailbox once for the two
+// OpenAI lifecycle subjects used by the Hide My Email status scanner.
+func (c Client) ListICloudOpenAIStatusMessages(
+	ctx context.Context,
+	email, password string,
+	since time.Time,
+	limit int,
+) ([]MessageDetail, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	client, err := c.connectICloudPassword(ctx, email, password)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	planCriteria := imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: "ChatGPT - Your new plan"}},
+	}
+	deactivatedCriteria := imap.SearchCriteria{
+		Header: []imap.SearchCriteriaHeaderField{{Key: "Subject", Value: "OpenAI - Access Deactivated"}},
+	}
+	criteria := &imap.SearchCriteria{
+		Since: since,
+		Or:    [][2]imap.SearchCriteria{{planCriteria, deactivatedCriteria}},
+	}
+	data, err := client.UIDSearch(criteria, nil).Wait()
+	if err != nil {
+		return nil, fmt.Errorf("imapmail: search iCloud OpenAI status mail: %w", err)
+	}
+	uids := data.AllUIDs()
+	sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
+	if len(uids) > limit {
+		uids = uids[:limit]
+	}
+	if len(uids) == 0 {
+		return []MessageDetail{}, nil
+	}
+
+	section := &imap.FetchItemBodySection{Peek: true}
+	fetched, err := client.Fetch(uidSetFromUIDs(uids), &imap.FetchOptions{
+		UID: true, Envelope: true, Flags: true, InternalDate: true,
+		BodySection: []*imap.FetchItemBodySection{section},
+	}).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("imapmail: fetch iCloud OpenAI status mail: %w", err)
+	}
+	messages := make([]MessageDetail, 0, len(fetched))
+	for _, item := range fetched {
+		parsed := parseMessageBody(item.FindBodySection(section))
+		detail := detailFromFetch(item)
+		if parsed.HTML != "" {
+			detail.ContentType = "text/html"
+			detail.Content = parsed.HTML
+		} else {
+			detail.ContentType = "text/plain"
+			detail.Content = parsed.Text
+		}
+		messages = append(messages, detail)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].ReceivedAt.Before(messages[j].ReceivedAt)
+	})
+	return messages, nil
 }
 
 func (c Client) connectICloudPassword(ctx context.Context, email, password string) (*imapclient.Client, error) {

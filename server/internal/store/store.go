@@ -239,6 +239,13 @@ func migrationCreateStatements() []string {
 			receive_key_encrypted TEXT NOT NULL DEFAULT '',
 			receive_key_digest TEXT NOT NULL DEFAULT '',
 			receive_key_updated_at TIMESTAMPTZ,
+			gpt_status TEXT NOT NULL DEFAULT 'unregistered',
+			gpt_plus_activated_at TIMESTAMPTZ,
+			gpt_deactivated_at TIMESTAMPTZ,
+			gpt_plan_message_uid TEXT NOT NULL DEFAULT '',
+			gpt_deactivation_message_uid TEXT NOT NULL DEFAULT '',
+			gpt_last_scanned_at TIMESTAMPTZ,
+			gpt_scan_error TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -358,6 +365,13 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_updated_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status TEXT NOT NULL DEFAULT 'available'`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_status TEXT NOT NULL DEFAULT 'unregistered'`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plus_activated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plan_message_uid TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivation_message_uid TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_last_scanned_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_scan_error TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE icloud_hme_create_jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS retry_class TEXT NOT NULL DEFAULT ''`,
@@ -390,6 +404,9 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_status ON icloud_hme_create_job_items(job_id, status, sequence)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_due ON icloud_hme_create_job_items(status, next_attempt_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_inventory ON icloud_hme_aliases(inventory_status, apple_status)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_gpt_scan
+			ON icloud_hme_aliases(source_account_id, gpt_status, gpt_last_scanned_at)
+			WHERE gpt_status <> 'deactivated'`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_automation_events_created ON icloud_hme_automation_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`}
 }

@@ -77,6 +77,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-hme/jobs/", authRequired(sessions, iCloudHMEAPI.routeJob))
 	mux.HandleFunc("/api/icloud-hme/automation", authRequired(sessions, iCloudHMEAPI.automationSettings))
 	mux.HandleFunc("/api/icloud-hme/automation/events", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.automationEvents)))
+	mux.HandleFunc("/api/icloud-hme/gpt-status/scan", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.scanGPTStatus)))
 	mux.HandleFunc("/api/icloud-hme/aliases", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.listAliases)))
 	mux.HandleFunc("/api/icloud-hme/aliases/inventory-status", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.updateInventoryStatus)))
 	mux.HandleFunc("/api/icloud-hme/aliases/lifecycle", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.lifecycleAliases)))

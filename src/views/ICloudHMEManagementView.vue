@@ -11,7 +11,7 @@ import {
   saveICloudHMECookies, startICloudHMELogin, syncAllICloudHMESources, syncICloudHMEAliases,
   updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
   getICloudHMEAutomation, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
-  updateICloudHMEInventoryStatus,
+  updateICloudHMEInventoryStatus, scanICloudHMEGPTStatus,
   type ICloudHMEAlias, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
   type ICloudHMEMailSummary, type ICloudHMESourceAccount, type ICloudHMEReceiveKeyRecord,
   type ICloudHMEAutomation, type ICloudHMEAutomationEvent,
@@ -30,6 +30,7 @@ const store = useICloudHmeStore()
 const keyword = ref('')
 const sourceFilter = ref<number | 'all'>('all')
 const statusFilter = ref<'all' | ICloudHMEAlias['appleStatus']>('all')
+const gptStatusFilter = ref<'all' | ICloudHMEAlias['gptStatus']>('all')
 const page = ref(1)
 const pageSize = ref(20)
 const selectedRows = ref<ICloudHMEAlias[]>([])
@@ -39,6 +40,7 @@ const renamingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
 const busy = ref(false)
 const receiveKeyBusy = ref(false)
+const gptScanBusy = ref(false)
 const receiveURLBusyEmails = ref(new Set<string>())
 const receiveKeyDialogVisible = ref(false)
 const receiveKeyRecord = ref<ICloudHMEReceiveKeyRecord>()
@@ -91,7 +93,8 @@ const filteredAliases = computed(() => {
     if (store.selectedGroup && alias.group !== store.selectedGroup) return false
     if (sourceFilter.value !== 'all' && alias.sourceAccountId !== sourceFilter.value) return false
     if (statusFilter.value !== 'all' && alias.appleStatus !== statusFilter.value) return false
-    return !query || [alias.email, alias.sourceAccountName, alias.label, alias.group, alias.remark]
+    if (gptStatusFilter.value !== 'all' && alias.gptStatus !== gptStatusFilter.value) return false
+    return !query || [alias.email, alias.sourceAccountName, alias.label, alias.group, alias.remark, alias.gptStatus]
       .some((value) => value.toLowerCase().includes(query))
   })
 })
@@ -127,7 +130,7 @@ const mailBlocks = computed(() => plainMailBlocks(mailDetail.value?.contentType 
 
 let jobPollTimer: number | undefined
 let jobPolling = false
-watch([keyword, sourceFilter, statusFilter, () => store.selectedGroup], () => { page.value = 1; selectedRows.value = [] })
+watch([keyword, sourceFilter, statusFilter, gptStatusFilter, () => store.selectedGroup], () => { page.value = 1; selectedRows.value = [] })
 watch(() => filteredAliases.value.length, (total) => { page.value = Math.min(page.value, Math.max(1, Math.ceil(total / pageSize.value))) })
 onMounted(async () => {
   try {
@@ -248,6 +251,24 @@ function eventProbeRange(event: ICloudHMEAutomationEvent) {
 }
 function aliasStatusType(status: ICloudHMEAlias['appleStatus']) { return status === 'active' ? 'success' : status === 'inactive' ? 'warning' : status === 'deleted' ? 'danger' : 'info' }
 function aliasStatusText(status: ICloudHMEAlias['appleStatus']) { return { active: '已启用', inactive: '已停用', deleted: '已永久删除', unknown: '状态未知' }[status] }
+function gptStatusType(status: ICloudHMEAlias['gptStatus']) { return status === 'plus' ? 'success' : status === 'deactivated' ? 'danger' : 'info' }
+function gptStatusText(status: ICloudHMEAlias['gptStatus']) { return status === 'plus' ? 'PLUS' : status === 'deactivated' ? '已封号' : '未开通' }
+function gptSurvivalText(alias: ICloudHMEAlias) {
+  if (!alias.gptPlusActivatedAt || !alias.gptDeactivatedAt) return ''
+  const seconds = Math.max(0, Math.floor((new Date(alias.gptDeactivatedAt).getTime() - new Date(alias.gptPlusActivatedAt).getTime()) / 1000))
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return days ? `${days}天 ${hours}小时` : hours ? `${hours}小时 ${minutes}分钟` : `${minutes}分钟`
+}
+async function scanGPTStatus() {
+  gptScanBusy.value = true
+  try {
+    const result = await scanICloudHMEGPTStatus()
+    await store.load()
+    ElMessage.success(`扫描 ${result.scanned} 个邮箱，发现 PLUS ${result.plusFound} 个、封号 ${result.bannedFound} 个${result.errors ? `，${result.errors} 个主账号失败` : ''}`)
+  } catch (error) { showError(error, '扫描 GPT 状态失败') } finally { gptScanBusy.value = false }
+}
 function jobStatusText(status: ICloudHMEJob['status']) { return { pending: '等待中', running: '执行中', cancel_requested: '取消中', completed: '已完成', partial_failed: '部分失败', cancelled: '已取消' }[status] }
 function jobStatusType(status: ICloudHMEJob['status']) { return status === 'completed' ? 'success' : ['running', 'pending'].includes(status) ? 'primary' : status === 'partial_failed' ? 'danger' : 'info' }
 function jobProgress(job: ICloudHMEJob) { return Math.round(((job.completedCount + job.failedCount + job.cancelledCount) / Math.max(job.requestedCount, 1)) * 100) }
@@ -726,6 +747,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-button type="primary" :icon="Setting" @click="openAutomationSettings">自动补货设置</el-button>
           <el-button :loading="automationSaving" @click="toggleAutomation">{{ automation?.enabled ? '暂停自动补货' : '恢复自动补货' }}</el-button>
           <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
+          <el-button :icon="Refresh" :loading="gptScanBusy" @click="scanGPTStatus">扫描 GPT 状态</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
           <el-button type="primary" plain :icon="Link" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs">复制最新取件 URL</el-button>
           <el-button :icon="Files" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs('email-url')">复制邮箱---取件 URL</el-button>
@@ -748,6 +770,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <div class="hme-filter-row">
           <el-select v-model="sourceFilter" style="width:190px"><el-option label="全部主账号" value="all" /><el-option v-for="source in store.sources" :key="source.id" :label="source.name" :value="source.id" /></el-select>
           <el-select v-model="statusFilter" style="width:160px"><el-option label="全部状态" value="all" /><el-option label="已启用" value="active" /><el-option label="已停用" value="inactive" /><el-option label="已永久删除" value="deleted" /><el-option label="状态未知" value="unknown" /></el-select>
+          <el-select v-model="gptStatusFilter" style="width:150px"><el-option label="全部 GPT 状态" value="all" /><el-option label="未开通" value="unregistered" /><el-option label="PLUS" value="plus" /><el-option label="已封号" value="deactivated" /></el-select>
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
         <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、取件 URL、邮箱---取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
@@ -757,6 +780,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column label="隐藏邮箱" min-width="260" show-overflow-tooltip><template #default="{ row }"><div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }"><span>{{ row.email }}</span><el-button link :icon="CopyDocument" @click.stop="copyValue(row.email)" /></div></template></el-table-column>
           <el-table-column prop="sourceAccountName" label="Apple 主账号" min-width="145" show-overflow-tooltip />
           <el-table-column prop="label" label="Apple 标签" min-width="165" show-overflow-tooltip />
+          <el-table-column label="GPT账号" width="220"><template #default="{ row }"><div class="hme-gpt-status-cell"><div><el-tag :type="gptStatusType(row.gptStatus)" effect="light">{{ gptStatusText(row.gptStatus) }}</el-tag><small v-if="row.gptLastScannedAt">扫描 {{ formatDateTime(row.gptLastScannedAt) }}</small></div><span v-if="row.gptPlusActivatedAt">开通 {{ formatDateTime(row.gptPlusActivatedAt) }}</span><span v-if="row.gptDeactivatedAt">封号 {{ formatDateTime(row.gptDeactivatedAt) }}</span><strong v-if="gptSurvivalText(row)">存活 {{ gptSurvivalText(row) }}</strong><small v-if="row.gptScanError" class="danger-text">{{ row.gptScanError }}</small></div></template></el-table-column>
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>

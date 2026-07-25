@@ -41,6 +41,7 @@ type iCloudHMEAPI struct {
 	jobWake       chan struct{}
 	jobPaceMu     sync.Mutex
 	lastJobItem   time.Time
+	gptScanMu     sync.Mutex
 	publicLimiter *iCloudHMEPublicLimiter
 }
 
@@ -54,6 +55,7 @@ func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
 	}
 	if database != nil {
 		api.startJobWorker()
+		api.startGPTStatusWorker()
 	}
 	return api
 }
