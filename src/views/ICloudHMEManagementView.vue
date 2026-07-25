@@ -175,21 +175,6 @@ async function saveAutomation() {
   finally { automationSaving.value = false }
 }
 
-async function toggleAutomation() {
-  if (!automation.value) return openAutomationSettings()
-  automationSaving.value = true
-  try {
-    automation.value = await updateICloudHMEAutomation({
-      enabled: !automation.value.enabled,
-      targetAvailableCount: automation.value.targetAvailableCount,
-      targetGroup: automation.value.targetGroup,
-      labelPrefix: automation.value.labelPrefix,
-    })
-    ElMessage.success(automation.value.enabled ? '自动补货已恢复' : '自动补货已暂停')
-  } catch (error) { showError(error, '更新自动补货状态失败') }
-  finally { automationSaving.value = false }
-}
-
 async function openAutomationEvents() {
   automationEventsVisible.value = true
   try { automationEvents.value = await listICloudHMEAutomationEvents() }
@@ -561,6 +546,17 @@ async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
   if (command === 'delete-apple') await permanentlyDeleteAlias(alias)
   if (command === 'delete-local') await deleteAlias(alias)
 }
+async function handleToolbarCommand(command: string) {
+  if (command === 'automation-events') await openAutomationEvents()
+  if (command === 'scan-gpt') await scanGPTStatus()
+  if (command === 'generate-receive-keys') await generateSelectedReceiveKeys()
+  if (command === 'export-receive-keys') await exportReceiveKeys()
+  if (command === 'deactivate') await lifecycleSelected('deactivate')
+  if (command === 'reactivate') await lifecycleSelected('reactivate')
+  if (command === 'export-txt') exportAliases('txt')
+  if (command === 'export-csv') exportAliases('csv')
+  if (command === 'delete-local') await deleteSelected()
+}
 function exportAliases(format: 'txt' | 'csv') {
   const targets = selectedRows.value.length ? selectedRows.value : filteredAliases.value
   if (!targets.length) return ElMessage.warning('没有可导出的隐藏邮箱')
@@ -745,27 +741,29 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <div class="faka-action-row hme-action-row">
           <el-button :icon="Setting" @click="sourceDialogVisible = true">主账号管理</el-button>
           <el-button type="primary" :icon="Setting" @click="openAutomationSettings">自动补货设置</el-button>
-          <el-button :loading="automationSaving" @click="toggleAutomation">{{ automation?.enabled ? '暂停自动补货' : '恢复自动补货' }}</el-button>
-          <el-button :icon="Document" @click="openAutomationEvents">运行记录</el-button>
-          <el-button :icon="Refresh" :loading="gptScanBusy" @click="scanGPTStatus">扫描 GPT 状态</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
           <el-button type="primary" plain :icon="Link" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs">复制最新取件 URL</el-button>
           <el-button :icon="Files" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs('email-url')">复制邮箱---取件 URL</el-button>
           <el-button :icon="View" :disabled="selectedRows.length !== 1" @click="openSelectedMail">查看邮件</el-button>
-          <el-button :icon="Key" :loading="receiveKeyBusy" :disabled="!selectedRows.length" @click="generateSelectedReceiveKeys">生成收件密钥</el-button>
-          <el-button :icon="Document" :loading="receiveKeyBusy" @click="exportReceiveKeys">导出收件密钥</el-button>
           <el-button :icon="FolderOpened" :disabled="!selectedRows.length" @click="openMove">移动分组</el-button>
           <el-dropdown @command="markInventory">
             <el-button :disabled="!selectedRows.length">库存状态<el-icon class="el-icon--right"><More /></el-icon></el-button>
             <template #dropdown><el-dropdown-menu><el-dropdown-item command="available">恢复可售</el-dropdown-item><el-dropdown-item command="reserved">标记预留</el-dropdown-item><el-dropdown-item command="sold">标记已售</el-dropdown-item></el-dropdown-menu></template>
           </el-dropdown>
-          <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('deactivate')">停用</el-button>
-          <el-button :disabled="!selectedRows.length" @click="lifecycleSelected('reactivate')">恢复</el-button>
-          <el-dropdown @command="exportAliases">
-            <el-button>导出<el-icon class="el-icon--right"><More /></el-icon></el-button>
-            <template #dropdown><el-dropdown-menu><el-dropdown-item command="txt">导出 TXT</el-dropdown-item><el-dropdown-item command="csv">导出 CSV</el-dropdown-item></el-dropdown-menu></template>
+          <el-dropdown @command="handleToolbarCommand">
+            <el-button :loading="gptScanBusy || receiveKeyBusy || busy">更多操作<el-icon class="el-icon--right"><More /></el-icon></el-button>
+            <template #dropdown><el-dropdown-menu>
+              <el-dropdown-item command="automation-events" :icon="Document">自动补货运行记录</el-dropdown-item>
+              <el-dropdown-item command="scan-gpt" :icon="Refresh">扫描 GPT 状态</el-dropdown-item>
+              <el-dropdown-item command="generate-receive-keys" :icon="Key" :disabled="!selectedRows.length">生成收件密钥</el-dropdown-item>
+              <el-dropdown-item command="export-receive-keys" :icon="Document">导出收件密钥</el-dropdown-item>
+              <el-dropdown-item command="export-txt" divided>导出 TXT</el-dropdown-item>
+              <el-dropdown-item command="export-csv">导出 CSV</el-dropdown-item>
+              <el-dropdown-item command="deactivate" divided :disabled="!selectedRows.length">Apple 停用</el-dropdown-item>
+              <el-dropdown-item command="reactivate" :disabled="!selectedRows.length">Apple 恢复</el-dropdown-item>
+              <el-dropdown-item command="delete-local" divided :icon="Delete" :disabled="!selectedRows.length">删除本地记录</el-dropdown-item>
+            </el-dropdown-menu></template>
           </el-dropdown>
-          <el-button type="danger" :icon="Delete" :disabled="!selectedRows.length" @click="deleteSelected">删除本地记录</el-button>
         </div>
         <div class="hme-filter-row">
           <el-select v-model="sourceFilter" style="width:190px"><el-option label="全部主账号" value="all" /><el-option v-for="source in store.sources" :key="source.id" :label="source.name" :value="source.id" /></el-select>
@@ -780,7 +778,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column label="隐藏邮箱" min-width="260" show-overflow-tooltip><template #default="{ row }"><div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }"><span>{{ row.email }}</span><el-button link :icon="CopyDocument" @click.stop="copyValue(row.email)" /></div></template></el-table-column>
           <el-table-column prop="sourceAccountName" label="Apple 主账号" min-width="145" show-overflow-tooltip />
           <el-table-column prop="label" label="Apple 标签" min-width="165" show-overflow-tooltip />
-          <el-table-column label="GPT账号" width="220"><template #default="{ row }"><div class="hme-gpt-status-cell"><div><el-tag :type="gptStatusType(row.gptStatus)" effect="light">{{ gptStatusText(row.gptStatus) }}</el-tag><small v-if="row.gptLastScannedAt">扫描 {{ formatDateTime(row.gptLastScannedAt) }}</small></div><span v-if="row.gptPlusActivatedAt">开通 {{ formatDateTime(row.gptPlusActivatedAt) }}</span><span v-if="row.gptDeactivatedAt">封号 {{ formatDateTime(row.gptDeactivatedAt) }}</span><strong v-if="gptSurvivalText(row)">存活 {{ gptSurvivalText(row) }}</strong><small v-if="row.gptScanError" class="danger-text">{{ row.gptScanError }}</small></div></template></el-table-column>
+          <el-table-column label="GPT账号" width="220"><template #default="{ row }"><div class="hme-gpt-status-cell"><div><el-tag :type="gptStatusType(row.gptStatus)" effect="light">{{ gptStatusText(row.gptStatus) }}</el-tag></div><span v-if="row.gptPlusActivatedAt">开通 {{ formatDateTime(row.gptPlusActivatedAt) }}</span><span v-if="row.gptDeactivatedAt">封号 {{ formatDateTime(row.gptDeactivatedAt) }}</span><strong v-if="gptSurvivalText(row)">存活 {{ gptSurvivalText(row) }}</strong><small v-if="row.gptScanError" class="danger-text">{{ row.gptScanError }}</small></div></template></el-table-column>
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>
