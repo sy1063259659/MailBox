@@ -414,7 +414,7 @@ export async function startICloudHMEAliasLifecycle(
   action: 'deactivate' | 'reactivate',
 ): Promise<{ taskId: string; total: number }> {
   const response = await apiPost<{ ok: boolean; taskId: string; total: number }>(
-    '/icloud-hme/aliases/lifecycle',
+    '/icloud-hme/aliases/lifecycle?async=1',
     { emails, action },
   )
   return { taskId: response.taskId, total: response.total }
@@ -424,7 +424,11 @@ export async function getICloudHMELifecycleTask(taskId: string): Promise<ICloudH
   const response = await apiGet<{ ok: boolean; task: ICloudHMELifecycleTask }>(
     '/icloud-hme/lifecycle-tasks/' + encodeURIComponent(taskId),
   )
-  return response.task
+  if (!response.task) throw new Error('生命周期任务响应缺少任务数据')
+  return {
+    ...response.task,
+    results: Array.isArray(response.task.results) ? response.task.results : [],
+  }
 }
 
 export async function permanentlyDeleteICloudHMEAlias(email: string, confirmEmail: string): Promise<void> {

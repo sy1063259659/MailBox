@@ -151,10 +151,25 @@ func (api *iCloudHMEAPI) lifecycleAliases(w http.ResponseWriter, r *http.Request
 		return
 	}
 	task := api.newLifecycleTask(action, len(emails))
-	// The HTTP request returns immediately; the batch keeps running in the
-	// background and the frontend polls the task for progress.
-	go api.runLifecycleTask(context.Background(), task, requestActor(r), action, emails)
-	WriteJSON(w, http.StatusAccepted, map[string]any{"ok": true, "taskId": task.id, "total": len(emails)})
+	actor := requestActor(r)
+	if isAsyncLifecycleRequest(r) {
+		// New clients poll the task for progress instead of holding one request
+		// open while every Apple operation finishes.
+		go api.runLifecycleTask(context.Background(), task, actor, action, emails)
+		WriteJSON(w, http.StatusAccepted, map[string]any{"ok": true, "taskId": task.id, "total": len(emails)})
+		return
+	}
+
+	// Keep the original synchronous response contract for browser tabs that
+	// were already open during a deployment. Those clients expect results and
+	// would otherwise attempt to call filter on an absent response field.
+	api.runLifecycleTask(r.Context(), task, actor, action, emails)
+	snapshot := task.snapshot()
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "results": snapshot["results"]})
+}
+
+func isAsyncLifecycleRequest(r *http.Request) bool {
+	return r.URL.Query().Get("async") == "1"
 }
 
 func (api *iCloudHMEAPI) newLifecycleTask(action string, total int) *iCloudHMELifecycleTask {

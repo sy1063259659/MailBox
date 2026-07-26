@@ -618,7 +618,7 @@ async function lifecycleSelected(action: 'deactivate' | 'reactivate', rows = sel
       task = await getICloudHMELifecycleTask(started.taskId)
     }
     await store.load()
-    const failed = task.results.filter((item) => !item.ok).length
+    const failed = (task.results ?? []).filter((item) => !item.ok).length
     failed ? ElMessage.warning(actionText + '完成，' + failed + ' 个失败') : ElMessage.success(actionText + '完成')
   } catch (error) { showError(error, actionText + '失败') } finally {
     busy.value = false

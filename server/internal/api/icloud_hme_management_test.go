@@ -198,6 +198,35 @@ func TestLifecycleAliasesRejectsUnsupportedActionBeforeStoreLookup(t *testing.T)
 	}
 }
 
+func TestLifecycleAsyncModeRequiresExplicitOptIn(t *testing.T) {
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{"/api/icloud-hme/aliases/lifecycle", false},
+		{"/api/icloud-hme/aliases/lifecycle?async=0", false},
+		{"/api/icloud-hme/aliases/lifecycle?async=1", true},
+	}
+	for _, test := range tests {
+		request := httptest.NewRequest(http.MethodPost, test.path, nil)
+		if got := isAsyncLifecycleRequest(request); got != test.want {
+			t.Errorf("isAsyncLifecycleRequest(%q) = %v, want %v", test.path, got, test.want)
+		}
+	}
+}
+
+func TestLifecycleTaskSnapshotAlwaysIncludesResultsArray(t *testing.T) {
+	task := &iCloudHMELifecycleTask{id: "lt-test", action: "deactivate", total: 1}
+	snapshot := task.snapshot()
+	results, ok := snapshot["results"].([]iCloudHMELifecycleResult)
+	if !ok {
+		t.Fatalf("results type = %T, want []iCloudHMELifecycleResult", snapshot["results"])
+	}
+	if len(results) != 0 {
+		t.Fatalf("results length = %d, want 0", len(results))
+	}
+}
+
 func TestLoginCompleteKeepsChallengeWhenOTPIsEmpty(t *testing.T) {
 	api := &iCloudHMEAPI{}
 	challenge := &iCloudHMELoginChallenge{ID: "challenge", SourceID: 7, ExpiresAt: time.Now().Add(time.Minute)}
