@@ -2,13 +2,12 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"gptbox-server/internal/secure"
 )
@@ -123,12 +122,12 @@ func (s *Store) ListICloudHMEGroups(ctx context.Context) ([]ICloudHMEGroup, erro
 
 func (s *Store) CreateICloudHMEGroup(ctx context.Context, name string) (ICloudHMEGroup, error) {
 	name = normalizeICloudHMEGroup(name)
+	if _, err := s.ensureICloudHMEGroup(ctx, name); err != nil {
+		return ICloudHMEGroup{}, fmt.Errorf("store: create iCloud HME group: %w", err)
+	}
 	var group ICloudHMEGroup
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO icloud_hme_groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_hme_groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = icloud_hme_groups.updated_at
-		RETURNING id, name, sort_order, created_at, updated_at
+		SELECT id, name, sort_order, created_at, updated_at FROM icloud_hme_groups WHERE name = ?
 	`, name).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return ICloudHMEGroup{}, fmt.Errorf("store: create iCloud HME group: %w", err)
@@ -138,15 +137,20 @@ func (s *Store) CreateICloudHMEGroup(ctx context.Context, name string) (ICloudHM
 
 func (s *Store) RenameICloudHMEGroup(ctx context.Context, id int64, name string) (ICloudHMEGroup, error) {
 	name = normalizeICloudHMEGroup(name)
-	var group ICloudHMEGroup
-	err := s.pool.QueryRow(ctx, `
-		UPDATE icloud_hme_groups SET name = $1, updated_at = now()
-		WHERE id = $2 AND name <> $3
-		RETURNING id, name, sort_order, created_at, updated_at
-	`, name, id, DefaultICloudHMEGroupName).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE icloud_hme_groups SET name = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND name <> ?
+	`, name, id, DefaultICloudHMEGroupName)
+	if err != nil {
+		return ICloudHMEGroup{}, fmt.Errorf("store: rename iCloud HME group: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
 		return ICloudHMEGroup{}, errors.New("分组不存在或默认分组不允许重命名")
 	}
+	var group ICloudHMEGroup
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, name, sort_order, created_at, updated_at FROM icloud_hme_groups WHERE id = ?
+	`, id).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return ICloudHMEGroup{}, fmt.Errorf("store: rename iCloud HME group: %w", err)
 	}
@@ -169,7 +173,7 @@ func (s *Store) ReorderICloudHMEGroups(ctx context.Context, ids []int64) ([]IClo
 			return nil, errors.New("分组 id 非法或重复")
 		}
 		seen[id] = true
-		result, err := tx.Exec(ctx, `UPDATE icloud_hme_groups SET sort_order = $1, updated_at = now() WHERE id = $2`, index, id)
+		result, err := tx.Exec(ctx, `UPDATE icloud_hme_groups SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, index, id)
 		if err != nil {
 			return nil, fmt.Errorf("store: reorder iCloud HME group: %w", err)
 		}
@@ -185,13 +189,13 @@ func (s *Store) ReorderICloudHMEGroups(ctx context.Context, ids []int64) ([]IClo
 
 func (s *Store) DeleteICloudHMEGroup(ctx context.Context, id int64) error {
 	var count int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE group_id = $1`, id).Scan(&count); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE group_id = ?`, id).Scan(&count); err != nil {
 		return fmt.Errorf("store: count iCloud HME group aliases: %w", err)
 	}
 	if count > 0 {
 		return errors.New("只能删除空分组")
 	}
-	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_hme_groups WHERE id = $1 AND name <> $2`, id, DefaultICloudHMEGroupName)
+	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_hme_groups WHERE id = ? AND name <> ?`, id, DefaultICloudHMEGroupName)
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud HME group: %w", err)
 	}
@@ -201,19 +205,38 @@ func (s *Store) DeleteICloudHMEGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+const iCloudHMESourceAccountColumns = `
+	id, name, apple_id_email, icloud_email, host,
+	cookies_encrypted <> '', app_password_encrypted <> '',
+	status, status_reason, alias_total, last_validated_at,
+	last_synced_at, last_created_at, last_error_at,
+	automation_enabled, next_create_at, cooldown_level,
+	consecutive_limit_count, last_limit_at, last_auto_attempt_at,
+	probe_stage, probe_success_streak, probe_success_target,
+	probe_stable_stage, probe_recovery_mode,
+	probe_last_interval_seconds, probe_last_recovery_seconds,
+	probe_last_limit_stage,
+	created_at, updated_at
+`
+
+func scanICloudHMESourceAccount(row interface{ Scan(...any) error }, account *ICloudHMESourceAccount) error {
+	return row.Scan(
+		&account.ID, &account.Name, &account.AppleIDEmail, &account.ICloudEmail, &account.Host,
+		&account.CookieConfigured, &account.AppPasswordConfigured,
+		&account.Status, &account.StatusReason, &account.AliasTotal,
+		&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
+		&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
+		&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
+		&account.LastAutoAttemptAt, &account.ProbeStage, &account.ProbeSuccessStreak,
+		&account.ProbeSuccessTarget, &account.ProbeStableStage, &account.ProbeRecoveryMode,
+		&account.ProbeLastIntervalSecs, &account.ProbeLastRecoverySecs,
+		&account.ProbeLastLimitStage, &account.CreatedAt, &account.UpdatedAt,
+	)
+}
+
 func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESourceAccount, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, name, apple_id_email, icloud_email, host,
-		       cookies_encrypted <> '', app_password_encrypted <> '',
-		       status, status_reason, alias_total, last_validated_at,
-		       last_synced_at, last_created_at, last_error_at,
-		       automation_enabled, next_create_at, cooldown_level,
-		       consecutive_limit_count, last_limit_at, last_auto_attempt_at,
-		       probe_stage, probe_success_streak, probe_success_target,
-		       probe_stable_stage, probe_recovery_mode,
-		       probe_last_interval_seconds, probe_last_recovery_seconds,
-		       probe_last_limit_stage,
-		       created_at, updated_at
+		SELECT `+iCloudHMESourceAccountColumns+`
 		FROM icloud_hme_source_accounts
 		ORDER BY created_at DESC, id DESC
 	`)
@@ -225,23 +248,28 @@ func (s *Store) ListICloudHMESourceAccounts(ctx context.Context) ([]ICloudHMESou
 	accounts := []ICloudHMESourceAccount{}
 	for rows.Next() {
 		var account ICloudHMESourceAccount
-		if err := rows.Scan(
-			&account.ID, &account.Name, &account.AppleIDEmail, &account.ICloudEmail, &account.Host,
-			&account.CookieConfigured, &account.AppPasswordConfigured,
-			&account.Status, &account.StatusReason, &account.AliasTotal,
-			&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
-			&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
-			&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
-			&account.LastAutoAttemptAt, &account.ProbeStage, &account.ProbeSuccessStreak,
-			&account.ProbeSuccessTarget, &account.ProbeStableStage, &account.ProbeRecoveryMode,
-			&account.ProbeLastIntervalSecs, &account.ProbeLastRecoverySecs,
-			&account.ProbeLastLimitStage, &account.CreatedAt, &account.UpdatedAt,
-		); err != nil {
+		if err := scanICloudHMESourceAccount(rows, &account); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME source account: %w", err)
 		}
 		accounts = append(accounts, account)
 	}
 	return accounts, rows.Err()
+}
+
+func (s *Store) getICloudHMESourceAccount(ctx context.Context, id int64) (ICloudHMESourceAccount, error) {
+	var account ICloudHMESourceAccount
+	err := scanICloudHMESourceAccount(s.pool.QueryRow(ctx, `
+		SELECT `+iCloudHMESourceAccountColumns+`
+		FROM icloud_hme_source_accounts
+		WHERE id = ?
+	`, id), &account)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ICloudHMESourceAccount{}, errors.New("iCloud 主账号不存在")
+	}
+	if err != nil {
+		return ICloudHMESourceAccount{}, fmt.Errorf("store: get iCloud HME source account: %w", err)
+	}
+	return account, nil
 }
 
 func (s *Store) CreateICloudHMESourceAccount(ctx context.Context, name, appleIDEmail, iCloudEmail, host string) (ICloudHMESourceAccount, error) {
@@ -256,36 +284,16 @@ func (s *Store) CreateICloudHMESourceAccount(ctx context.Context, name, appleIDE
 	}
 	host = normalizeICloudHMEHost(host)
 
-	var account ICloudHMESourceAccount
+	var id int64
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO icloud_hme_source_accounts (name, apple_id_email, icloud_email, host)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, name, apple_id_email, icloud_email, host,
-		          false, false, status, status_reason, alias_total,
-		          last_validated_at, last_synced_at, last_created_at, last_error_at,
-		          automation_enabled, next_create_at, cooldown_level,
-		          consecutive_limit_count, last_limit_at, last_auto_attempt_at,
-		          probe_stage, probe_success_streak, probe_success_target,
-		          probe_stable_stage, probe_recovery_mode,
-		          probe_last_interval_seconds, probe_last_recovery_seconds,
-		          probe_last_limit_stage,
-		          created_at, updated_at
-	`, name, appleIDEmail, iCloudEmail, host).Scan(
-		&account.ID, &account.Name, &account.AppleIDEmail, &account.ICloudEmail, &account.Host,
-		&account.CookieConfigured, &account.AppPasswordConfigured,
-		&account.Status, &account.StatusReason, &account.AliasTotal,
-		&account.LastValidatedAt, &account.LastSyncedAt, &account.LastCreatedAt,
-		&account.LastErrorAt, &account.AutomationEnabled, &account.NextCreateAt,
-		&account.CooldownLevel, &account.ConsecutiveLimitCount, &account.LastLimitAt,
-		&account.LastAutoAttemptAt, &account.ProbeStage, &account.ProbeSuccessStreak,
-		&account.ProbeSuccessTarget, &account.ProbeStableStage, &account.ProbeRecoveryMode,
-		&account.ProbeLastIntervalSecs, &account.ProbeLastRecoverySecs,
-		&account.ProbeLastLimitStage, &account.CreatedAt, &account.UpdatedAt,
-	)
+		VALUES (?, ?, ?, ?)
+		RETURNING id
+	`, name, appleIDEmail, iCloudEmail, host).Scan(&id)
 	if err != nil {
 		return ICloudHMESourceAccount{}, fmt.Errorf("store: create iCloud HME source account: %w", err)
 	}
-	return account, nil
+	return s.getICloudHMESourceAccount(ctx, id)
 }
 
 func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (ICloudHMESourceCredentials, error) {
@@ -304,7 +312,7 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		       probe_last_limit_stage,
 		       created_at, updated_at
 		FROM icloud_hme_source_accounts
-		WHERE id = $1
+		WHERE id = ?
 	`, id).Scan(
 		&credentials.ID, &credentials.Name, &credentials.AppleIDEmail, &credentials.ICloudEmail, &credentials.Host,
 		&encryptedCookies, &encryptedAppPassword,
@@ -317,7 +325,7 @@ func (s *Store) GetICloudHMESourceCredentials(ctx context.Context, id int64) (IC
 		&credentials.ProbeLastIntervalSecs, &credentials.ProbeLastRecoverySecs,
 		&credentials.ProbeLastLimitStage, &credentials.CreatedAt, &credentials.UpdatedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ICloudHMESourceCredentials{}, errors.New("iCloud 主账号不存在")
 	}
 	if err != nil {
@@ -351,12 +359,12 @@ func (s *Store) SaveICloudHMECookies(ctx context.Context, id int64, cookies map[
 	}
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET cookies_encrypted = $2, status = $3, status_reason = $4,
-		    automation_enabled = CASE WHEN $3 = 'active' THEN true ELSE automation_enabled END,
-		    next_create_at = CASE WHEN $3 = 'active' THEN COALESCE(next_create_at, now()) ELSE next_create_at END,
-		    last_validated_at = now(), updated_at = now()
-		WHERE id = $1
-	`, id, encrypted, status, sanitizeICloudHMEStoredMessage(reason))
+		SET cookies_encrypted = ?, status = ?, status_reason = ?,
+		    automation_enabled = CASE WHEN ? = 'active' THEN true ELSE automation_enabled END,
+		    next_create_at = CASE WHEN ? = 'active' THEN COALESCE(next_create_at, CURRENT_TIMESTAMP) ELSE next_create_at END,
+		    last_validated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, encrypted, status, sanitizeICloudHMEStoredMessage(reason), status, status, id)
 	if err != nil {
 		return fmt.Errorf("store: save iCloud HME cookies: %w", err)
 	}
@@ -377,9 +385,9 @@ func (s *Store) SaveICloudHMEAppPassword(ctx context.Context, id int64, password
 	}
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET app_password_encrypted = $2, updated_at = now()
-		WHERE id = $1
-	`, id, encrypted)
+		SET app_password_encrypted = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, encrypted, id)
 	if err != nil {
 		return fmt.Errorf("store: save iCloud HME app password: %w", err)
 	}
@@ -392,14 +400,14 @@ func (s *Store) SaveICloudHMEAppPassword(ctx context.Context, id int64, password
 func (s *Store) UpdateICloudHMESourceStatus(ctx context.Context, id int64, status, reason string, aliasTotal *int, validated bool) error {
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET status = $2,
-		    status_reason = $3,
-		    alias_total = COALESCE($4, alias_total),
-		    last_validated_at = CASE WHEN $5 THEN now() ELSE last_validated_at END,
-		    last_error_at = CASE WHEN $2 IN ('error', 'reauth_required') THEN now() ELSE last_error_at END,
-		    updated_at = now()
-		WHERE id = $1
-	`, id, status, sanitizeICloudHMEStoredMessage(reason), aliasTotal, validated)
+		SET status = ?,
+		    status_reason = ?,
+		    alias_total = COALESCE(?, alias_total),
+		    last_validated_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_validated_at END,
+		    last_error_at = CASE WHEN ? IN ('error', 'reauth_required') THEN CURRENT_TIMESTAMP ELSE last_error_at END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, status, sanitizeICloudHMEStoredMessage(reason), aliasTotal, validated, status, id)
 	if err != nil {
 		return fmt.Errorf("store: update iCloud HME source status: %w", err)
 	}
@@ -411,7 +419,7 @@ func (s *Store) UpdateICloudHMESourceStatus(ctx context.Context, id int64, statu
 
 func (s *Store) DeleteICloudHMESourceAccount(ctx context.Context, id int64) error {
 	var count int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = $1`, id).Scan(&count); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = ?`, id).Scan(&count); err != nil {
 		return fmt.Errorf("store: count iCloud HME aliases: %w", err)
 	}
 	if count > 0 {
@@ -419,14 +427,14 @@ func (s *Store) DeleteICloudHMESourceAccount(ctx context.Context, id int64) erro
 	}
 	if err := s.pool.QueryRow(ctx, `
 		SELECT count(*) FROM icloud_hme_create_jobs
-		WHERE source_account_id = $1 AND status IN ('pending', 'running', 'cancel_requested')
+		WHERE source_account_id = ? AND status IN ('pending', 'running', 'cancel_requested')
 	`, id).Scan(&count); err != nil {
 		return fmt.Errorf("store: count active iCloud HME jobs: %w", err)
 	}
 	if count > 0 {
 		return errors.New("主账号仍有进行中的创建任务，不能删除")
 	}
-	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_hme_source_accounts WHERE id = $1`, id)
+	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_hme_source_accounts WHERE id = ?`, id)
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud HME source account: %w", err)
 	}
@@ -503,7 +511,7 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 			continue
 		}
 		var existed bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM icloud_hme_aliases WHERE email = $1)`, email).Scan(&existed); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM icloud_hme_aliases WHERE email = ?)`, email).Scan(&existed); err != nil {
 			return 0, 0, fmt.Errorf("store: check iCloud HME alias: %w", err)
 		}
 		createdAt := input.CreatedAt
@@ -522,25 +530,26 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 			}
 			receiveKeyDigest = secure.ReceiveKeyDigest(s.tokenKey, receiveKey)
 		}
+		active := input.Active
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO icloud_hme_aliases (
 				email, source_account_id, anonymous_id, label, active, apple_status, last_synced_at,
 				group_id, receive_key_encrypted, receive_key_digest, receive_key_updated_at, created_at
 			)
-			VALUES ($1, $2, $3, $4, $5, CASE WHEN $5 THEN 'active' ELSE 'inactive' END, now(),
-			        $6, $7, $8, CASE WHEN $7 <> '' THEN now() ELSE NULL END, $9)
+			VALUES (?, ?, ?, ?, ?, CASE WHEN ? THEN 'active' ELSE 'inactive' END, CURRENT_TIMESTAMP,
+			        ?, ?, ?, CASE WHEN ? <> '' THEN CURRENT_TIMESTAMP ELSE NULL END, ?)
 			ON CONFLICT (email) DO UPDATE SET
-				source_account_id = EXCLUDED.source_account_id,
-				anonymous_id = EXCLUDED.anonymous_id,
-				label = EXCLUDED.label,
-				active = EXCLUDED.active,
-				apple_status = EXCLUDED.apple_status,
-				deactivated_at = CASE WHEN EXCLUDED.active THEN NULL ELSE COALESCE(icloud_hme_aliases.deactivated_at, now()) END,
-				deleted_at = CASE WHEN icloud_hme_aliases.apple_status = 'deleted' THEN icloud_hme_aliases.deleted_at ELSE NULL END,
-				last_synced_at = now(),
-				updated_at = now()
-		`, email, sourceID, strings.TrimSpace(input.AnonymousID), strings.TrimSpace(input.Label), input.Active,
-			groupID, receiveKeyEncrypted, receiveKeyDigest, createdAt); err != nil {
+				source_account_id = excluded.source_account_id,
+				anonymous_id = excluded.anonymous_id,
+				label = excluded.label,
+				active = excluded.active,
+				apple_status = excluded.apple_status,
+				deactivated_at = CASE WHEN excluded.active THEN NULL ELSE COALESCE(deactivated_at, CURRENT_TIMESTAMP) END,
+				deleted_at = CASE WHEN apple_status = 'deleted' THEN deleted_at ELSE NULL END,
+				last_synced_at = CURRENT_TIMESTAMP,
+				updated_at = CURRENT_TIMESTAMP
+		`, email, sourceID, strings.TrimSpace(input.AnonymousID), strings.TrimSpace(input.Label), active, active,
+			groupID, receiveKeyEncrypted, receiveKeyDigest, receiveKeyEncrypted, createdAt); err != nil {
 			return 0, 0, fmt.Errorf("store: upsert iCloud HME alias: %w", err)
 		}
 		syncedEmails = append(syncedEmails, email)
@@ -551,28 +560,29 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 		}
 	}
 	if markMissing {
+		args := append([]any{sourceID}, stringArgs(syncedEmails)...)
 		if _, err := tx.Exec(ctx, `
 			UPDATE icloud_hme_aliases
-			SET apple_status = 'unknown', active = false, last_synced_at = now(), updated_at = now()
-			WHERE source_account_id = $1
+			SET apple_status = 'unknown', active = false, last_synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+			WHERE source_account_id = ?
 			  AND apple_status <> 'deleted'
-			  AND NOT (lower(email) = ANY($2::text[]))
-		`, sourceID, syncedEmails); err != nil {
+			  AND lower(email) NOT IN (`+sqlInPlaceholders(len(syncedEmails))+`)
+		`, args...); err != nil {
 			return 0, 0, fmt.Errorf("store: mark missing iCloud HME aliases unknown: %w", err)
 		}
 	}
 	var total int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = $1`, sourceID).Scan(&total); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = ?`, sourceID).Scan(&total); err != nil {
 		return 0, 0, fmt.Errorf("store: count synced iCloud HME aliases: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET alias_total = $2, status = 'active', status_reason = '',
-		    last_validated_at = now(),
-		    last_synced_at = CASE WHEN $3 THEN now() ELSE last_synced_at END,
-		    updated_at = now()
-		WHERE id = $1
-	`, sourceID, total, markMissing); err != nil {
+		SET alias_total = ?, status = 'active', status_reason = '',
+		    last_validated_at = CURRENT_TIMESTAMP,
+		    last_synced_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_synced_at END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, total, markMissing, sourceID); err != nil {
 		return 0, 0, fmt.Errorf("store: update iCloud HME alias total: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -582,37 +592,19 @@ func (s *Store) saveICloudHMEAliases(ctx context.Context, sourceID int64, inputs
 }
 
 func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark string) (ICloudHMEAlias, error) {
-	var alias ICloudHMEAlias
-	err := s.pool.QueryRow(ctx, `
-		UPDATE icloud_hme_aliases a
-		SET remark = $2, updated_at = now()
-		FROM icloud_hme_source_accounts s, icloud_hme_groups g
-		WHERE a.source_account_id = s.id AND a.group_id = g.id AND lower(a.email) = $1
-		RETURNING a.email, a.source_account_id, s.name, a.anonymous_id, a.label, a.active,
-		          a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
-		          g.name, a.remark, s.app_password_encrypted <> '',
-		          a.receive_key_encrypted <> '', a.receive_key_updated_at,
-		          a.inventory_status, a.sold_at,
-		          a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
-		          a.gpt_last_scanned_at, a.gpt_scan_error,
-		          a.created_at, a.updated_at
-	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
-		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
-		&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
-		&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
-		&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
-		&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
-		&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
-		&alias.GPTLastScannedAt, &alias.GPTScanError,
-		&alias.CreatedAt, &alias.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")
-	}
+	normalized := normalizeEmail(email)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE icloud_hme_aliases
+		SET remark = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
+	`, strings.TrimSpace(remark), normalized)
 	if err != nil {
 		return ICloudHMEAlias{}, fmt.Errorf("store: update iCloud HME alias remark: %w", err)
 	}
-	return alias, nil
+	if tag.RowsAffected() == 0 {
+		return ICloudHMEAlias{}, errors.New("隐藏邮箱不存在")
+	}
+	return s.GetICloudHMEAlias(ctx, normalized)
 }
 
 func (s *Store) MoveICloudHMEAliasesToGroup(ctx context.Context, emails []string, group string) error {
@@ -624,11 +616,12 @@ func (s *Store) MoveICloudHMEAliasesToGroup(ctx context.Context, emails []string
 	if err != nil {
 		return err
 	}
+	args := append([]any{groupID}, stringArgs(normalizedEmails)...)
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_aliases
-		SET group_id = $1, updated_at = now()
-		WHERE lower(email) = ANY($2)
-	`, groupID, normalizedEmails)
+		SET group_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalizedEmails))+`)
+	`, args...)
 	if err != nil {
 		return fmt.Errorf("store: move iCloud HME aliases: %w", err)
 	}
@@ -639,25 +632,34 @@ func (s *Store) MoveICloudHMEAliasesToGroup(ctx context.Context, emails []string
 }
 
 func (s *Store) DeleteICloudHMEAlias(ctx context.Context, email string) error {
+	normalized := normalizeEmail(email)
 	var sourceID int64
-	err := s.pool.QueryRow(ctx, `DELETE FROM icloud_hme_aliases WHERE lower(email) = $1 RETURNING source_account_id`, normalizeEmail(email)).Scan(&sourceID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.pool.QueryRow(ctx, `SELECT source_account_id FROM icloud_hme_aliases WHERE lower(email) = ?`, normalized).Scan(&sourceID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("隐藏邮箱不存在")
 	}
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud HME alias: %w", err)
 	}
+	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_hme_aliases WHERE lower(email) = ?`, normalized)
+	if err != nil {
+		return fmt.Errorf("store: delete iCloud HME alias: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("隐藏邮箱不存在")
+	}
 	_, err = s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET alias_total = (SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = $1),
-		    updated_at = now()
-		WHERE id = $1
-	`, sourceID)
+		SET alias_total = (SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = ?),
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, sourceID, sourceID)
 	if err != nil {
 		return fmt.Errorf("store: update iCloud HME alias total after delete: %w", err)
 	}
 	return nil
 }
+
 func (s *Store) GetICloudHMEMailCredentials(ctx context.Context, email string) (ICloudHMEMailCredentials, error) {
 	var credentials ICloudHMEMailCredentials
 	var encrypted string
@@ -665,9 +667,9 @@ func (s *Store) GetICloudHMEMailCredentials(ctx context.Context, email string) (
 		SELECT a.email, s.icloud_email, s.app_password_encrypted
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
-		WHERE lower(a.email) = $1
+		WHERE lower(a.email) = ?
 	`, normalizeEmail(email)).Scan(&credentials.AliasEmail, &credentials.ICloudEmail, &encrypted)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ICloudHMEMailCredentials{}, errors.New("隐藏邮箱不存在")
 	}
 	if err != nil {
@@ -684,28 +686,32 @@ func (s *Store) GetICloudHMEMailCredentials(ctx context.Context, email string) (
 }
 
 func (s *Store) ensureICloudHMEGroup(ctx context.Context, name string) (int64, error) {
-	var id int64
-	err := s.pool.QueryRow(ctx, `
+	name = normalizeICloudHMEGroup(name)
+	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO icloud_hme_groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_hme_groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = icloud_hme_groups.updated_at
-		RETURNING id
-	`, normalizeICloudHMEGroup(name)).Scan(&id)
-	if err != nil {
+		VALUES (?, COALESCE((SELECT max(sort_order) + 1 FROM icloud_hme_groups), 0))
+		ON CONFLICT (name) DO NOTHING
+	`, name); err != nil {
+		return 0, fmt.Errorf("store: ensure iCloud HME group: %w", err)
+	}
+	var id int64
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM icloud_hme_groups WHERE name = ?`, name).Scan(&id); err != nil {
 		return 0, fmt.Errorf("store: ensure iCloud HME group: %w", err)
 	}
 	return id, nil
 }
 
-func ensureICloudHMEGroupTx(ctx context.Context, tx pgx.Tx, name string) (int64, error) {
-	var id int64
-	err := tx.QueryRow(ctx, `
+func ensureICloudHMEGroupTx(ctx context.Context, tx *dbTx, name string) (int64, error) {
+	name = normalizeICloudHMEGroup(name)
+	if _, err := tx.Exec(ctx, `
 		INSERT INTO icloud_hme_groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_hme_groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = icloud_hme_groups.updated_at
-		RETURNING id
-	`, normalizeICloudHMEGroup(name)).Scan(&id)
-	if err != nil {
+		VALUES (?, COALESCE((SELECT max(sort_order) + 1 FROM icloud_hme_groups), 0))
+		ON CONFLICT (name) DO NOTHING
+	`, name); err != nil {
+		return 0, fmt.Errorf("store: ensure iCloud HME group: %w", err)
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM icloud_hme_groups WHERE name = ?`, name).Scan(&id); err != nil {
 		return 0, fmt.Errorf("store: ensure iCloud HME group: %w", err)
 	}
 	return id, nil

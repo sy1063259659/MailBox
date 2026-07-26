@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { useAccountStore } from '@/stores/account'
 import { useMailStore } from '@/stores/mail'
+import { confirmAction } from '@/utils/confirm'
 
 const DEFAULT_GROUP = '默认分组'
 const visible = defineModel<boolean>({ required: true })
@@ -29,17 +30,24 @@ watch(
   (isVisible) => {
     if (isVisible) {
       selectedGroup.value = accountStore.selectedGroup || DEFAULT_GROUP
+      // Clear leftovers so a previous failure's error list and pasted text do
+      // not reappear and get imported twice.
+      text.value = ''
+      lastResult.value = undefined
     }
   },
 )
 
 async function submit(mode: 'append' | 'overwrite') {
   if (mode === 'overwrite') {
-    await ElMessageBox.confirm('覆盖导入会先清空数据库中的邮箱账号，并清空本地邮件缓存，再导入当前内容。', '覆盖导入', {
-      confirmButtonText: '覆盖导入',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    const confirmed = await confirmAction(
+      '覆盖导入会先清空数据库中的邮箱账号，并清空本地邮件缓存，再导入当前内容。',
+      '覆盖导入',
+      { confirmButtonText: '覆盖导入', cancelButtonText: '取消', type: 'warning' },
+    )
+    if (!confirmed) {
+      return
+    }
   }
 
   importing.value = true
@@ -58,6 +66,8 @@ async function submit(mode: 'append' | 'overwrite') {
       text.value = ''
       visible.value = false
     }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '导入账号失败')
   } finally {
     importing.value = false
   }
@@ -86,7 +96,9 @@ async function readDroppedFile(event: DragEvent) {
 }
 
 async function readImportFile(file: File) {
-  if (!file.name.toLowerCase().endsWith('.txt') && file.type && file.type !== 'text/plain') {
+  // A .txt extension is the primary signal; file.type is empty for many files,
+  // so it must not be allowed to short-circuit the check.
+  if (!file.name.toLowerCase().endsWith('.txt') && file.type !== 'text/plain') {
     ElMessage.warning('请导入 TXT 文本文件')
     return
   }

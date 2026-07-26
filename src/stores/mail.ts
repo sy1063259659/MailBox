@@ -78,6 +78,11 @@ interface MailState {
   batchSyncSuccess: number
   batchSyncFailed: number
   batchSyncResults: BatchSyncResult[]
+  // Monotonic counters used to discard results of superseded requests. A filter
+  // change can start a second load before the first one resolves, and without
+  // these the slower (older) response would overwrite the newer state.
+  loadSeq: number
+  bodySeq: number
 }
 
 const createSyncKey = (accountEmail: string, folder: MailFolder): SyncKey =>
@@ -174,6 +179,8 @@ export const useMailStore = defineStore('mail', {
     batchSyncSuccess: 0,
     batchSyncFailed: 0,
     batchSyncResults: [],
+    loadSeq: 0,
+    bodySeq: 0,
   }),
 
   getters: {
@@ -190,6 +197,7 @@ export const useMailStore = defineStore('mail', {
 
   actions: {
     async loadMessages(): Promise<void> {
+      const seq = ++this.loadSeq
       this.loading = true
       this.errorMessage = undefined
 
@@ -203,11 +211,14 @@ export const useMailStore = defineStore('mail', {
         }
 
         if (this.filter.accountEmail) {
-          this.messages = await filterMessages({
+          const messages = await filterMessages({
             ...messageFilter,
             accountEmail: this.filter.accountEmail,
           })
-          this.messages.sort(sortByReceivedAtDesc)
+          if (seq !== this.loadSeq) {
+            return
+          }
+          this.messages = messages.sort(sortByReceivedAtDesc)
           return
         }
 
@@ -220,14 +231,22 @@ export const useMailStore = defineStore('mail', {
               }),
             ),
           )
+          if (seq !== this.loadSeq) {
+            return
+          }
           this.messages = messageLists.flat().sort(sortByReceivedAtDesc)
           return
         }
 
-        this.messages = await filterMessages(messageFilter)
-        this.messages.sort(sortByReceivedAtDesc)
+        const messages = await filterMessages(messageFilter)
+        if (seq !== this.loadSeq) {
+          return
+        }
+        this.messages = messages.sort(sortByReceivedAtDesc)
       } finally {
-        this.loading = false
+        if (seq === this.loadSeq) {
+          this.loading = false
+        }
       }
     },
 
@@ -255,10 +274,9 @@ export const useMailStore = defineStore('mail', {
       this.viewingAccountEmail = accountEmail
       await this.loadMessages()
 
-      if (this.messages.length > 0 && (!this.selectedMessage || this.selectedMessage.accountEmail !== accountEmail)) {
-        void this.selectMessage(this.messages[0])
-      }
-
+      // Only the post-sync selection is awaited. Firing a pre-sync selection
+      // here as well would race with it and could leave the reader showing the
+      // older message's body under the newer message's header.
       const result = await this.syncAccountFolder(accountEmail, 'inbox')
       const latestMessage = this.messages[0]
       if (latestMessage) {
@@ -499,11 +517,15 @@ export const useMailStore = defineStore('mail', {
         return
       }
 
+      const seq = ++this.bodySeq
       this.bodyLoading = true
       this.errorMessage = undefined
 
       try {
         const cachedBody = await getMessageBody(targetMessage.accountEmail, targetMessage.messageId)
+        if (seq !== this.bodySeq) {
+          return
+        }
 
         if (cachedBody?.metadata?.parserVersion === BODY_CACHE_VERSION) {
           this.selectedBody = cachedBody
@@ -535,6 +557,11 @@ export const useMailStore = defineStore('mail', {
         }
         await saveMessageBody(body)
         await upsertMessage(updatedMessage)
+        // The body is cached regardless, but a superseded request must not
+        // replace what the user is currently looking at.
+        if (seq !== this.bodySeq) {
+          return
+        }
 
         this.selectedBody = body
         this.selectedMessage = updatedMessage
@@ -547,15 +574,27 @@ export const useMailStore = defineStore('mail', {
         )
         await useAccountStore().loadAccounts()
       } catch (error) {
-        this.errorMessage = getErrorMessage(error)
+        if (seq === this.bodySeq) {
+          this.errorMessage = getErrorMessage(error)
+        }
         await useAccountStore().loadAccounts()
       } finally {
-        this.bodyLoading = false
+        if (seq === this.bodySeq) {
+          this.bodyLoading = false
+        }
       }
     },
   },
 })
 
+// receivedAt comes from IMAP INTERNALDATE / RFC822 Date and keeps the origin
+// timezone offset, so it must be compared as an instant. A string compare would
+// order "…+08:00" before "…Z" for the same moment.
 function sortByReceivedAtDesc(left: MailMessage, right: MailMessage): number {
-  return right.receivedAt.localeCompare(left.receivedAt)
+  return receivedAtValue(right) - receivedAtValue(left)
+}
+
+export function receivedAtValue(message: { receivedAt?: string }): number {
+  const value = Date.parse(message.receivedAt ?? '')
+  return Number.isNaN(value) ? 0 : value
 }

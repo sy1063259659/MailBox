@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, More, Refresh, Setting, View } from '@element-plus/icons-vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
@@ -21,10 +21,9 @@ import {
   getCachedICloudHMEBody, listCachedICloudHMEMessages,
 } from '@/services/iCloudHmeStorage'
 import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
+import { confirmAction, promptForValue } from '@/utils/confirm'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
-
-const ICLOUD_HME_PUBLIC_MAIL_ORIGIN = 'https://inbox-api.xyue.online'
 
 const store = useICloudHmeStore()
 const keyword = ref('')
@@ -54,6 +53,25 @@ const automationForm = ref({
   targetAvailableCount: 20,
   targetGroup: ICLOUD_HME_DEFAULT_GROUP,
   labelPrefix: 'MailBox',
+  publicMailOrigin: '',
+})
+// Origin used when building the public receive URLs handed to buyers. It is
+// configured in the settings dialog and stored server-side so every operator
+// hands out the same host; empty falls back to whatever origin serves this page.
+const publicMailOrigin = computed(() => automation.value?.publicMailOrigin || window.location.origin)
+const currentOriginHint = window.location.origin
+// Mirrors the server-side normalization in store.NormalizePublicMailOrigin so the
+// preview shows what buyers will actually receive before the value is saved.
+const receiveURLPreview = computed(() => {
+  const raw = automationForm.value.publicMailOrigin.trim()
+  const origin = raw ? (raw.includes('://') ? raw : 'https://' + raw) : window.location.origin
+  try {
+    const parsed = new URL(origin)
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '域名格式不正确'
+    return `${parsed.protocol}//${parsed.host}/api/public/icloud-hme/mail/latest?address=…&key=…`
+  } catch {
+    return '域名格式不正确'
+  }
 })
 
 const sourceDialogVisible = ref(false)
@@ -72,6 +90,14 @@ const loginStep = ref<'password' | 'otp'>('password')
 const jobsDialogVisible = ref(false)
 const selectedJob = ref<ICloudHMEJob>()
 const jobActionId = ref<number>()
+const jobCreating = ref(false)
+const jobForm = ref<{ mode: 'pool' | 'fixed'; sourceAccountId?: number; labelPrefix: string; group: string; count: number }>({
+  mode: 'pool',
+  sourceAccountId: undefined,
+  labelPrefix: 'MailBox',
+  group: ICLOUD_HME_DEFAULT_GROUP,
+  count: 5,
+})
 const moveDialogVisible = ref(false)
 const targetGroup = ref(ICLOUD_HME_DEFAULT_GROUP)
 
@@ -86,6 +112,12 @@ const mailNextCursor = ref('')
 const selectedMail = ref<ICloudHMEMailSummary>()
 const mailDetail = ref<ICloudHMEMail>()
 const verificationCode = ref('')
+// Request sequence guards: IMAP calls take seconds, so a user can close the
+// dialog and open another alias while a request is still in flight. Without
+// these guards a stale response would be cached under, and rendered for, the
+// newly selected alias.
+const mailListRequestSeq = ref(0)
+const mailDetailRequestSeq = ref(0)
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -161,6 +193,7 @@ function openAutomationSettings() {
     targetAvailableCount: current?.targetAvailableCount ?? 20,
     targetGroup: current?.targetGroup || ICLOUD_HME_DEFAULT_GROUP,
     labelPrefix: current?.labelPrefix || 'MailBox',
+    publicMailOrigin: current?.publicMailOrigin ?? '',
   }
   automationDialogVisible.value = true
 }
@@ -258,8 +291,19 @@ function jobStatusText(status: ICloudHMEJob['status']) { return { pending: '等�
 function jobStatusType(status: ICloudHMEJob['status']) { return status === 'completed' ? 'success' : ['running', 'pending'].includes(status) ? 'primary' : status === 'partial_failed' ? 'danger' : 'info' }
 function jobProgress(job: ICloudHMEJob) { return Math.round(((job.completedCount + job.failedCount + job.cancelledCount) / Math.max(job.requestedCount, 1)) * 100) }
 function formatAddress(addresses: Array<{ name?: string; email?: string }>) { return addresses.map((item) => item.name ? item.name + ' <' + item.email + '>' : item.email).filter(Boolean).join(', ') || '未知发件人' }
+// navigator.clipboard rejects outside secure contexts and when permission is
+// denied, so every call has to report the failure instead of throwing.
+async function writeClipboard(value: string, failureMessage: string) {
+  try {
+    await navigator.clipboard.writeText(value)
+    return true
+  } catch {
+    ElMessage.error(failureMessage + '失败，请检查浏览器剪贴板权限')
+    return false
+  }
+}
 async function copyValue(value: string, label = '邮箱') {
-  await navigator.clipboard.writeText(value)
+  if (!await writeClipboard(value, '复制' + label)) return
   copiedValues.value = new Set(copiedValues.value).add(value)
   ElMessage.success(label + '已复制')
   window.setTimeout(() => { const next = new Set(copiedValues.value); next.delete(value); copiedValues.value = next }, 1200)
@@ -267,12 +311,24 @@ async function copyValue(value: string, label = '邮箱') {
 async function copySelected() {
   const targets = selectedRows.value.length ? selectedRows.value : filteredAliases.value
   if (!targets.length) return ElMessage.warning('没有可复制的隐藏邮箱')
-  await navigator.clipboard.writeText(targets.map((item) => item.email).join('\n'))
+  if (!await writeClipboard(targets.map((item) => item.email).join('\n'), '复制隐藏邮箱')) return
   ElMessage.success('已复制 ' + targets.length + ' 个隐藏邮箱')
+}
+// Firefox only honours programmatic clicks on anchors attached to the document,
+// and revoking the object URL synchronously can truncate the download.
+function downloadTextFile(content: string, filename: string, mime: string) {
+  const url = URL.createObjectURL(new Blob([content], { type: mime }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 function receiveMailURL(kind: 'latest' | 'history', record = receiveKeyRecord.value) {
   if (!record) return ''
-  const url = new URL('/api/public/icloud-hme/mail/' + kind, ICLOUD_HME_PUBLIC_MAIL_ORIGIN)
+  const url = new URL('/api/public/icloud-hme/mail/' + kind, publicMailOrigin.value)
   url.searchParams.set('address', record.email)
   url.searchParams.set('key', record.key)
   if (kind === 'history') url.searchParams.set('limit', '20')
@@ -300,7 +356,7 @@ async function copyLatestReceiveURLs(format: 'url' | 'email-url' = 'url') {
       const url = receiveMailURL('latest', item)
       return format === 'email-url' ? item.email + '---' + url : url
     }).join('\n')
-    await navigator.clipboard.writeText(content)
+    if (!await writeClipboard(content, format === 'email-url' ? '复制邮箱和取件 URL' : '复制最新取件 URL')) return
     const skipped = requested.length - records.length
     const label = format === 'email-url' ? '条邮箱和取件 URL' : '个最新取件 URL'
     ElMessage.success('已复制 ' + records.length + ' ' + label + (skipped ? '，跳过 ' + skipped + ' 个不可用邮箱' : ''))
@@ -347,7 +403,7 @@ function clearReceiveKey() { receiveKeyRecord.value = undefined }
 async function resetReceiveKey() {
   const current = receiveKeyRecord.value
   if (!current) return
-  await ElMessageBox.confirm('重置后旧密钥和旧收件链接会立即失效。确定继续？', '重置收件密钥', { type: 'warning' })
+  if (!await confirmAction('重置后旧密钥和旧收件链接会立即失效。确定继续？', '重置收件密钥')) return
   receiveKeyBusy.value = true
   try {
     receiveKeyRecord.value = await resetICloudHMEReceiveKey(current.email)
@@ -367,12 +423,11 @@ async function exportReceiveKeys() {
     const records = await exportICloudHMEReceiveKeys(targets.map((item) => item.email))
     if (!records.length) return ElMessage.warning('目标隐藏邮箱尚未配置收件密钥')
     const content = records.map((item) => item.email + '----' + item.key).join('\n')
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
-    const link = document.createElement('a')
-    link.href = URL.createObjectURL(blob)
-    link.download = 'icloud-hme-receive-keys-' + new Date().toISOString().slice(0, 10) + '.txt'
-    link.click()
-    URL.revokeObjectURL(link.href)
+    downloadTextFile(
+      content,
+      'icloud-hme-receive-keys-' + new Date().toISOString().slice(0, 10) + '.txt',
+      'text/plain;charset=utf-8',
+    )
     const skipped = targets.length - records.length
     ElMessage.success('已导出 ' + records.length + ' 个收件密钥' + (skipped ? '，跳过 ' + skipped + ' 个未配置账号' : ''))
   } catch (error) { showError(error, '导出收件密钥失败') } finally { receiveKeyBusy.value = false }
@@ -456,9 +511,37 @@ async function syncAllSources() {
   } catch (error) { showError(error, '批量同步失败') } finally { sourceBatchBusy.value = false }
 }
 async function deleteSource(source: ICloudHMESourceAccount) {
-  await ElMessageBox.confirm('确定删除主账号“' + source.name + '”？只有没有隐藏邮箱时才能删除。', '删除主账号', { type: 'warning' })
+  if (!await confirmAction('确定删除主账号“' + source.name + '”？只有没有隐藏邮箱时才能删除。', '删除主账号')) return
   try { await store.deleteSource(source.id); ElMessage.success('主账号已删除') }
   catch (error) { showError(error, '删除主账号失败') }
+}
+function openJobs() {
+  jobForm.value = {
+    mode: 'pool',
+    sourceAccountId: undefined,
+    labelPrefix: automation.value?.labelPrefix || 'MailBox',
+    group: store.selectedGroup || automation.value?.targetGroup || ICLOUD_HME_DEFAULT_GROUP,
+    count: 5,
+  }
+  jobsDialogVisible.value = true
+  void store.loadJobs().catch((error) => showError(error, '加载任务列表失败'))
+}
+async function submitJob() {
+  const form = jobForm.value
+  if (!form.labelPrefix.trim()) return ElMessage.warning('请填写 Apple 标签前缀')
+  if (form.mode === 'fixed' && !form.sourceAccountId) return ElMessage.warning('固定主账号模式需要选择主账号')
+  jobCreating.value = true
+  try {
+    const job = await store.createJob({
+      mode: form.mode,
+      sourceAccountId: form.mode === 'fixed' ? form.sourceAccountId : undefined,
+      labelPrefix: form.labelPrefix.trim(),
+      group: form.group || ICLOUD_HME_DEFAULT_GROUP,
+      count: form.count,
+    })
+    await selectJob(job)
+    ElMessage.success('已创建任务，共 ' + job.requestedCount + ' 个隐藏邮箱')
+  } catch (error) { showError(error, '创建任务失败') } finally { jobCreating.value = false }
 }
 async function cancelJob(job: ICloudHMEJob) {
   jobActionId.value = job.id
@@ -471,12 +554,13 @@ async function retryJob(job: ICloudHMEJob) {
   catch (error) { showError(error, '重试任务失败') } finally { jobActionId.value = undefined }
 }
 async function editRemark(alias: ICloudHMEAlias) {
-  const result = await ElMessageBox.prompt('备注最多 500 个字符，留空表示清除。', '编辑备注 · ' + alias.email, {
+  const value = await promptForValue('备注最多 500 个字符，留空表示清除。', '编辑备注 · ' + alias.email, {
     inputValue: alias.remark,
     inputType: 'textarea',
-    inputValidator: (value) => Array.from(value.trim()).length <= 500 || '备注最多 500 个字符',
+    inputValidator: (input: string) => Array.from(input.trim()).length <= 500 || '备注最多 500 个字符',
   })
-  try { await store.updateRemark(alias.email, result.value); ElMessage.success('备注已保存') }
+  if (value === undefined) return
+  try { await store.updateRemark(alias.email, value); ElMessage.success('备注已保存') }
   catch (error) { showError(error, '保存备注失败') }
 }
 function openMove() {
@@ -496,7 +580,7 @@ async function submitMove() {
 async function lifecycleSelected(action: 'deactivate' | 'reactivate', rows = selectedRows.value) {
   if (!rows.length) return ElMessage.warning('请先勾选隐藏邮箱')
   const actionText = action === 'deactivate' ? '停用' : '恢复'
-  await ElMessageBox.confirm('确定在 Apple 侧' + actionText + ' ' + rows.length + ' 个隐藏邮箱？', actionText + '隐藏邮箱', { type: 'warning' })
+  if (!await confirmAction('确定在 Apple 侧' + actionText + ' ' + rows.length + ' 个隐藏邮箱？', actionText + '隐藏邮箱')) return
   busy.value = true
   try {
     const results = await updateICloudHMEAliasLifecycle(rows.map((item) => item.email), action)
@@ -506,20 +590,21 @@ async function lifecycleSelected(action: 'deactivate' | 'reactivate', rows = sel
   } catch (error) { showError(error, actionText + '失败') } finally { busy.value = false }
 }
 async function permanentlyDeleteAlias(alias: ICloudHMEAlias) {
-  const result = await ElMessageBox.prompt(
+  const confirmEmail = await promptForValue(
     '该操作不可恢复。请输入完整隐藏邮箱确认：' + alias.email,
     'Apple 永久删除',
-    { type: 'warning', inputValidator: (value) => value.trim().toLowerCase() === alias.email.toLowerCase() || '输入的邮箱不匹配' },
+    { type: 'warning', inputValidator: (input: string) => input.trim().toLowerCase() === alias.email.toLowerCase() || '输入的邮箱不匹配' },
   )
+  if (confirmEmail === undefined) return
   busy.value = true
   try {
-    await permanentlyDeleteICloudHMEAlias(alias.email, result.value)
+    await permanentlyDeleteICloudHMEAlias(alias.email, confirmEmail)
     await store.load()
     ElMessage.success('Apple 侧隐藏邮箱已永久删除，审计记录已保留')
   } catch (error) { showError(error, '永久删除失败') } finally { busy.value = false }
 }
 async function deleteAlias(alias: ICloudHMEAlias) {
-  await ElMessageBox.confirm('只删除本地记录，不会操作 Apple 侧别名。确定删除 ' + alias.email + '？', '删除本地记录', { type: 'warning' })
+  if (!await confirmAction('只删除本地记录，不会操作 Apple 侧别名。确定删除 ' + alias.email + '？', '删除本地记录')) return
   try {
     await store.deleteAlias(alias.email)
     await deleteICloudHMECacheForAlias(alias.email)
@@ -528,7 +613,7 @@ async function deleteAlias(alias: ICloudHMEAlias) {
 }
 async function deleteSelected() {
   if (!selectedRows.value.length) return ElMessage.warning('请先勾选隐藏邮箱')
-  await ElMessageBox.confirm('只删除 ' + selectedRows.value.length + ' 条本地记录，不影响 Apple 侧别名。', '批量删除', { type: 'warning' })
+  if (!await confirmAction('只删除 ' + selectedRows.value.length + ' 条本地记录，不影响 Apple 侧别名。', '批量删除')) return
   busy.value = true
   try {
     for (const alias of selectedRows.value) {
@@ -565,12 +650,11 @@ function exportAliases(format: 'txt' | 'csv') {
     ? targets.map((alias) => fields(alias).join('----')).join('\n')
     : '\uFEFF' + [['隐藏邮箱', '主账号', 'Apple标签', '分组', '状态', '备注'], ...targets.map(fields)]
       .map((row) => row.map((value) => '"' + value.replaceAll('"', '""') + '"').join(',')).join('\n')
-  const blob = new Blob([content], { type: format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8' })
-  const link = document.createElement('a')
-  link.href = URL.createObjectURL(blob)
-  link.download = 'icloud-hme-' + new Date().toISOString().slice(0, 10) + '.' + format
-  link.click()
-  URL.revokeObjectURL(link.href)
+  downloadTextFile(
+    content,
+    'icloud-hme-' + new Date().toISOString().slice(0, 10) + '.' + format,
+    format === 'csv' ? 'text/csv;charset=utf-8' : 'text/plain;charset=utf-8',
+  )
 }
 async function openMail(alias: ICloudHMEAlias) {
   if (!alias.mailReady) {
@@ -583,6 +667,11 @@ async function openMail(alias: ICloudHMEAlias) {
     }
     return
   }
+  // Invalidate any in-flight request from a previously opened alias.
+  mailListRequestSeq.value += 1
+  mailDetailRequestSeq.value += 1
+  mailListLoading.value = false
+  mailBodyLoading.value = false
   mailAlias.value = alias
   mailVisible.value = true
   mailMessages.value = await listCachedICloudHMEMessages(alias.email)
@@ -593,6 +682,19 @@ async function openMail(alias: ICloudHMEAlias) {
   verificationCode.value = ''
   if (selectedMail.value) await selectMail(selectedMail.value, true)
   await refreshMailList()
+}
+function resetMailDialog() {
+  mailListRequestSeq.value += 1
+  mailDetailRequestSeq.value += 1
+  mailListLoading.value = false
+  mailBodyLoading.value = false
+  mailAlias.value = undefined
+  mailMessages.value = []
+  mailNextCursor.value = ''
+  mailKeyword.value = ''
+  selectedMail.value = undefined
+  mailDetail.value = undefined
+  verificationCode.value = ''
 }
 async function openSelectedMail() {
   if (selectedRows.value.length !== 1) return ElMessage.warning('请选择一个隐藏邮箱查看邮件')
@@ -608,29 +710,45 @@ async function openMailFromReceiveKey() {
 }
 async function refreshMailList(loadMore = false) {
   if (!mailAlias.value || mailListLoading.value) return
+  // Capture the alias up front: every write below must target this address even
+  // if the user switches aliases while the IMAP request is in flight.
+  const aliasEmail = mailAlias.value.email
+  const requestSeq = ++mailListRequestSeq.value
+  const stale = () => requestSeq !== mailListRequestSeq.value || aliasEmail !== mailAlias.value?.email
   mailListLoading.value = true
   try {
-    const result = await listICloudHMEMessages(mailAlias.value.email, 20, loadMore ? mailNextCursor.value : '')
-    await cacheICloudHMEMessages(mailAlias.value.email, result.messages)
+    const result = await listICloudHMEMessages(aliasEmail, 20, loadMore ? mailNextCursor.value : '')
+    if (stale()) return
+    await cacheICloudHMEMessages(aliasEmail, result.messages)
+    if (stale()) return
     mailNextCursor.value = result.nextCursor ?? ''
     if (loadMore) {
       const merged = new Map(mailMessages.value.map((message) => [message.id, message]))
       result.messages.forEach((message) => merged.set(message.id, message))
       mailMessages.value = Array.from(merged.values()).sort((left, right) => Date.parse(right.receivedAt) - Date.parse(left.receivedAt))
     } else {
-      mailMessages.value = await listCachedICloudHMEMessages(mailAlias.value.email, mailKeyword.value)
+      const cached = await listCachedICloudHMEMessages(aliasEmail, mailKeyword.value)
+      if (stale()) return
+      mailMessages.value = cached
     }
     if (!selectedMail.value && mailMessages.value[0]) await selectMail(mailMessages.value[0], true)
   } catch (error) {
+    if (stale()) return
     mailMessages.value.length ? ElMessage.warning('在线刷新失败，当前显示本地缓存') : showError(error, '获取邮件列表失败')
-  } finally { mailListLoading.value = false }
+  } finally {
+    if (requestSeq === mailListRequestSeq.value) mailListLoading.value = false
+  }
 }
 async function selectMail(summary: ICloudHMEMailSummary, cacheFirst = false) {
   if (!mailAlias.value) return
+  const aliasEmail = mailAlias.value.email
+  const requestSeq = ++mailDetailRequestSeq.value
+  const stale = () => requestSeq !== mailDetailRequestSeq.value || aliasEmail !== mailAlias.value?.email
   selectedMail.value = summary
   mailDetail.value = undefined
   verificationCode.value = summary.verificationCode ?? ''
-  const cached = await getCachedICloudHMEBody(mailAlias.value.email, summary.id)
+  const cached = await getCachedICloudHMEBody(aliasEmail, summary.id)
+  if (stale()) return
   if (cached) {
     mailDetail.value = cached.message
     verificationCode.value = cached.verificationCode ?? verificationCode.value
@@ -638,18 +756,31 @@ async function selectMail(summary: ICloudHMEMailSummary, cacheFirst = false) {
   }
   mailBodyLoading.value = true
   try {
-    const result = await getICloudHMEMessage(mailAlias.value.email, summary.id)
+    const result = await getICloudHMEMessage(aliasEmail, summary.id)
+    if (stale()) return
     mailDetail.value = result.message
     verificationCode.value = result.verificationCode ?? ''
-    await cacheICloudHMEBody(mailAlias.value.email, result.message, result.verificationCode)
-    mailMessages.value = await listCachedICloudHMEMessages(mailAlias.value.email, mailKeyword.value)
-  } catch (error) { if (!cached) showError(error, '获取邮件正文失败') } finally { mailBodyLoading.value = false }
+    await cacheICloudHMEBody(aliasEmail, result.message, result.verificationCode)
+    if (stale()) return
+    const list = await listCachedICloudHMEMessages(aliasEmail, mailKeyword.value)
+    if (stale()) return
+    mailMessages.value = list
+  } catch (error) {
+    if (stale()) return
+    if (!cached) showError(error, '获取邮件正文失败')
+  } finally {
+    if (requestSeq === mailDetailRequestSeq.value) mailBodyLoading.value = false
+  }
 }
 async function refreshCode() {
   if (!mailAlias.value || mailCodeLoading.value) return
+  const aliasEmail = mailAlias.value.email
+  const requestSeq = ++mailDetailRequestSeq.value
+  const stale = () => requestSeq !== mailDetailRequestSeq.value || aliasEmail !== mailAlias.value?.email
   mailCodeLoading.value = true
   try {
-    const result = await refreshICloudHMECode(mailAlias.value.email)
+    const result = await refreshICloudHMECode(aliasEmail)
+    if (stale()) return
     verificationCode.value = result.code ?? ''
     if (result.message) {
       mailDetail.value = result.message
@@ -658,23 +789,29 @@ async function refreshCode() {
         to: result.message.to, cc: result.message.cc, receivedAt: result.message.receivedAt,
         isRead: result.message.isRead, hasAttachments: false, verificationCode: result.code,
       }
-      await cacheICloudHMEBody(mailAlias.value.email, result.message, result.code)
-      mailMessages.value = await listCachedICloudHMEMessages(mailAlias.value.email, mailKeyword.value)
+      await cacheICloudHMEBody(aliasEmail, result.message, result.code)
+      if (stale()) return
+      const list = await listCachedICloudHMEMessages(aliasEmail, mailKeyword.value)
+      if (stale()) return
+      mailMessages.value = list
     }
     ElMessage.success(result.code ? '已获取最新验证码' : '最近邮件中未识别到验证码')
-  } catch (error) { showError(error, '刷新验证码失败') } finally { mailCodeLoading.value = false }
+  } catch (error) {
+    if (stale()) return
+    showError(error, '刷新验证码失败')
+  } finally { mailCodeLoading.value = false }
 }
 async function renameGroup(group: ICloudHMEGroup) {
-  const result = await ElMessageBox.prompt('请输入新的分组名称', '重命名隐藏邮箱分组', {
-    inputValue: group.name, inputValidator: (value) => Boolean(value.trim()) || '分组名称不能为空',
+  const value = await promptForValue('请输入新的分组名称', '重命名隐藏邮箱分组', {
+    inputValue: group.name, inputValidator: (input: string) => Boolean(input.trim()) || '分组名称不能为空',
   })
-  if (result.value.trim() === group.name) return
+  if (value === undefined || value.trim() === group.name) return
   renamingGroupId.value = group.id
-  try { await store.renameGroup(group.id, group.name, result.value.trim()); ElMessage.success('分组已重命名') }
+  try { await store.renameGroup(group.id, group.name, value.trim()); ElMessage.success('分组已重命名') }
   catch (error) { showError(error, '重命名分组失败') } finally { renamingGroupId.value = undefined }
 }
 async function deleteGroup(group: ICloudHMEGroup) {
-  await ElMessageBox.confirm('确定删除空分组“' + group.name + '”？', '删除隐藏邮箱分组', { type: 'warning' })
+  if (!await confirmAction('确定删除空分组“' + group.name + '”？', '删除隐藏邮箱分组')) return
   deletingGroupId.value = group.id
   try { await store.deleteGroup(group.id, group.name); ElMessage.success('分组已删除') }
   catch (error) { showError(error, '删除分组失败') } finally { deletingGroupId.value = undefined }
@@ -740,6 +877,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         </div>
         <div class="faka-action-row hme-action-row">
           <el-button :icon="Setting" @click="sourceDialogVisible = true">主账号管理</el-button>
+          <el-button type="primary" :icon="Files" @click="openJobs">创建任务</el-button>
           <el-button type="primary" :icon="Setting" @click="openAutomationSettings">自动补货设置</el-button>
           <el-button :icon="CopyDocument" @click="copySelected">复制邮箱</el-button>
           <el-button type="primary" plain :icon="Link" :loading="receiveKeyBusy" :disabled="!selectedRows.length && !filteredAliases.length" @click="copyLatestReceiveURLs">复制最新取件 URL</el-button>
@@ -801,13 +939,20 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <div class="faka-pagination"><span>Total {{ filteredAliases.length }}</span><el-pagination v-model:current-page="page" v-model:page-size="pageSize" size="small" layout="sizes, prev, pager, next" :total="filteredAliases.length" :page-sizes="[20, 50, 100]" /></div>
       </section>
     </main>
-    <el-dialog v-model="automationDialogVisible" title="自动补货设置" width="560px">
+    <el-dialog v-model="automationDialogVisible" title="自动补货与取件设置" width="560px">
       <el-form label-position="top">
         <el-alert title="系统从 5–7 分钟开始探测；连续成功后逐步缩短到 3–5、2–3 分钟。遇到 Apple 限流后只做单次探测，按 5/8/12/20/30/45 分钟逐级等待。" type="info" :closable="false" />
         <el-form-item label="自动补货"><el-switch v-model="automationForm.enabled" active-text="启用" inactive-text="暂停" /></el-form-item>
         <el-form-item label="目标可售库存"><el-input-number v-model="automationForm.targetAvailableCount" :min="0" :max="10000" /></el-form-item>
         <el-form-item label="新邮箱分组"><el-select v-model="automationForm.targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select></el-form-item>
         <el-form-item label="Apple 标签前缀"><el-input v-model="automationForm.labelPrefix" maxlength="80" show-word-limit /></el-form-item>
+        <el-form-item label="取件 URL 域名">
+          <el-input v-model="automationForm.publicMailOrigin" maxlength="255" placeholder="留空则使用当前访问域名" clearable />
+          <small class="form-hint">交付给买家的取件链接使用这个域名。留空自动使用当前访问的域名（{{ currentOriginHint }}）；只填域名时默认按 https 处理。</small>
+        </el-form-item>
+        <el-form-item label="取件 URL 预览">
+          <code class="origin-preview">{{ receiveURLPreview }}</code>
+        </el-form-item>
       </el-form>
       <template #footer><el-button @click="automationDialogVisible = false">取消</el-button><el-button type="primary" :loading="automationSaving" @click="saveAutomation">保存</el-button></template>
     </el-dialog>
@@ -873,6 +1018,22 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
     </el-dialog>
 
     <el-dialog v-model="jobsDialogVisible" title="隐藏邮箱创建任务" width="1000px" class="hme-jobs-dialog">
+      <div class="hme-job-create">
+        <el-select v-model="jobForm.mode" style="width:150px">
+          <el-option label="健康账号池" value="pool" />
+          <el-option label="固定主账号" value="fixed" />
+        </el-select>
+        <el-select v-if="jobForm.mode === 'fixed'" v-model="jobForm.sourceAccountId" placeholder="选择主账号" style="width:200px">
+          <el-option v-for="source in store.sources" :key="source.id" :label="source.name" :value="source.id" />
+        </el-select>
+        <el-input v-model="jobForm.labelPrefix" placeholder="Apple 标签前缀" maxlength="80" style="width:190px" />
+        <el-select v-model="jobForm.group" filterable allow-create placeholder="分组" style="width:170px">
+          <el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" />
+        </el-select>
+        <el-input-number v-model="jobForm.count" :min="1" :max="20" />
+        <el-button type="primary" :loading="jobCreating" @click="submitJob">创建</el-button>
+        <small>单次最多 20 个；创建过程由后台队列串行执行，可在下方查看进度。</small>
+      </div>
       <div class="hme-jobs-layout">
         <el-table :data="store.jobs" max-height="430" highlight-current-row @current-change="selectJob">
           <el-table-column label="任务" min-width="170"><template #default="{ row }"><strong>{{ row.labelPrefix }}</strong><small>{{ row.mode === 'pool' ? '健康账号池' : '固定主账号' }} · {{ row.requestedCount }} 个</small></template></el-table-column>
@@ -913,7 +1074,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
       <template #footer><el-button type="danger" plain :loading="receiveKeyBusy" @click="resetReceiveKey">重置密钥</el-button><el-button type="primary" @click="receiveKeyDialogVisible = false">完成</el-button></template>
     </el-dialog>
 
-    <el-dialog v-model="mailVisible" width="1120px" class="hme-mail-dialog">
+    <el-dialog v-model="mailVisible" width="1120px" class="hme-mail-dialog" @closed="resetMailDialog">
       <template #header><div class="icloud-dialog-heading"><span>iCloud 隐藏邮箱 · {{ mailAlias?.email }}</span><h2>邮件历史</h2></div></template>
       <div class="hme-mail-toolbar">
         <el-input v-model="mailKeyword" clearable placeholder="本地搜索主题、发件人或验证码" />

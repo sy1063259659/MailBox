@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   CopyDocument,
   Delete,
@@ -23,6 +23,7 @@ import {
   type ICloudLatestEmail,
   type ICloudMailSummary,
 } from '@/services/iCloudAccountApi'
+import { confirmAction, promptForValue } from '@/utils/confirm'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
 
@@ -292,16 +293,19 @@ async function submitMove() {
 }
 
 async function editRemark(account: ICloudAccount) {
-  const result = await ElMessageBox.prompt('备注最多 500 个字符，留空表示清除备注。', `编辑备注 · ${account.email}`, {
+  const value = await promptForValue('备注最多 500 个字符，留空表示清除备注。', `编辑备注 · ${account.email}`, {
     confirmButtonText: '保存',
     cancelButtonText: '取消',
     inputValue: account.remark,
     inputType: 'textarea',
-    inputValidator: (value) => Array.from(value.trim()).length <= 500 || '备注最多 500 个字符',
+    inputValidator: (input: string) => Array.from(input.trim()).length <= 500 || '备注最多 500 个字符',
   })
+  if (value === undefined) {
+    return
+  }
   editingRemarkEmail.value = account.email
   try {
-    await store.updateRemark(account.email, result.value)
+    await store.updateRemark(account.email, value)
     ElMessage.success('备注已保存')
   } catch (error) {
     showError(error, '保存备注失败')
@@ -311,11 +315,14 @@ async function editRemark(account: ICloudAccount) {
 }
 
 async function deleteOne(account: ICloudAccount) {
-  await ElMessageBox.confirm(`确定删除 ${account.email}？`, '删除 iCloud 账号', {
+  const confirmed = await confirmAction(`确定删除 ${account.email}？`, '删除 iCloud 账号', {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
     type: 'warning',
   })
+  if (!confirmed) {
+    return
+  }
   try {
     await store.deleteAccount(account.email)
     selectedRows.value = selectedRows.value.filter((row) => row.email !== account.email)
@@ -331,38 +338,46 @@ async function deleteSelected() {
     return
   }
   const emails = selectedRows.value.map((account) => account.email)
-  await ElMessageBox.confirm(`确定删除已选中的 ${emails.length} 个 iCloud 账号？`, '批量删除', {
+  const confirmed = await confirmAction(`确定删除已选中的 ${emails.length} 个 iCloud 账号？`, '批量删除', {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
     type: 'warning',
   })
+  if (!confirmed) {
+    return
+  }
   deleting.value = true
+  let deleted = 0
   try {
-    await Promise.all(emails.map((email) => store.deleteAccount(email)))
-    selectedRows.value = []
+    // Serial, not Promise.all: each deleteAccount rewrites store.accounts from
+    // its own snapshot, so concurrent callbacks would resurrect removed rows.
+    for (const email of emails) {
+      await store.deleteAccount(email)
+      deleted += 1
+    }
     ElMessage.success(`已删除 ${emails.length} 个账号`)
   } catch (error) {
+    showError(error, deleted ? `批量删除中断（已删除 ${deleted}/${emails.length} 个）` : '批量删除失败')
+  } finally {
     await store.load()
     selectedRows.value = []
-    showError(error, '批量删除失败')
-  } finally {
     deleting.value = false
   }
 }
 
 async function renameGroup(group: ICloudGroup) {
-  const result = await ElMessageBox.prompt('请输入新的分组名称', '重命名 iCloud 分组', {
+  const value = await promptForValue('请输入新的分组名称', '重命名 iCloud 分组', {
     confirmButtonText: '保存',
     cancelButtonText: '取消',
     inputValue: group.name,
-    inputValidator: (value) => Boolean(value.trim()) || '分组名称不能为空',
+    inputValidator: (input: string) => Boolean(input.trim()) || '分组名称不能为空',
   })
-  if (result.value.trim() === group.name) {
+  if (value === undefined || value.trim() === group.name) {
     return
   }
   renamingGroupId.value = group.id
   try {
-    await store.renameGroup(group.id, group.name, result.value)
+    await store.renameGroup(group.id, group.name, value)
     ElMessage.success('分组已重命名')
   } catch (error) {
     showError(error, '重命名分组失败')
@@ -372,11 +387,14 @@ async function renameGroup(group: ICloudGroup) {
 }
 
 async function deleteGroup(group: ICloudGroup) {
-  await ElMessageBox.confirm(`确定删除空分组“${group.name}”？`, '删除 iCloud 分组', {
+  const confirmed = await confirmAction(`确定删除空分组“${group.name}”？`, '删除 iCloud 分组', {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
     type: 'warning',
   })
+  if (!confirmed) {
+    return
+  }
   deletingGroupId.value = group.id
   try {
     await store.deleteGroup(group.id, group.name)

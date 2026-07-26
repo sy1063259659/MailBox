@@ -2,12 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"gptbox-server/internal/secure"
 )
@@ -57,12 +56,12 @@ func (s *Store) ListICloudGroups(ctx context.Context) ([]ICloudGroup, error) {
 
 func (s *Store) CreateICloudGroup(ctx context.Context, name string) (ICloudGroup, error) {
 	name = normalizeICloudGroup(name)
+	if _, err := s.ensureICloudGroup(ctx, name); err != nil {
+		return ICloudGroup{}, fmt.Errorf("store: create iCloud group: %w", err)
+	}
 	var group ICloudGroup
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO icloud_groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = icloud_groups.updated_at
-		RETURNING id, name, sort_order, created_at, updated_at
+		SELECT id, name, sort_order, created_at, updated_at FROM icloud_groups WHERE name = ?
 	`, name).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return ICloudGroup{}, fmt.Errorf("store: create iCloud group: %w", err)
@@ -72,15 +71,20 @@ func (s *Store) CreateICloudGroup(ctx context.Context, name string) (ICloudGroup
 
 func (s *Store) RenameICloudGroup(ctx context.Context, id int64, name string) (ICloudGroup, error) {
 	name = normalizeICloudGroup(name)
-	var group ICloudGroup
-	err := s.pool.QueryRow(ctx, `
-		UPDATE icloud_groups SET name = $1, updated_at = now()
-		WHERE id = $2 AND name <> $3
-		RETURNING id, name, sort_order, created_at, updated_at
-	`, name, id, DefaultICloudGroupName).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE icloud_groups SET name = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND name <> ?
+	`, name, id, DefaultICloudGroupName)
+	if err != nil {
+		return ICloudGroup{}, fmt.Errorf("store: rename iCloud group: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
 		return ICloudGroup{}, errors.New("分组不存在")
 	}
+	var group ICloudGroup
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, name, sort_order, created_at, updated_at FROM icloud_groups WHERE id = ?
+	`, id).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return ICloudGroup{}, fmt.Errorf("store: rename iCloud group: %w", err)
 	}
@@ -109,7 +113,7 @@ func (s *Store) ReorderICloudGroups(ctx context.Context, ids []int64) ([]ICloudG
 	defer transaction.Rollback(ctx)
 
 	for index, id := range ids {
-		result, err := transaction.Exec(ctx, `UPDATE icloud_groups SET sort_order = $1, updated_at = now() WHERE id = $2`, index, id)
+		result, err := transaction.Exec(ctx, `UPDATE icloud_groups SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, index, id)
 		if err != nil {
 			return nil, fmt.Errorf("store: reorder iCloud group: %w", err)
 		}
@@ -125,13 +129,13 @@ func (s *Store) ReorderICloudGroups(ctx context.Context, ids []int64) ([]ICloudG
 
 func (s *Store) DeleteICloudGroup(ctx context.Context, id int64) error {
 	var count int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_accounts WHERE group_id = $1`, id).Scan(&count); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM icloud_accounts WHERE group_id = ?`, id).Scan(&count); err != nil {
 		return fmt.Errorf("store: count iCloud group accounts: %w", err)
 	}
 	if count > 0 {
 		return errors.New("只能删除空分组")
 	}
-	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_groups WHERE id = $1 AND name <> $2`, id, DefaultICloudGroupName)
+	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_groups WHERE id = ? AND name <> ?`, id, DefaultICloudGroupName)
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud group: %w", err)
 	}
@@ -198,21 +202,16 @@ func (s *Store) ImportICloudAccounts(ctx context.Context, inputs []ICloudAccount
 	for _, input := range inputs {
 		var existed bool
 		if err := transaction.QueryRow(ctx,
-			`SELECT EXISTS(SELECT 1 FROM icloud_accounts WHERE lower(email) = $1)`,
+			`SELECT EXISTS(SELECT 1 FROM icloud_accounts WHERE lower(email) = ?)`,
 			normalizeEmail(input.Email),
 		).Scan(&existed); err != nil {
 			return result, fmt.Errorf("store: check iCloud account: %w", err)
 		}
 
 		groupName := normalizeICloudGroup(input.Group)
-		var groupID int64
-		if err := transaction.QueryRow(ctx, `
-			INSERT INTO icloud_groups (name, sort_order)
-			VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_groups), 0))
-			ON CONFLICT (name) DO UPDATE SET updated_at = icloud_groups.updated_at
-			RETURNING id
-		`, groupName).Scan(&groupID); err != nil {
-			return result, fmt.Errorf("store: ensure iCloud group: %w", err)
+		groupID, err := ensureICloudGroupTx(ctx, transaction, groupName)
+		if err != nil {
+			return result, err
 		}
 
 		encryptedKey, err := secure.EncryptString(s.tokenKey, input.Key)
@@ -222,11 +221,11 @@ func (s *Store) ImportICloudAccounts(ctx context.Context, inputs []ICloudAccount
 
 		if _, err := transaction.Exec(ctx, `
 			INSERT INTO icloud_accounts (email, access_key_encrypted, group_id, remark)
-			VALUES ($1, $2, $3, '')
+			VALUES (?, ?, ?, '')
 			ON CONFLICT (email) DO UPDATE SET
-				access_key_encrypted = EXCLUDED.access_key_encrypted,
-				group_id = EXCLUDED.group_id,
-				updated_at = now()
+				access_key_encrypted = excluded.access_key_encrypted,
+				group_id = excluded.group_id,
+				updated_at = CURRENT_TIMESTAMP
 		`, normalizeEmail(input.Email), encryptedKey, groupID); err != nil {
 			return result, fmt.Errorf("store: import iCloud account: %w", err)
 		}
@@ -252,11 +251,12 @@ func (s *Store) MoveICloudAccountsToGroup(ctx context.Context, emails []string, 
 	if err != nil {
 		return err
 	}
+	args := append([]any{groupID}, stringArgs(normalizedEmails)...)
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_accounts
-		SET group_id = $1, updated_at = now()
-		WHERE lower(email) = ANY($2)
-	`, groupID, normalizedEmails)
+		SET group_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalizedEmails))+`)
+	`, args...)
 	if err != nil {
 		return fmt.Errorf("store: move iCloud accounts: %w", err)
 	}
@@ -267,15 +267,26 @@ func (s *Store) MoveICloudAccountsToGroup(ctx context.Context, emails []string, 
 }
 
 func (s *Store) UpdateICloudAccountRemark(ctx context.Context, email string, remark string) (ICloudAccount, error) {
+	normalized := normalizeEmail(email)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE icloud_accounts
+		SET remark = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
+	`, strings.TrimSpace(remark), normalized)
+	if err != nil {
+		return ICloudAccount{}, fmt.Errorf("store: update iCloud remark: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ICloudAccount{}, errors.New("账号不存在")
+	}
 	var account ICloudAccount
 	var encryptedKey string
-	err := s.pool.QueryRow(ctx, `
-		UPDATE icloud_accounts a
-		SET remark = $2, updated_at = now()
-		FROM icloud_groups g
-		WHERE a.group_id = g.id AND lower(a.email) = $1
-		RETURNING a.email, a.access_key_encrypted, g.name, a.remark, a.created_at, a.updated_at
-	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
+	err = s.pool.QueryRow(ctx, `
+		SELECT a.email, a.access_key_encrypted, g.name, a.remark, a.created_at, a.updated_at
+		FROM icloud_accounts a
+		JOIN icloud_groups g ON g.id = a.group_id
+		WHERE lower(a.email) = ?
+	`, normalized).Scan(
 		&account.Email,
 		&encryptedKey,
 		&account.Group,
@@ -283,11 +294,8 @@ func (s *Store) UpdateICloudAccountRemark(ctx context.Context, email string, rem
 		&account.CreatedAt,
 		&account.UpdatedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return ICloudAccount{}, errors.New("账号不存在")
-	}
 	if err != nil {
-		return ICloudAccount{}, fmt.Errorf("store: update iCloud remark: %w", err)
+		return ICloudAccount{}, fmt.Errorf("store: reload iCloud account: %w", err)
 	}
 	key, err := secure.DecryptString(s.tokenKey, encryptedKey)
 	if err != nil {
@@ -308,9 +316,9 @@ func (s *Store) GetICloudCredentials(ctx context.Context, email string) (ICloudC
 	err := s.pool.QueryRow(ctx, `
 		SELECT email, access_key_encrypted
 		FROM icloud_accounts
-		WHERE lower(email) = $1
+		WHERE lower(email) = ?
 	`, normalizeEmail(email)).Scan(&credentials.Email, &encryptedKey)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return ICloudCredentials{}, errors.New("账号不存在")
 	}
 	if err != nil {
@@ -323,8 +331,9 @@ func (s *Store) GetICloudCredentials(ctx context.Context, email string) (ICloudC
 	credentials.Key = key
 	return credentials, nil
 }
+
 func (s *Store) DeleteICloudAccount(ctx context.Context, email string) error {
-	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_accounts WHERE lower(email) = $1`, normalizeEmail(email))
+	result, err := s.pool.Exec(ctx, `DELETE FROM icloud_accounts WHERE lower(email) = ?`, normalizeEmail(email))
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud account: %w", err)
 	}
@@ -336,18 +345,36 @@ func (s *Store) DeleteICloudAccount(ctx context.Context, email string) error {
 
 func (s *Store) ensureICloudGroup(ctx context.Context, name string) (int64, error) {
 	name = normalizeICloudGroup(name)
-	var id int64
-	err := s.pool.QueryRow(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO icloud_groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM icloud_groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = icloud_groups.updated_at
-		RETURNING id
-	`, name).Scan(&id)
-	if err != nil {
+		VALUES (?, COALESCE((SELECT max(sort_order) + 1 FROM icloud_groups), 0))
+		ON CONFLICT (name) DO NOTHING
+	`, name); err != nil {
+		return 0, fmt.Errorf("store: ensure iCloud group: %w", err)
+	}
+	var id int64
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM icloud_groups WHERE name = ?`, name).Scan(&id); err != nil {
 		return 0, fmt.Errorf("store: ensure iCloud group: %w", err)
 	}
 	return id, nil
 }
+
+func ensureICloudGroupTx(ctx context.Context, tx *dbTx, name string) (int64, error) {
+	name = normalizeICloudGroup(name)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO icloud_groups (name, sort_order)
+		VALUES (?, COALESCE((SELECT max(sort_order) + 1 FROM icloud_groups), 0))
+		ON CONFLICT (name) DO NOTHING
+	`, name); err != nil {
+		return 0, fmt.Errorf("store: ensure iCloud group: %w", err)
+	}
+	var id int64
+	if err := tx.QueryRow(ctx, `SELECT id FROM icloud_groups WHERE name = ?`, name).Scan(&id); err != nil {
+		return 0, fmt.Errorf("store: ensure iCloud group: %w", err)
+	}
+	return id, nil
+}
+
 func normalizeICloudGroup(group string) string {
 	group = strings.TrimSpace(group)
 	if group == "" {

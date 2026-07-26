@@ -1903,6 +1903,46 @@ textarea {
   padding-top: 8px;
 }
 
+.hme-job-create {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.hme-job-create small {
+  flex: 1 0 100%;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.form-hint {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.origin-preview {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #f8fafc;
+  color: #334155;
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .hme-jobs-layout {
   display: grid;
   grid-template-columns: minmax(0, 1.55fr) minmax(260px, .75fr);

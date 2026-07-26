@@ -73,6 +73,8 @@ export interface ICloudHMEAutomation {
   targetAvailableCount: number
   targetGroup: string
   labelPrefix: string
+  /** Origin used for public receive URLs. Empty means "use the current origin". */
+  publicMailOrigin: string
   availableCount: number
   reservedCount: number
   soldCount: number
@@ -242,6 +244,7 @@ export async function updateICloudHMEAutomation(input: {
   targetAvailableCount: number
   targetGroup: string
   labelPrefix: string
+  publicMailOrigin: string
 }): Promise<ICloudHMEAutomation> {
   const response = await apiRequest<{ ok: boolean; automation: ICloudHMEAutomation }>('/icloud-hme/automation', {
     method: 'PUT',

@@ -103,8 +103,15 @@ function isSplitAccount(account: MailAccount): boolean {
   return Boolean(account.parentEmail)
 }
 
-function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' | 'updatedAt' | 'lastSyncAt'): number {
-  return (left[key] ?? '').localeCompare(right[key] ?? '')
+// Element Plus calls sort-method with exactly two arguments, so the compared
+// field has to be bound here rather than passed in as a third parameter.
+function timestampValue(value?: string): number {
+  const parsed = Date.parse(value ?? '')
+  return Number.isNaN(parsed) ? 0 : parsed
+}
+
+function sortByCreatedAt(left: MailAccount, right: MailAccount): number {
+  return timestampValue(left.createdAt) - timestampValue(right.createdAt)
 }
 
 </script>
@@ -268,7 +275,7 @@ function sortByDateTime(left: MailAccount, right: MailAccount, key: 'createdAt' 
         label="导入"
         width="170"
         sortable
-        :sort-method="sortByDateTime"
+        :sort-method="sortByCreatedAt"
         align="center"
         header-align="center"
       >

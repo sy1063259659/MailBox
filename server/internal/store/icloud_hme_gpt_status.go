@@ -25,7 +25,7 @@ func (s *Store) ListICloudHMEGPTScanTargets(ctx context.Context, dueBefore time.
 		WHERE alias.apple_status = 'active'
 		  AND alias.gpt_status <> 'deactivated'
 		  AND source.app_password_encrypted <> ''
-		  AND (alias.gpt_last_scanned_at IS NULL OR alias.gpt_last_scanned_at <= $1)
+		  AND (alias.gpt_last_scanned_at IS NULL OR alias.gpt_last_scanned_at <= ?)
 		ORDER BY alias.source_account_id, alias.created_at, alias.email
 	`, dueBefore)
 	if err != nil {
@@ -56,11 +56,12 @@ func (s *Store) MarkICloudHMEGPTScanned(ctx context.Context, emails []string, sc
 	if scanErr != nil {
 		message = truncateICloudHMEAuditMessage(scanErr.Error())
 	}
+	args := append([]any{scannedAt, message}, stringArgs(normalized)...)
 	_, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_aliases
-		SET gpt_last_scanned_at = $2, gpt_scan_error = $3, updated_at = now()
-		WHERE lower(email) = ANY($1)
-	`, normalized, scannedAt, message)
+		SET gpt_last_scanned_at = ?, gpt_scan_error = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalized))+`)
+	`, args...)
 	return err
 }
 
@@ -68,14 +69,14 @@ func (s *Store) RecordICloudHMEGPTPlus(ctx context.Context, email, messageUID st
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_aliases
 		SET gpt_status = CASE WHEN gpt_status = 'deactivated' THEN gpt_status ELSE 'plus' END,
-		    gpt_plus_activated_at = $2,
-		    gpt_plan_message_uid = $3,
+		    gpt_plus_activated_at = ?,
+		    gpt_plan_message_uid = ?,
 		    gpt_scan_error = '',
-		    updated_at = now()
-		WHERE lower(email) = $1
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
 		  AND gpt_status <> 'deactivated'
-		  AND (gpt_plus_activated_at IS NULL OR $2 < gpt_plus_activated_at)
-	`, strings.ToLower(strings.TrimSpace(email)), activatedAt, strings.TrimSpace(messageUID))
+		  AND (gpt_plus_activated_at IS NULL OR ? < gpt_plus_activated_at)
+	`, activatedAt, strings.TrimSpace(messageUID), strings.ToLower(strings.TrimSpace(email)), activatedAt)
 	if err != nil {
 		return false, fmt.Errorf("store: record iCloud HME GPT Plus: %w", err)
 	}
@@ -86,15 +87,15 @@ func (s *Store) RecordICloudHMEGPTDeactivated(ctx context.Context, email, messag
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_aliases
 		SET gpt_status = 'deactivated',
-		    gpt_deactivated_at = $2,
-		    gpt_deactivation_message_uid = $3,
+		    gpt_deactivated_at = ?,
+		    gpt_deactivation_message_uid = ?,
 		    gpt_scan_error = '',
-		    updated_at = now()
-		WHERE lower(email) = $1
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
 		  AND gpt_plus_activated_at IS NOT NULL
-		  AND $2 >= gpt_plus_activated_at
-		  AND (gpt_deactivated_at IS NULL OR $2 < gpt_deactivated_at)
-	`, strings.ToLower(strings.TrimSpace(email)), deactivatedAt, strings.TrimSpace(messageUID))
+		  AND ? >= gpt_plus_activated_at
+		  AND (gpt_deactivated_at IS NULL OR ? < gpt_deactivated_at)
+	`, deactivatedAt, strings.TrimSpace(messageUID), strings.ToLower(strings.TrimSpace(email)), deactivatedAt, deactivatedAt)
 	if err != nil {
 		return false, fmt.Errorf("store: record iCloud HME GPT deactivation: %w", err)
 	}

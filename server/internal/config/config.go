@@ -12,7 +12,7 @@ const DefaultAddr = "127.0.0.1:8787"
 
 type Config struct {
 	Addr          string
-	DatabaseURL   string
+	SQLitePath    string
 	AdminUsername string
 	AdminPassword string
 	SessionSecret []byte
@@ -24,16 +24,13 @@ type Config struct {
 func Load() (Config, error) {
 	cfg := Config{
 		Addr:          getEnvAny("GPTBOX_SERVER_ADDR", "MAILBOX_SERVER_ADDR", DefaultAddr),
-		DatabaseURL:   strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		SQLitePath:    getEnvAny("GPTBOX_SQLITE_PATH", "MAILBOX_SQLITE_PATH", "./data/mailbox.db"),
 		AdminUsername: strings.TrimSpace(getEnvAny("GPTBOX_ADMIN_USERNAME", "MAILBOX_ADMIN_USERNAME", "admin")),
 		AdminPassword: getEnvAny("GPTBOX_ADMIN_PASSWORD", "MAILBOX_ADMIN_PASSWORD", ""),
 		StaticDir:     getEnvAny("GPTBOX_STATIC_DIR", "MAILBOX_STATIC_DIR", "./dist"),
 		CookieSecure:  getBoolEnvAny("GPTBOX_COOKIE_SECURE", "MAILBOX_COOKIE_SECURE", false),
 	}
 
-	if cfg.DatabaseURL == "" {
-		return Config{}, errors.New("DATABASE_URL is required")
-	}
 	if strings.TrimSpace(cfg.AdminPassword) == "" {
 		return Config{}, errors.New("GPTBOX_ADMIN_PASSWORD or MAILBOX_ADMIN_PASSWORD is required")
 	}

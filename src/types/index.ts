@@ -70,7 +70,7 @@ export interface MailMessage {
 export interface MailBody {
   accountEmail: string
   messageId: string
-  contentType: 'text' | 'html'
+  contentType: 'text/plain' | 'text/html'
   content: string
   fetchedAt: string
   updatedAt: string

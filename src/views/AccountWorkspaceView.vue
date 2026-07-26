@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import {
   Reading,
   Refresh,
@@ -11,7 +11,7 @@ import MailboxSidebar from '@/components/MailboxSidebar.vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAccountStore } from '@/stores/account'
-import { useMailStore } from '@/stores/mail'
+import { receivedAtValue, useMailStore } from '@/stores/mail'
 import type {
   AccountStatus,
   MailAccount,
@@ -20,6 +20,7 @@ import type {
   MailMessage,
 } from '@/types'
 import type { MailGroup } from '@/services/accountApi'
+import { confirmAction, promptForValue } from '@/utils/confirm'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
 
@@ -129,7 +130,7 @@ function buildReaderHtml(content: string): string {
 }
 const selectedHtml = computed(() => {
   const content = mailStore.selectedBody?.content ?? ''
-  const isHtml = mailStore.selectedBody?.contentType === 'html' || looksLikeHtml(content)
+  const isHtml = mailStore.selectedBody?.contentType === 'text/html' || looksLikeHtml(content)
   return isHtml ? buildReaderHtml(content) : ''
 })
 const selectedPlainBlocks = computed(() =>
@@ -248,8 +249,8 @@ const visibleMessages = computed(() => {
   const messages = [...mailStore.messages]
   messages.sort((left, right) =>
     mailSortDesc.value
-      ? right.receivedAt.localeCompare(left.receivedAt)
-      : left.receivedAt.localeCompare(right.receivedAt),
+      ? receivedAtValue(right) - receivedAtValue(left)
+      : receivedAtValue(left) - receivedAtValue(right),
   )
   return messages
 })
@@ -363,11 +364,14 @@ async function deleteEmptyGroup(group: MailGroup) {
   if (!canDeleteGroup(group) || deletingGroupId.value) {
     return
   }
-  await ElMessageBox.confirm(`确定删除空分组「${group.name}」吗？`, '删除分组', {
+  const confirmed = await confirmAction(`确定删除空分组「${group.name}」吗？`, '删除分组', {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
     type: 'warning',
   })
+  if (!confirmed) {
+    return
+  }
   deletingGroupId.value = group.id
   try {
     await accountStore.deleteGroup(group.id, group.name)
@@ -383,18 +387,21 @@ async function renameGroup(group: MailGroup) {
   if (!canRenameGroup(group) || renamingGroupId.value) {
     return
   }
-  const result = await ElMessageBox.prompt('请输入新的分组名称。', `重命名分组：${group.name}`, {
+  const value = await promptForValue('请输入新的分组名称。', `重命名分组：${group.name}`, {
     confirmButtonText: '保存',
     cancelButtonText: '取消',
     inputValue: group.name,
-    inputValidator: (value) => {
-      if (!value.trim()) {
+    inputValidator: (input: string) => {
+      if (!input.trim()) {
         return '分组名称不能为空'
       }
       return true
     },
   })
-  const nextName = result.value.trim()
+  if (value === undefined) {
+    return
+  }
+  const nextName = value.trim()
   if (nextName === group.name) {
     return
   }
@@ -539,8 +546,8 @@ async function copyExportText() {
     }
     await navigator.clipboard.writeText(text)
     ElMessage.success(`已复制 ${targets.length} 个账号导出文本`)
-  } catch {
-    ElMessage.error('复制导出文本失败')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '复制导出文本失败')
   } finally {
     exportingAccounts.value = false
   }
@@ -560,16 +567,19 @@ async function downloadExportText() {
       ElMessage.warning('没有可导出的账号')
       return
     }
-    const blob = new Blob([text], {
-      type: 'text/plain;charset=utf-8',
-    })
-    const url = URL.createObjectURL(blob)
+    // Firefox ignores programmatic clicks on detached anchors, and revoking the
+    // object URL synchronously can truncate the download.
+    const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = `mailbox-accounts-${new Date().toISOString().slice(0, 10)}.txt`
+    document.body.appendChild(anchor)
     anchor.click()
-    URL.revokeObjectURL(url)
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
     ElMessage.success(`已导出 ${targets.length} 个账号`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '导出账号失败')
   } finally {
     exportingAccounts.value = false
   }
@@ -666,34 +676,42 @@ async function selectMessage(message: MailMessage) {
 }
 
 async function splitHotmail(account: MailAccount) {
-  await ElMessageBox.confirm(`将为 ${account.email} 一次生成 5 个分裂邮箱，生成后不能重复生成。`, 'Hotmail 分裂', {
-    confirmButtonText: '生成 5 个',
-    cancelButtonText: '取消',
-    type: 'warning',
-  })
+  const confirmed = await confirmAction(
+    `将为 ${account.email} 一次生成 5 个分裂邮箱，生成后不能重复生成。`,
+    'Hotmail 分裂',
+    { confirmButtonText: '生成 5 个', cancelButtonText: '取消', type: 'warning' },
+  )
+  if (!confirmed) {
+    return
+  }
   splittingEmail.value = account.email
   try {
     await accountStore.splitHotmailAccount(account.email)
     ElMessage.success('已生成 5 个分裂邮箱')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'Hotmail 分裂失败')
   } finally {
     splittingEmail.value = ''
   }
 }
 
 async function editAccountRemark(account: MailAccount) {
-  const result = await ElMessageBox.prompt('备注最多 500 个字符，留空可清除备注。', `编辑备注：${account.email}`, {
+  const value = await promptForValue('备注最多 500 个字符，留空可清除备注。', `编辑备注：${account.email}`, {
     confirmButtonText: '保存',
     cancelButtonText: '取消',
     inputType: 'textarea',
     inputValue: account.remark ?? '',
-    inputValidator: (value) => {
-      if ([...value.trim()].length > 500) {
+    inputValidator: (input: string) => {
+      if ([...input.trim()].length > 500) {
         return '备注最多 500 个字符'
       }
       return true
     },
   })
-  const remark = result.value.trim()
+  if (value === undefined) {
+    return
+  }
+  const remark = value.trim()
   if (remark === (account.remark ?? '').trim()) {
     return
   }
@@ -701,6 +719,8 @@ async function editAccountRemark(account: MailAccount) {
   try {
     await accountStore.updateAccountRemark(account.email, remark)
     ElMessage.success(remark ? '备注已更新' : '备注已清空')
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存备注失败')
   } finally {
     editingRemarkEmail.value = ''
   }
@@ -711,21 +731,34 @@ async function batchDeleteSelected() {
     ElMessage.warning('请选择账号')
     return
   }
-  await ElMessageBox.confirm(`确定删除 ${selectedAccountRows.value.length} 个账号吗？`, '警告', {
-    confirmButtonText: 'OK',
-    cancelButtonText: 'Cancel',
-    type: 'warning',
-  })
+  const confirmed = await confirmAction(
+    `确定删除 ${selectedAccountRows.value.length} 个账号吗？`,
+    '警告',
+    { confirmButtonText: 'OK', cancelButtonText: 'Cancel', type: 'warning' },
+  )
+  if (!confirmed) {
+    return
+  }
   deleting.value = true
+  const total = selectedAccountRows.value.length
+  let deleted = 0
   try {
     for (const account of selectedAccountRows.value) {
       await accountStore.deleteAccount(account.email)
+      deleted += 1
     }
+    ElMessage.success('已删除选中账号')
+  } catch (error) {
+    // Report how far the loop got so the user knows the batch was partial.
+    ElMessage.error(
+      (error instanceof Error ? error.message : '删除账号失败')
+      + (deleted ? `（已删除 ${deleted}/${total} 个）` : ''),
+    )
+    await accountStore.loadAccounts()
+  } finally {
     await mailStore.loadMessages()
     selectedAccountRows.value = []
     accountPage.value = 1
-    ElMessage.success('已删除选中账号')
-  } finally {
     deleting.value = false
   }
 }
@@ -756,6 +789,8 @@ async function submitMoveGroup() {
     accountPage.value = 1
     groupDialogVisible.value = false
     ElMessage.success(`已移动 ${selectedAccountRows.value.length} 个账号到 ${group}`)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '移动分组失败')
   } finally {
     movingGroup.value = false
   }

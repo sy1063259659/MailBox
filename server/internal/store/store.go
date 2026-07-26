@@ -3,15 +3,17 @@ package store
 import (
 	"context"
 	"crypto/rand"
+	"database/sql"
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+	_ "modernc.org/sqlite"
 
 	"gptbox-server/internal/secure"
 )
@@ -19,7 +21,7 @@ import (
 const DefaultGroupName = "默认分组"
 
 type Store struct {
-	pool     *pgxpool.Pool
+	pool     *dbPool
 	tokenKey []byte
 }
 
@@ -82,32 +84,227 @@ type SplitResult struct {
 	Accounts    []MailAccount `json:"accounts"`
 }
 
-func New(ctx context.Context, databaseURL string, tokenKey []byte) (*Store, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+// commandTag mirrors the subset of pgconn.CommandTag the store layer relied on,
+// so call sites can keep using result.RowsAffected() without an error return.
+type commandTag struct {
+	rowsAffected int64
+}
+
+func (tag commandTag) RowsAffected() int64 {
+	return tag.rowsAffected
+}
+
+// dbPool is a thin wrapper over *sql.DB that keeps the pgx-style call shape
+// (context-first Exec/Query/QueryRow/Begin) used across the store package.
+type dbPool struct {
+	db *sql.DB
+}
+
+// normalizeArgs converts every time.Time argument to UTC before it reaches the
+// driver. All SQL in this package compares timestamps as text against
+// CURRENT_TIMESTAMP / datetime('now'), which are UTC, so stored values must be
+// UTC as well.
+func normalizeArgs(args []any) []any {
+	for index, arg := range args {
+		switch value := arg.(type) {
+		case time.Time:
+			args[index] = value.UTC()
+		case *time.Time:
+			if value != nil {
+				utc := value.UTC()
+				args[index] = &utc
+			}
+		}
+	}
+	return args
+}
+
+func (p *dbPool) Exec(ctx context.Context, query string, args ...any) (commandTag, error) {
+	result, err := p.db.ExecContext(ctx, query, normalizeArgs(args)...)
 	if err != nil {
-		return nil, fmt.Errorf("store: connect postgres: %w", err)
+		return commandTag{}, err
 	}
-	if err := pool.Ping(ctx); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("store: ping postgres: %w", err)
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return commandTag{}, err
 	}
-	return &Store{pool: pool, tokenKey: tokenKey}, nil
+	return commandTag{rowsAffected: affected}, nil
+}
+
+func (p *dbPool) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return p.db.QueryContext(ctx, query, normalizeArgs(args)...)
+}
+
+func (p *dbPool) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return p.db.QueryRowContext(ctx, query, normalizeArgs(args)...)
+}
+
+func (p *dbPool) Begin(ctx context.Context) (*dbTx, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &dbTx{tx: tx}, nil
+}
+
+func (p *dbPool) Close() error {
+	return p.db.Close()
+}
+
+// dbTx wraps *sql.Tx with the pgx-style context-first signatures.
+type dbTx struct {
+	tx *sql.Tx
+}
+
+func (t *dbTx) Exec(ctx context.Context, query string, args ...any) (commandTag, error) {
+	result, err := t.tx.ExecContext(ctx, query, normalizeArgs(args)...)
+	if err != nil {
+		return commandTag{}, err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return commandTag{}, err
+	}
+	return commandTag{rowsAffected: affected}, nil
+}
+
+func (t *dbTx) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	return t.tx.QueryContext(ctx, query, normalizeArgs(args)...)
+}
+
+func (t *dbTx) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
+	return t.tx.QueryRowContext(ctx, query, normalizeArgs(args)...)
+}
+
+func (t *dbTx) Commit(_ context.Context) error {
+	return t.tx.Commit()
+}
+
+func (t *dbTx) Rollback(_ context.Context) error {
+	return t.tx.Rollback()
+}
+
+// sqliteTime scans timestamp values that come back from SQL expressions
+// (COALESCE, min, max, ...). For plain table columns the driver converts to
+// time.Time via the declared column type, but expressions lose the declared
+// type, so the driver hands us the raw TEXT value instead.
+type sqliteTime struct {
+	value *time.Time
+}
+
+var sqliteTimeLayouts = []string{
+	"2006-01-02 15:04:05.999999999-07:00",
+	"2006-01-02T15:04:05.999999999-07:00",
+	"2006-01-02 15:04:05.999999999Z07:00",
+	"2006-01-02T15:04:05.999999999Z07:00",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02",
+}
+
+func (t *sqliteTime) Scan(src any) error {
+	switch value := src.(type) {
+	case nil:
+		t.value = nil
+		return nil
+	case time.Time:
+		parsed := value.UTC()
+		t.value = &parsed
+		return nil
+	case string:
+		return t.parse(value)
+	case []byte:
+		return t.parse(string(value))
+	default:
+		return fmt.Errorf("store: unsupported timestamp value of type %T", src)
+	}
+}
+
+func (t *sqliteTime) parse(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		t.value = nil
+		return nil
+	}
+	for _, layout := range sqliteTimeLayouts {
+		if parsed, err := time.Parse(layout, raw); err == nil {
+			parsed = parsed.UTC()
+			t.value = &parsed
+			return nil
+		}
+	}
+	return fmt.Errorf("store: cannot parse timestamp %q", raw)
+}
+
+func (t *sqliteTime) Time() time.Time {
+	if t.value == nil {
+		return time.Time{}
+	}
+	return *t.value
+}
+
+// sqlInPlaceholders returns "?,?,...,?" with count placeholders. count may be
+// zero, producing an empty list: SQLite accepts "IN ()" and evaluates it as
+// false, matching PostgreSQL's "= ANY('{}')".
+func sqlInPlaceholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	return strings.Repeat("?,", count-1) + "?"
+}
+
+func stringArgs(values []string) []any {
+	args := make([]any, len(values))
+	for index, value := range values {
+		args[index] = value
+	}
+	return args
+}
+
+func New(ctx context.Context, databasePath string, tokenKey []byte) (*Store, error) {
+	databasePath = strings.TrimSpace(databasePath)
+	if databasePath == "" {
+		return nil, errors.New("store: sqlite database path is required")
+	}
+	if dir := filepath.Dir(databasePath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("store: create sqlite directory: %w", err)
+		}
+	}
+	dsn := "file:" + filepath.ToSlash(databasePath) +
+		"?_txlock=immediate" +
+		"&_time_format=sqlite" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(10000)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("store: open sqlite: %w", err)
+	}
+	// SQLite allows a single writer; WAL mode lets readers proceed
+	// concurrently. A small pool is plenty and keeps lock contention low.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("store: ping sqlite: %w", err)
+	}
+	return &Store{pool: &dbPool{db: db}, tokenKey: tokenKey}, nil
 }
 
 func (s *Store) Close() {
-	s.pool.Close()
+	_ = s.pool.Close()
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	statements := migrationCreateStatements()
-	for _, statement := range statements {
+	for _, statement := range migrationCreateStatements() {
 		if _, err := s.pool.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
-
 	for _, statement := range migrationColumnStatements() {
-		if _, err := s.pool.Exec(ctx, statement); err != nil {
+		if _, err := s.pool.Exec(ctx, statement); err != nil && !isDuplicateColumnError(err) {
 			return fmt.Errorf("store: migrate column: %w", err)
 		}
 	}
@@ -116,22 +313,8 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("store: migrate index: %w", err)
 		}
 	}
-	for _, statement := range legacyCleanupStatements() {
-		if _, err := s.pool.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("store: cleanup legacy schema: %w", err)
-		}
-	}
-	if err := s.backfillAuthEmails(ctx); err != nil {
-		return err
-	}
-	if err := s.backfillEncryptedPasswords(ctx); err != nil {
-		return err
-	}
-	if err := s.backfillSplitParents(ctx); err != nil {
-		return err
-	}
-	if err := s.backfillGroupSortOrder(ctx); err != nil {
-		return err
+	if _, err := s.pool.Exec(ctx, `INSERT INTO icloud_hme_automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`); err != nil {
+		return fmt.Errorf("store: seed automation settings: %w", err)
 	}
 
 	if _, err := s.ensureGroup(ctx, DefaultGroupName); err != nil {
@@ -149,58 +332,58 @@ func migrationCreateStatements() []string {
 		`CREATE TABLE IF NOT EXISTS admins (
 			username TEXT PRIMARY KEY,
 			password_hash TEXT NOT NULL,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			sort_order INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS mail_accounts (
 			email TEXT PRIMARY KEY,
 			auth_email TEXT NOT NULL DEFAULT '',
 			parent_email TEXT,
 			split_index INTEGER,
-			split_generated_at TIMESTAMPTZ,
+			split_generated_at TIMESTAMP,
 			password TEXT NOT NULL,
 			password_encrypted TEXT NOT NULL DEFAULT '',
 			client_id TEXT NOT NULL,
 			refresh_token_encrypted TEXT NOT NULL,
-			group_id BIGINT NOT NULL REFERENCES groups(id),
+			group_id INTEGER NOT NULL REFERENCES groups(id),
 			remark TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'idle',
 			error_message TEXT NOT NULL DEFAULT '',
-			last_sync_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			last_sync_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_groups (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			sort_order INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_accounts (
 			email TEXT PRIMARY KEY,
 			access_key_encrypted TEXT NOT NULL,
-			group_id BIGINT NOT NULL REFERENCES icloud_groups(id),
+			group_id INTEGER NOT NULL REFERENCES icloud_groups(id),
 			remark TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_groups (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL UNIQUE,
 			sort_order INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_source_accounts (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			name TEXT NOT NULL,
 			apple_id_email TEXT NOT NULL UNIQUE,
 			icloud_email TEXT NOT NULL,
@@ -210,49 +393,62 @@ func migrationCreateStatements() []string {
 			status TEXT NOT NULL DEFAULT 'pending',
 			status_reason TEXT NOT NULL DEFAULT '',
 			alias_total INTEGER NOT NULL DEFAULT 0,
-			last_validated_at TIMESTAMPTZ,
+			last_validated_at TIMESTAMP,
+			last_synced_at TIMESTAMP,
+			last_created_at TIMESTAMP,
+			last_error_at TIMESTAMP,
+			automation_enabled BOOLEAN NOT NULL DEFAULT true,
+			next_create_at TIMESTAMP,
+			create_window_started_at TIMESTAMP,
+			create_window_success_count INTEGER NOT NULL DEFAULT 0,
+			cooldown_level INTEGER NOT NULL DEFAULT 0,
+			consecutive_limit_count INTEGER NOT NULL DEFAULT 0,
+			last_limit_at TIMESTAMP,
+			last_auto_attempt_at TIMESTAMP,
 			probe_policy_version INTEGER NOT NULL DEFAULT 2,
 			probe_stage INTEGER NOT NULL DEFAULT 0,
 			probe_success_streak INTEGER NOT NULL DEFAULT 0,
 			probe_success_target INTEGER NOT NULL DEFAULT 3,
 			probe_stable_stage INTEGER NOT NULL DEFAULT -1,
 			probe_recovery_mode BOOLEAN NOT NULL DEFAULT false,
-			probe_limit_started_at TIMESTAMPTZ,
+			probe_limit_started_at TIMESTAMP,
 			probe_last_interval_seconds INTEGER NOT NULL DEFAULT 0,
 			probe_last_recovery_seconds INTEGER NOT NULL DEFAULT 0,
 			probe_last_limit_stage INTEGER NOT NULL DEFAULT -1,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_aliases (
 			email TEXT PRIMARY KEY,
-			source_account_id BIGINT NOT NULL REFERENCES icloud_hme_source_accounts(id),
+			source_account_id INTEGER NOT NULL REFERENCES icloud_hme_source_accounts(id),
 			anonymous_id TEXT NOT NULL DEFAULT '',
 			label TEXT NOT NULL DEFAULT '',
 			active BOOLEAN NOT NULL DEFAULT true,
 			apple_status TEXT NOT NULL DEFAULT 'active',
-			deactivated_at TIMESTAMPTZ,
-			deleted_at TIMESTAMPTZ,
-			last_synced_at TIMESTAMPTZ,
-			group_id BIGINT NOT NULL REFERENCES icloud_hme_groups(id),
+			deactivated_at TIMESTAMP,
+			deleted_at TIMESTAMP,
+			last_synced_at TIMESTAMP,
+			group_id INTEGER NOT NULL REFERENCES icloud_hme_groups(id),
 			remark TEXT NOT NULL DEFAULT '',
 			receive_key_encrypted TEXT NOT NULL DEFAULT '',
 			receive_key_digest TEXT NOT NULL DEFAULT '',
-			receive_key_updated_at TIMESTAMPTZ,
+			receive_key_updated_at TIMESTAMP,
+			inventory_status TEXT NOT NULL DEFAULT 'available',
+			sold_at TIMESTAMP,
 			gpt_status TEXT NOT NULL DEFAULT 'unregistered',
-			gpt_plus_activated_at TIMESTAMPTZ,
-			gpt_deactivated_at TIMESTAMPTZ,
+			gpt_plus_activated_at TIMESTAMP,
+			gpt_deactivated_at TIMESTAMP,
 			gpt_plan_message_uid TEXT NOT NULL DEFAULT '',
 			gpt_deactivation_message_uid TEXT NOT NULL DEFAULT '',
-			gpt_last_scanned_at TIMESTAMPTZ,
+			gpt_last_scanned_at TIMESTAMP,
 			gpt_scan_error TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_create_jobs (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			mode TEXT NOT NULL,
-			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			source_account_id INTEGER REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
 			label_prefix TEXT NOT NULL,
 			group_name TEXT NOT NULL DEFAULT '默认分组',
 			requested_count INTEGER NOT NULL,
@@ -261,31 +457,34 @@ func migrationCreateStatements() []string {
 			failed_count INTEGER NOT NULL DEFAULT 0,
 			cancelled_count INTEGER NOT NULL DEFAULT 0,
 			created_by TEXT NOT NULL DEFAULT '',
+			origin TEXT NOT NULL DEFAULT 'manual',
 			error_message TEXT NOT NULL DEFAULT '',
-			started_at TIMESTAMPTZ,
-			finished_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			started_at TIMESTAMP,
+			finished_at TIMESTAMP,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_create_job_items (
-			id BIGSERIAL PRIMARY KEY,
-			job_id BIGINT NOT NULL REFERENCES icloud_hme_create_jobs(id) ON DELETE CASCADE,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			job_id INTEGER NOT NULL REFERENCES icloud_hme_create_jobs(id) ON DELETE CASCADE,
 			sequence INTEGER NOT NULL,
-			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			source_account_id INTEGER REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
 			label TEXT NOT NULL,
 			email TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL DEFAULT 'pending',
 			attempts INTEGER NOT NULL DEFAULT 0,
 			error_code TEXT NOT NULL DEFAULT '',
 			error_message TEXT NOT NULL DEFAULT '',
-			started_at TIMESTAMPTZ,
-			finished_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			started_at TIMESTAMP,
+			finished_at TIMESTAMP,
+			next_attempt_at TIMESTAMP,
+			retry_class TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
 			UNIQUE(job_id, sequence)
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs (
-			id BIGSERIAL PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			actor TEXT NOT NULL DEFAULT '',
 			action TEXT NOT NULL,
 			target_type TEXT NOT NULL,
@@ -293,94 +492,57 @@ func migrationCreateStatements() []string {
 			result TEXT NOT NULL,
 			error_code TEXT NOT NULL DEFAULT '',
 			message TEXT NOT NULL DEFAULT '',
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_settings (
-			id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+			id INTEGER PRIMARY KEY CHECK (id = 1),
 			enabled BOOLEAN NOT NULL DEFAULT false,
 			target_available_count INTEGER NOT NULL DEFAULT 20,
 			target_group TEXT NOT NULL DEFAULT '默认分组',
 			label_prefix TEXT NOT NULL DEFAULT 'MailBox',
-			error_window_started_at TIMESTAMPTZ,
+			-- Origin used to build the public receive URLs handed to buyers.
+			-- Empty means "use the origin the admin UI is served from".
+			public_mail_origin TEXT NOT NULL DEFAULT '',
+			error_window_started_at TIMESTAMP,
 			error_window_count INTEGER NOT NULL DEFAULT 0,
 			updated_by TEXT NOT NULL DEFAULT '',
-			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_events (
-			id BIGSERIAL PRIMARY KEY,
-			source_account_id BIGINT REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
-			job_item_id BIGINT REFERENCES icloud_hme_create_job_items(id) ON DELETE SET NULL,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_account_id INTEGER REFERENCES icloud_hme_source_accounts(id) ON DELETE SET NULL,
+			job_item_id INTEGER REFERENCES icloud_hme_create_job_items(id) ON DELETE SET NULL,
 			event_type TEXT NOT NULL,
 			result TEXT NOT NULL,
 			error_code TEXT NOT NULL DEFAULT '',
 			message TEXT NOT NULL DEFAULT '',
-			next_attempt_at TIMESTAMPTZ,
+			next_attempt_at TIMESTAMP,
 			retry_count INTEGER NOT NULL DEFAULT 0,
 			probe_stage INTEGER NOT NULL DEFAULT -1,
 			interval_seconds INTEGER NOT NULL DEFAULT 0,
 			recovery_seconds INTEGER NOT NULL DEFAULT 0,
 			target_interval_min_seconds INTEGER NOT NULL DEFAULT 0,
 			target_interval_max_seconds INTEGER NOT NULL DEFAULT 0,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)`}
 }
 
+// migrationColumnStatements holds ALTER TABLE steps for columns that were added
+// to an already-released schema. The CREATE TABLE statements above always carry
+// the current shape, so a fresh database gets the column immediately and these
+// statements fail with "duplicate column name" — which isDuplicateColumnError
+// tolerates. SQLite has no ADD COLUMN IF NOT EXISTS, hence this pattern.
+//
+// Note: SQLite only allows ADD COLUMN with a NOT NULL constraint when a default
+// is supplied, so every entry here must carry a DEFAULT.
 func migrationColumnStatements() []string {
 	return []string{
-		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS auth_email TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS parent_email TEXT`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_index INTEGER`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS automation_enabled BOOLEAN NOT NULL DEFAULT true`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS create_window_started_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS create_window_success_count INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS cooldown_level INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS consecutive_limit_count INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_limit_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_auto_attempt_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_policy_version INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ALTER COLUMN probe_policy_version SET DEFAULT 2`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_target INTEGER NOT NULL DEFAULT 3`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stable_stage INTEGER NOT NULL DEFAULT -1`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_recovery_mode BOOLEAN NOT NULL DEFAULT false`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_limit_started_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_interval_seconds INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_recovery_seconds INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_last_limit_stage INTEGER NOT NULL DEFAULT -1`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status TEXT NOT NULL DEFAULT 'active'`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deactivated_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_updated_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status TEXT NOT NULL DEFAULT 'available'`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS sold_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_status TEXT NOT NULL DEFAULT 'unregistered'`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plus_activated_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivated_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plan_message_uid TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivation_message_uid TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_last_scanned_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_scan_error TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_create_jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'`,
-		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
-		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS retry_class TEXT NOT NULL DEFAULT ''`,
-		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS probe_stage INTEGER NOT NULL DEFAULT -1`,
-		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS interval_seconds INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS recovery_seconds INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS target_interval_min_seconds INTEGER NOT NULL DEFAULT 0`,
-		`ALTER TABLE icloud_hme_automation_events ADD COLUMN IF NOT EXISTS target_interval_max_seconds INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE icloud_hme_automation_settings ADD COLUMN public_mail_origin TEXT NOT NULL DEFAULT ''`,
 	}
+}
+
+func isDuplicateColumnError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 func migrationIndexStatements() []string {
@@ -388,14 +550,18 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_group_id ON mail_accounts(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_parent_email ON mail_accounts(parent_email)`,
 		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_created_at ON mail_accounts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_email_lower ON mail_accounts(lower(email))`,
+		`CREATE INDEX IF NOT EXISTS idx_mail_accounts_parent_email_lower ON mail_accounts(lower(parent_email))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_mail_accounts_parent_split_index
 			ON mail_accounts(parent_email, split_index)
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_email_lower ON icloud_accounts(lower(email))`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_account_id ON icloud_hme_aliases(source_account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_id ON icloud_hme_aliases(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_email_lower ON icloud_hme_aliases(lower(email))`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_anonymous_id
 			ON icloud_hme_aliases(source_account_id, anonymous_id)
 			WHERE anonymous_id <> ''`,
@@ -407,189 +573,11 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_gpt_scan
 			ON icloud_hme_aliases(source_account_id, gpt_status, gpt_last_scanned_at)
 			WHERE gpt_status <> 'deactivated'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_active_job_item_label
+			ON icloud_hme_create_job_items(label)
+			WHERE status IN ('pending', 'running')`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_automation_events_created ON icloud_hme_automation_events(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`}
-}
-
-func legacyCleanupStatements() []string {
-	return []string{
-		`DROP TABLE IF EXISTS gpt_accounts`,
-		`UPDATE icloud_hme_source_accounts
-		 SET status_reason = 'Apple 会话异常，请重新验证', updated_at = now()
-		 WHERE status_reason ~* '(trustTokens|X-APPLE|Bearer|Set-Cookie|webauth-token|scnt)'`,
-		`INSERT INTO icloud_hme_automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
-		`UPDATE icloud_hme_create_job_items
-		 SET status = 'pending', retry_class = 'rate_limit',
-		     error_code = 'icloud_alias_rate_limited',
-		     next_attempt_at = COALESCE(finished_at, updated_at, now()) + interval '5 minutes',
-		     finished_at = NULL, updated_at = now()
-		 WHERE status = 'failed'
-		   AND (error_code = 'icloud_alias_rate_limited'
-		        OR error_message ILIKE '%reached the limit of addresses%')`,
-		`UPDATE icloud_hme_create_jobs job
-		 SET status = 'pending', origin = 'automation', finished_at = NULL, updated_at = now()
-		 WHERE EXISTS (
-		   SELECT 1 FROM icloud_hme_create_job_items item
-		   WHERE item.job_id = job.id AND item.status = 'pending'
-		 ) AND job.status IN ('partial_failed', 'failed')`,
-		`UPDATE icloud_hme_source_accounts source
-		 SET status = 'cooldown', status_reason = 'Apple 暂时限制创建，系统将在冷却后自动探测',
-		     next_create_at = latest.next_attempt_at,
-		     cooldown_level = GREATEST(cooldown_level, 1),
-		     consecutive_limit_count = GREATEST(consecutive_limit_count, 1),
-		     last_limit_at = COALESCE(last_limit_at, now()), updated_at = now()
-		 FROM (
-		   SELECT source_account_id, max(next_attempt_at) AS next_attempt_at
-		   FROM icloud_hme_create_job_items
-		   WHERE status = 'pending' AND retry_class = 'rate_limit' AND source_account_id IS NOT NULL
-		   GROUP BY source_account_id
-		 ) latest
-		 WHERE source.id = latest.source_account_id`,
-		`UPDATE icloud_hme_source_accounts source
-		 SET next_create_at = GREATEST(now(), COALESCE(last_limit_at, now()) +
-		       CASE
-		         WHEN cooldown_level <= 1 THEN interval '10 minutes'
-		         WHEN cooldown_level = 2 THEN interval '15 minutes'
-		         WHEN cooldown_level = 3 THEN interval '20 minutes'
-		         WHEN cooldown_level = 4 THEN interval '30 minutes'
-		         WHEN cooldown_level = 5 THEN interval '45 minutes'
-		         ELSE interval '1 hour'
-		       END),
-		     updated_at = now()
-		 WHERE cooldown_level > 0 AND last_limit_at IS NOT NULL`,
-		`UPDATE icloud_hme_create_job_items item
-		 SET next_attempt_at = source.next_create_at, updated_at = now()
-		 FROM icloud_hme_source_accounts source
-		 WHERE item.source_account_id = source.id
-		   AND item.status = 'pending' AND item.retry_class = 'rate_limit'`,
-		`UPDATE icloud_hme_automation_events
-		 SET result = 'waiting', error_code = 'icloud_source_wait',
-		     message = '主账号正在等待下一次单项探测，队列将自动继续'
-		 WHERE error_code IN ('icloud_no_healthy_source', 'icloud_source_wait')
-		   AND event_type = 'queue'`,
-		`UPDATE icloud_hme_create_job_items item
-		 SET next_attempt_at = LEAST(
-		       COALESCE(item.next_attempt_at, now() + interval '8 minutes'),
-		       now() + interval '8 minutes'
-		     ),
-		     updated_at = now()
-		 FROM icloud_hme_create_jobs job
-		 WHERE item.job_id = job.id
-		   AND job.origin = 'automation'
-		   AND item.status = 'pending'
-		   AND item.retry_class = 'source_wait'
-		   AND EXISTS (
-		     SELECT 1 FROM icloud_hme_source_accounts source
-		     WHERE source.probe_policy_version = 0
-		   )`,
-		`UPDATE icloud_hme_source_accounts
-		 SET probe_policy_version = 1,
-		     probe_stage = 0,
-		     probe_success_streak = 0,
-		     probe_success_target = 3,
-		     probe_stable_stage = -1,
-		     probe_recovery_mode = cooldown_level > 0,
-		     probe_limit_started_at = CASE
-		       WHEN cooldown_level > 0 THEN COALESCE(last_limit_at, now())
-		       ELSE NULL
-		     END,
-		     probe_last_limit_stage = CASE WHEN cooldown_level > 0 THEN 0 ELSE -1 END,
-		     next_create_at = CASE
-		       WHEN automation_enabled AND status = 'active'
-		       THEN LEAST(COALESCE(next_create_at, now() + interval '8 minutes'), now() + interval '8 minutes')
-		       ELSE next_create_at
-		     END,
-		     updated_at = now()
-		 WHERE probe_policy_version = 0`,
-		`WITH pending AS (
-		   SELECT item.id, job.label_prefix,
-		          row_number() OVER (PARTITION BY job.label_prefix ORDER BY item.id) AS row_number_value
-		   FROM icloud_hme_create_job_items item
-		   JOIN icloud_hme_create_jobs job ON job.id = item.job_id
-		   WHERE job.origin = 'automation' AND item.status IN ('pending', 'running')
-		 ),
-		 prefixes AS (
-		   SELECT DISTINCT label_prefix FROM pending
-		 ),
-		 max_sequences AS (
-		   SELECT prefix.label_prefix, COALESCE((
-		     SELECT max(suffix::integer)
-		     FROM (
-		       SELECT substring(alias.label FROM char_length(prefix.label_prefix) + 3) AS suffix
-		       FROM icloud_hme_aliases alias
-		       WHERE left(alias.label, char_length(prefix.label_prefix) + 2) = prefix.label_prefix || ' #'
-		       UNION ALL
-		       SELECT substring(item.label FROM char_length(prefix.label_prefix) + 3) AS suffix
-		       FROM icloud_hme_create_job_items item
-		       WHERE left(item.label, char_length(prefix.label_prefix) + 2) = prefix.label_prefix || ' #'
-		     ) labels
-		     WHERE suffix ~ '^[0-9]+$'
-		   ), 0) AS max_sequence
-		   FROM prefixes prefix
-		 ),
-		 assignments AS (
-		   SELECT pending.id,
-		          pending.label_prefix || ' #' ||
-		          (max_sequences.max_sequence + pending.row_number_value)::text AS label
-		   FROM pending
-		   JOIN max_sequences USING (label_prefix)
-		 )
-		 UPDATE icloud_hme_create_job_items item
-		 SET label = assignments.label, updated_at = now()
-		 FROM assignments
-		 WHERE item.id = assignments.id
-		   AND EXISTS (
-		     SELECT 1 FROM icloud_hme_source_accounts source
-		     WHERE source.probe_policy_version < 2
-		   )`,
-		`WITH ranked AS (
-		   SELECT item.id,
-		          row_number() OVER (
-		            PARTITION BY lower(item.email)
-		            ORDER BY COALESCE(item.finished_at, item.updated_at), item.id
-		          ) AS occurrence
-		   FROM icloud_hme_create_job_items item
-		   JOIN icloud_hme_create_jobs job ON job.id = item.job_id
-		   WHERE job.origin = 'automation'
-		     AND item.status = 'completed' AND item.email <> ''
-		 )
-		 UPDATE icloud_hme_automation_events event
-		 SET result = 'recovered',
-		     message = '恢复已有隐藏邮箱，未新增库存'
-		 FROM ranked
-		 WHERE event.job_item_id = ranked.id
-		   AND ranked.occurrence > 1
-		   AND event.event_type = 'create' AND event.result = 'success'
-		   AND EXISTS (
-		     SELECT 1 FROM icloud_hme_source_accounts source
-		     WHERE source.probe_policy_version < 2
-		   )`,
-		`UPDATE icloud_hme_source_accounts source
-		 SET probe_policy_version = 2,
-		     probe_stage = 0,
-		     probe_success_streak = 0,
-		     probe_success_target = 3,
-		     probe_stable_stage = -1,
-		     probe_recovery_mode = cooldown_level > 0,
-		     probe_limit_started_at = CASE
-		       WHEN cooldown_level > 0 THEN COALESCE(last_limit_at, now())
-		       ELSE NULL
-		     END,
-		     last_created_at = (
-		       SELECT max(alias.created_at)
-		       FROM icloud_hme_aliases alias
-		       WHERE alias.source_account_id = source.id
-		     ),
-		     next_create_at = CASE
-		       WHEN automation_enabled AND status = 'active' THEN now() + interval '8 minutes'
-		       ELSE next_create_at
-		     END,
-		     updated_at = now()
-		 WHERE probe_policy_version < 2`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_active_job_item_label
-		 ON icloud_hme_create_job_items(label)
-		 WHERE status IN ('pending', 'running')`,
-	}
 }
 
 func (s *Store) EnsureAdmin(ctx context.Context, username string, password string) error {
@@ -599,10 +587,10 @@ func (s *Store) EnsureAdmin(ctx context.Context, username string, password strin
 	}
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO admins (username, password_hash)
-		VALUES ($1, $2)
+		VALUES (?, ?)
 		ON CONFLICT (username) DO UPDATE SET
-			password_hash = EXCLUDED.password_hash,
-			updated_at = now()
+			password_hash = excluded.password_hash,
+			updated_at = CURRENT_TIMESTAMP
 	`, username, string(hash))
 	if err != nil {
 		return fmt.Errorf("store: ensure admin: %w", err)
@@ -612,8 +600,8 @@ func (s *Store) EnsureAdmin(ctx context.Context, username string, password strin
 
 func (s *Store) ValidateAdmin(ctx context.Context, username string, password string) error {
 	var passwordHash string
-	err := s.pool.QueryRow(ctx, `SELECT password_hash FROM admins WHERE username = $1`, username).Scan(&passwordHash)
-	if errors.Is(err, pgx.ErrNoRows) {
+	err := s.pool.QueryRow(ctx, `SELECT password_hash FROM admins WHERE username = ?`, username).Scan(&passwordHash)
+	if errors.Is(err, sql.ErrNoRows) {
 		return errors.New("用户名或密码错误")
 	}
 	if err != nil {
@@ -645,12 +633,12 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 
 func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
 	name = normalizeGroup(name)
+	if _, err := s.ensureGroup(ctx, name); err != nil {
+		return Group{}, fmt.Errorf("store: create group: %w", err)
+	}
 	var group Group
 	err := s.pool.QueryRow(ctx, `
-		INSERT INTO groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = groups.updated_at
-		RETURNING id, name, sort_order, created_at, updated_at
+		SELECT id, name, sort_order, created_at, updated_at FROM groups WHERE name = ?
 	`, name).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return Group{}, fmt.Errorf("store: create group: %w", err)
@@ -660,15 +648,20 @@ func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
 
 func (s *Store) RenameGroup(ctx context.Context, id int64, name string) (Group, error) {
 	name = normalizeGroup(name)
-	var group Group
-	err := s.pool.QueryRow(ctx, `
-		UPDATE groups SET name = $1, updated_at = now()
-		WHERE id = $2 AND name <> $3
-		RETURNING id, name, sort_order, created_at, updated_at
-	`, name, id, DefaultGroupName).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE groups SET name = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND name <> ?
+	`, name, id, DefaultGroupName)
+	if err != nil {
+		return Group{}, fmt.Errorf("store: rename group: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
 		return Group{}, errors.New("分组不存在")
 	}
+	var group Group
+	err = s.pool.QueryRow(ctx, `
+		SELECT id, name, sort_order, created_at, updated_at FROM groups WHERE id = ?
+	`, id).Scan(&group.ID, &group.Name, &group.SortOrder, &group.CreatedAt, &group.UpdatedAt)
 	if err != nil {
 		return Group{}, fmt.Errorf("store: rename group: %w", err)
 	}
@@ -697,7 +690,7 @@ func (s *Store) ReorderGroups(ctx context.Context, ids []int64) ([]Group, error)
 	defer transaction.Rollback(ctx)
 
 	for index, id := range ids {
-		result, err := transaction.Exec(ctx, `UPDATE groups SET sort_order = $1, updated_at = now() WHERE id = $2`, index, id)
+		result, err := transaction.Exec(ctx, `UPDATE groups SET sort_order = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, index, id)
 		if err != nil {
 			return nil, fmt.Errorf("store: reorder group: %w", err)
 		}
@@ -713,13 +706,13 @@ func (s *Store) ReorderGroups(ctx context.Context, ids []int64) ([]Group, error)
 
 func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	var count int
-	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM mail_accounts WHERE group_id = $1`, id).Scan(&count); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM mail_accounts WHERE group_id = ?`, id).Scan(&count); err != nil {
 		return fmt.Errorf("store: count group accounts: %w", err)
 	}
 	if count > 0 {
 		return errors.New("只能删除空分组")
 	}
-	result, err := s.pool.Exec(ctx, `DELETE FROM groups WHERE id = $1 AND name <> $2`, id, DefaultGroupName)
+	result, err := s.pool.Exec(ctx, `DELETE FROM groups WHERE id = ? AND name <> ?`, id, DefaultGroupName)
 	if err != nil {
 		return fmt.Errorf("store: delete group: %w", err)
 	}
@@ -729,13 +722,46 @@ func (s *Store) DeleteGroup(ctx context.Context, id int64) error {
 	return nil
 }
 
+const mailAccountSelectColumns = `
+	SELECT a.email, a.password, a.password_encrypted, a.client_id, g.name, a.remark, a.status, a.error_message,
+		COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
+		a.last_sync_at, a.created_at, a.updated_at
+	FROM mail_accounts a
+	JOIN groups g ON g.id = a.group_id
+`
+
+func (s *Store) scanMailAccount(row interface{ Scan(...any) error }) (MailAccount, error) {
+	var account MailAccount
+	var legacyPassword, encryptedPassword string
+	if err := row.Scan(
+		&account.Email,
+		&legacyPassword,
+		&encryptedPassword,
+		&account.ClientID,
+		&account.Group,
+		&account.Remark,
+		&account.Status,
+		&account.ErrorMessage,
+		&account.ParentEmail,
+		&account.SplitIndex,
+		&account.SplitGeneratedAt,
+		&account.LastSyncAt,
+		&account.CreatedAt,
+		&account.UpdatedAt,
+	); err != nil {
+		return MailAccount{}, err
+	}
+	password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
+	if err != nil {
+		return MailAccount{}, fmt.Errorf("store: decrypt account password: %w", err)
+	}
+	account.Password = password
+	account.DisplayName = account.Email
+	return account, nil
+}
+
 func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT a.email, a.password, a.password_encrypted, a.client_id, g.name, a.remark, a.status, a.error_message,
-			COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
-			a.last_sync_at, a.created_at, a.updated_at
-		FROM mail_accounts a
-		JOIN groups g ON g.id = a.group_id
+	rows, err := s.pool.Query(ctx, mailAccountSelectColumns+`
 		ORDER BY COALESCE(a.parent_email, a.email) ASC, a.parent_email NULLS FIRST, a.split_index NULLS FIRST, a.created_at ASC, a.email ASC
 	`)
 	if err != nil {
@@ -745,32 +771,10 @@ func (s *Store) ListAccounts(ctx context.Context) ([]MailAccount, error) {
 
 	accounts := []MailAccount{}
 	for rows.Next() {
-		var account MailAccount
-		var legacyPassword, encryptedPassword string
-		if err := rows.Scan(
-			&account.Email,
-			&legacyPassword,
-			&encryptedPassword,
-			&account.ClientID,
-			&account.Group,
-			&account.Remark,
-			&account.Status,
-			&account.ErrorMessage,
-			&account.ParentEmail,
-			&account.SplitIndex,
-			&account.SplitGeneratedAt,
-			&account.LastSyncAt,
-			&account.CreatedAt,
-			&account.UpdatedAt,
-		); err != nil {
+		account, err := s.scanMailAccount(rows)
+		if err != nil {
 			return nil, fmt.Errorf("store: scan account: %w", err)
 		}
-		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
-		if err != nil {
-			return nil, fmt.Errorf("store: decrypt account password: %w", err)
-		}
-		account.Password = password
-		account.DisplayName = account.Email
 		accounts = append(accounts, account)
 	}
 	return accounts, rows.Err()
@@ -800,16 +804,16 @@ func (s *Store) ImportAccounts(ctx context.Context, inputs []AccountInput) (Impo
 			INSERT INTO mail_accounts (
 				email, auth_email, password, password_encrypted, client_id, refresh_token_encrypted, group_id, remark, status, error_message
 			)
-			VALUES ($1, $2, '', $3, $4, $5, $6, $7, 'idle', '')
+			VALUES (?, ?, '', ?, ?, ?, ?, ?, 'idle', '')
 			ON CONFLICT (email) DO UPDATE SET
-				auth_email = EXCLUDED.auth_email,
+				auth_email = excluded.auth_email,
 				password = '',
-				password_encrypted = EXCLUDED.password_encrypted,
-				client_id = EXCLUDED.client_id,
-				refresh_token_encrypted = EXCLUDED.refresh_token_encrypted,
-				group_id = EXCLUDED.group_id,
-				remark = CASE WHEN $8 THEN EXCLUDED.remark ELSE mail_accounts.remark END,
-				updated_at = now()
+				password_encrypted = excluded.password_encrypted,
+				client_id = excluded.client_id,
+				refresh_token_encrypted = excluded.refresh_token_encrypted,
+				group_id = excluded.group_id,
+				remark = CASE WHEN ? THEN excluded.remark ELSE remark END,
+				updated_at = CURRENT_TIMESTAMP
 		`, input.Email, authEmail, encryptedPassword, input.ClientID, encrypted, groupID, input.Remark, input.RemarkSet)
 		if err != nil {
 			return result, fmt.Errorf("store: import account: %w", err)
@@ -841,8 +845,8 @@ func (s *Store) ExportAccounts(ctx context.Context, emails []string) (string, er
 	`
 	args := []any{}
 	if len(normalizedEmails) > 0 {
-		query += `WHERE lower(email) = ANY($1) `
-		args = append(args, normalizedEmails)
+		query += `WHERE lower(email) IN (` + sqlInPlaceholders(len(normalizedEmails)) + `) `
+		args = append(args, stringArgs(normalizedEmails)...)
 	}
 	query += `ORDER BY created_at ASC, email ASC`
 
@@ -887,68 +891,59 @@ func uniqueNormalizedEmails(emails []string) []string {
 
 func (s *Store) UpdateAccountRemark(ctx context.Context, email string, remark string) (MailAccount, error) {
 	normalized := normalizeEmail(email)
-	var account MailAccount
-	var legacyPassword, encryptedPassword string
-	err := s.pool.QueryRow(ctx, `
-		UPDATE mail_accounts a
-		SET remark = $2, updated_at = now()
-		FROM groups g
-		WHERE a.group_id = g.id AND lower(a.email) = $1
-		RETURNING a.email, a.password, a.password_encrypted, a.client_id, g.name, a.remark, a.status, a.error_message,
-			COALESCE(a.parent_email, ''), a.split_index, a.split_generated_at,
-			a.last_sync_at, a.created_at, a.updated_at
-	`, normalized, strings.TrimSpace(remark)).Scan(
-		&account.Email,
-		&legacyPassword,
-		&encryptedPassword,
-		&account.ClientID,
-		&account.Group,
-		&account.Remark,
-		&account.Status,
-		&account.ErrorMessage,
-		&account.ParentEmail,
-		&account.SplitIndex,
-		&account.SplitGeneratedAt,
-		&account.LastSyncAt,
-		&account.CreatedAt,
-		&account.UpdatedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return MailAccount{}, errors.New("账号不存在")
-	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE mail_accounts
+		SET remark = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
+	`, strings.TrimSpace(remark), normalized)
 	if err != nil {
 		return MailAccount{}, fmt.Errorf("store: update account remark: %w", err)
 	}
-	password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
-	if err != nil {
-		return MailAccount{}, fmt.Errorf("store: decrypt account password: %w", err)
+	if tag.RowsAffected() == 0 {
+		return MailAccount{}, errors.New("账号不存在")
 	}
-	account.Password = password
-	account.DisplayName = account.Email
+	account, err := s.scanMailAccount(s.pool.QueryRow(ctx, mailAccountSelectColumns+`WHERE lower(a.email) = ?`, normalized))
+	if err != nil {
+		return MailAccount{}, fmt.Errorf("store: reload account after remark update: %w", err)
+	}
 	return account, nil
 }
 
 func (s *Store) DeleteAccount(ctx context.Context, email string) ([]string, error) {
 	normalized := normalizeEmail(email)
-	rows, err := s.pool.Query(ctx, `DELETE FROM mail_accounts WHERE lower(email) = $1 OR lower(parent_email) = $1 RETURNING email`, normalized)
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("store: begin delete account: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `SELECT email FROM mail_accounts WHERE lower(email) = ? OR lower(parent_email) = ?`, normalized, normalized)
 	if err != nil {
 		return nil, fmt.Errorf("store: delete account: %w", err)
 	}
-	defer rows.Close()
-
 	deletedEmails := []string{}
 	for rows.Next() {
 		var deletedEmail string
 		if err := rows.Scan(&deletedEmail); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("store: scan deleted account: %w", err)
 		}
 		deletedEmails = append(deletedEmails, deletedEmail)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("store: read deleted accounts: %w", err)
 	}
+	rows.Close()
 	if len(deletedEmails) == 0 {
 		return nil, errors.New("账号不存在")
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM mail_accounts WHERE lower(email) = ? OR lower(parent_email) = ?`, normalized, normalized); err != nil {
+		return nil, fmt.Errorf("store: delete account: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("store: commit delete account: %w", err)
 	}
 	return deletedEmails, nil
 }
@@ -971,10 +966,9 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 		SELECT a.password, a.password_encrypted, a.client_id, a.refresh_token_encrypted, a.group_id, g.name, a.remark
 		FROM mail_accounts a
 		JOIN groups g ON g.id = a.group_id
-		WHERE lower(a.email) = $1 AND COALESCE(a.parent_email, '') = ''
-		FOR UPDATE
+		WHERE lower(a.email) = ? AND COALESCE(a.parent_email, '') = ''
 	`, parentEmail).Scan(&legacyPassword, &encryptedPassword, &clientID, &encrypted, &groupID, &groupName, &remark)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return SplitResult{}, errors.New("主账号不存在或不是主账号")
 	}
 	if err != nil {
@@ -992,7 +986,7 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 	}
 
 	var childCount int
-	if err := tx.QueryRow(ctx, `SELECT count(*) FROM mail_accounts WHERE parent_email = $1`, parentEmail).Scan(&childCount); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM mail_accounts WHERE parent_email = ?`, parentEmail).Scan(&childCount); err != nil {
 		return SplitResult{}, fmt.Errorf("store: count split children: %w", err)
 	}
 	if childCount > 0 {
@@ -1007,40 +1001,32 @@ func (s *Store) SplitHotmailAccount(ctx context.Context, email string) (SplitRes
 			return SplitResult{}, err
 		}
 		splitIndex := index
-		var account MailAccount
-		err = tx.QueryRow(ctx, `
+		if _, err := tx.Exec(ctx, `
 			INSERT INTO mail_accounts (
 				email, auth_email, parent_email, split_index, split_generated_at,
 				password, password_encrypted, client_id, refresh_token_encrypted, group_id, remark, status, error_message
 			)
-			VALUES ($1, $2, $3, $4, $5, '', $6, $7, $8, $9, $10, 'idle', '')
-			RETURNING email, password, password_encrypted, client_id, remark, status, error_message, parent_email, split_index,
-				split_generated_at, last_sync_at, created_at, updated_at
-		`, alias, parentEmail, parentEmail, splitIndex, generatedAt, encryptedPassword, clientID, encrypted, groupID, remark).Scan(
-			&account.Email,
-			&legacyPassword,
-			&encryptedPassword,
-			&account.ClientID,
-			&account.Remark,
-			&account.Status,
-			&account.ErrorMessage,
-			&account.ParentEmail,
-			&account.SplitIndex,
-			&account.SplitGeneratedAt,
-			&account.LastSyncAt,
-			&account.CreatedAt,
-			&account.UpdatedAt,
-		)
-		if err != nil {
+			VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, 'idle', '')
+		`, alias, parentEmail, parentEmail, splitIndex, generatedAt, encryptedPassword, clientID, encrypted, groupID, remark); err != nil {
 			return SplitResult{}, fmt.Errorf("store: insert split child: %w", err)
 		}
-		password, err := s.decryptAccountPassword(encryptedPassword, legacyPassword)
-		if err != nil {
-			return SplitResult{}, fmt.Errorf("store: decrypt split child password: %w", err)
-		}
+		var account MailAccount
+		account.Email = alias
 		account.Password = password
+		account.ClientID = clientID
+		account.Remark = remark
+		account.Status = "idle"
+		account.ParentEmail = parentEmail
+		account.SplitIndex = &splitIndex
 		account.Group = groupName
-		account.DisplayName = account.Email
+		account.DisplayName = alias
+		splitGeneratedAt := generatedAt
+		account.SplitGeneratedAt = &splitGeneratedAt
+		if err := tx.QueryRow(ctx, `
+			SELECT created_at, updated_at FROM mail_accounts WHERE email = ?
+		`, alias).Scan(&account.CreatedAt, &account.UpdatedAt); err != nil {
+			return SplitResult{}, fmt.Errorf("store: read split child: %w", err)
+		}
 		accounts = append(accounts, account)
 	}
 
@@ -1064,10 +1050,11 @@ func (s *Store) MoveAccountsToGroup(ctx context.Context, emails []string, group 
 	if len(normalized) == 0 {
 		return errors.New("请选择账号")
 	}
+	args := append([]any{groupID}, stringArgs(normalized)...)
 	_, err = s.pool.Exec(ctx, `
-		UPDATE mail_accounts SET group_id = $1, updated_at = now()
-		WHERE lower(email) = ANY($2)
-	`, groupID, normalized)
+		UPDATE mail_accounts SET group_id = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalized))+`)
+	`, args...)
 	if err != nil {
 		return fmt.Errorf("store: move accounts: %w", err)
 	}
@@ -1080,9 +1067,9 @@ func (s *Store) GetCredentials(ctx context.Context, email string) (AccountCreden
 	err := s.pool.QueryRow(ctx, `
 		SELECT email, COALESCE(NULLIF(auth_email, ''), email), client_id, refresh_token_encrypted
 		FROM mail_accounts
-		WHERE lower(email) = $1
+		WHERE lower(email) = ?
 	`, normalizeEmail(email)).Scan(&credentials.Email, &credentials.AuthEmail, &credentials.ClientID, &encrypted)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		return AccountCredentials{}, errors.New("账号不存在")
 	}
 	if err != nil {
@@ -1105,8 +1092,8 @@ func (s *Store) UpdateRefreshToken(ctx context.Context, email string, refreshTok
 		return err
 	}
 	_, err = s.pool.Exec(ctx, `
-		UPDATE mail_accounts SET refresh_token_encrypted = $1, updated_at = now()
-		WHERE lower(email) = $2
+		UPDATE mail_accounts SET refresh_token_encrypted = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
 	`, encrypted, normalizeEmail(email))
 	if err != nil {
 		return fmt.Errorf("store: update refresh token: %w", err)
@@ -1117,8 +1104,9 @@ func (s *Store) UpdateRefreshToken(ctx context.Context, email string, refreshTok
 func (s *Store) UpdateAccountStatus(ctx context.Context, email string, status string, errorMessage string, synced bool) error {
 	query := `
 		UPDATE mail_accounts
-		SET status = $1, error_message = $2, updated_at = now(), last_sync_at = CASE WHEN $3 THEN now() ELSE last_sync_at END
-		WHERE lower(email) = $4
+		SET status = ?, error_message = ?, updated_at = CURRENT_TIMESTAMP,
+			last_sync_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE last_sync_at END
+		WHERE lower(email) = ?
 	`
 	_, err := s.pool.Exec(ctx, query, status, errorMessage, synced, normalizeEmail(email))
 	if err != nil {
@@ -1129,14 +1117,15 @@ func (s *Store) UpdateAccountStatus(ctx context.Context, email string, status st
 
 func (s *Store) ensureGroup(ctx context.Context, name string) (int64, error) {
 	name = normalizeGroup(name)
-	var id int64
-	err := s.pool.QueryRow(ctx, `
+	if _, err := s.pool.Exec(ctx, `
 		INSERT INTO groups (name, sort_order)
-		VALUES ($1, COALESCE((SELECT max(sort_order) + 1 FROM groups), 0))
-		ON CONFLICT (name) DO UPDATE SET updated_at = groups.updated_at
-		RETURNING id
-	`, name).Scan(&id)
-	if err != nil {
+		VALUES (?, COALESCE((SELECT max(sort_order) + 1 FROM groups), 0))
+		ON CONFLICT (name) DO NOTHING
+	`, name); err != nil {
+		return 0, fmt.Errorf("store: ensure group: %w", err)
+	}
+	var id int64
+	if err := s.pool.QueryRow(ctx, `SELECT id FROM groups WHERE name = ?`, name).Scan(&id); err != nil {
 		return 0, fmt.Errorf("store: ensure group: %w", err)
 	}
 	return id, nil
@@ -1145,7 +1134,7 @@ func (s *Store) ensureGroup(ctx context.Context, name string) (int64, error) {
 func (s *Store) accountExists(ctx context.Context, email string) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx, `
-		SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE lower(email) = $1)
+		SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE lower(email) = ?)
 	`, normalizeEmail(email)).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("store: check account exists: %w", err)
@@ -1162,155 +1151,6 @@ func (s *Store) decryptAccountPassword(encrypted string, legacy string) (string,
 		return "", err
 	}
 	return password, nil
-}
-
-func (s *Store) backfillAuthEmails(ctx context.Context) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT email
-		FROM mail_accounts
-		WHERE auth_email = '' OR auth_email IS NULL
-	`)
-	if err != nil {
-		return fmt.Errorf("store: query auth email backfill: %w", err)
-	}
-	defer rows.Close()
-
-	emails := []string{}
-	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
-			return fmt.Errorf("store: scan auth email backfill: %w", err)
-		}
-		emails = append(emails, email)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: read auth email backfill: %w", err)
-	}
-
-	for _, email := range emails {
-		if _, err := s.pool.Exec(ctx, `
-			UPDATE mail_accounts
-			SET auth_email = $1, updated_at = now()
-			WHERE email = $2
-		`, authEmailFor(email), normalizeEmail(email)); err != nil {
-			return fmt.Errorf("store: backfill auth email: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) backfillEncryptedPasswords(ctx context.Context) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT email, password
-		FROM mail_accounts
-		WHERE password <> '' AND (password_encrypted = '' OR password_encrypted IS NULL)
-	`)
-	if err != nil {
-		return fmt.Errorf("store: query password backfill: %w", err)
-	}
-	defer rows.Close()
-
-	type accountPassword struct {
-		email    string
-		password string
-	}
-	passwords := []accountPassword{}
-	for rows.Next() {
-		var item accountPassword
-		if err := rows.Scan(&item.email, &item.password); err != nil {
-			return fmt.Errorf("store: scan password backfill: %w", err)
-		}
-		passwords = append(passwords, item)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: read password backfill: %w", err)
-	}
-
-	for _, item := range passwords {
-		encrypted, err := secure.EncryptString(s.tokenKey, item.password)
-		if err != nil {
-			return fmt.Errorf("store: encrypt password backfill: %w", err)
-		}
-		if _, err := s.pool.Exec(ctx, `
-			UPDATE mail_accounts
-			SET password_encrypted = $1,
-				password = '',
-				updated_at = now()
-			WHERE email = $2
-		`, encrypted, item.email); err != nil {
-			return fmt.Errorf("store: update password backfill: %w", err)
-		}
-	}
-	return nil
-}
-
-func (s *Store) backfillGroupSortOrder(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, `
-		WITH ordered AS (
-			SELECT id, row_number() OVER (ORDER BY name ASC) - 1 AS next_order
-			FROM groups
-		)
-		UPDATE groups
-		SET sort_order = ordered.next_order
-		FROM ordered
-		WHERE groups.id = ordered.id
-			AND groups.sort_order = 0
-			AND NOT EXISTS (SELECT 1 FROM groups WHERE sort_order <> 0)
-	`)
-	if err != nil {
-		return fmt.Errorf("store: backfill group sort order: %w", err)
-	}
-	return nil
-}
-
-func (s *Store) backfillSplitParents(ctx context.Context) error {
-	rows, err := s.pool.Query(ctx, `
-		SELECT email
-		FROM mail_accounts
-		WHERE (parent_email IS NULL OR parent_email = '')
-			AND lower(email) LIKE '%+%@hotmail.com'
-	`)
-	if err != nil {
-		return fmt.Errorf("store: query split parent backfill: %w", err)
-	}
-	defer rows.Close()
-
-	type splitChild struct {
-		email  string
-		parent string
-	}
-	children := []splitChild{}
-	for rows.Next() {
-		var email string
-		if err := rows.Scan(&email); err != nil {
-			return fmt.Errorf("store: scan split parent backfill: %w", err)
-		}
-		parent := hotmailParentEmail(email)
-		if parent != "" && parent != normalizeEmail(email) {
-			children = append(children, splitChild{email: normalizeEmail(email), parent: parent})
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("store: read split parent backfill: %w", err)
-	}
-
-	parentCounts := map[string]int{}
-	for _, child := range children {
-		parentCounts[child.parent]++
-		splitIndex := parentCounts[child.parent]
-		if _, err := s.pool.Exec(ctx, `
-			UPDATE mail_accounts
-			SET parent_email = $1,
-				split_index = COALESCE(split_index, $2),
-				split_generated_at = COALESCE(split_generated_at, created_at),
-				auth_email = $1,
-				updated_at = now()
-			WHERE email = $3
-		`, child.parent, splitIndex, child.email); err != nil {
-			return fmt.Errorf("store: backfill split parent: %w", err)
-		}
-	}
-	return nil
 }
 
 func authEmailFor(email string) string {
@@ -1337,7 +1177,7 @@ func isMicrosoftPersonalDomain(domain string) bool {
 	}
 }
 
-func (s *Store) uniqueHotmailAlias(ctx context.Context, tx pgx.Tx, parentEmail string) (string, error) {
+func (s *Store) uniqueHotmailAlias(ctx context.Context, tx *dbTx, parentEmail string) (string, error) {
 	local, domain, ok := strings.Cut(parentEmail, "@")
 	if !ok {
 		return "", errors.New("主账号格式错误")
@@ -1349,7 +1189,7 @@ func (s *Store) uniqueHotmailAlias(ctx context.Context, tx pgx.Tx, parentEmail s
 		}
 		alias := strings.ToLower(local + "+" + suffix + "@" + domain)
 		var exists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE email = $1)`, alias).Scan(&exists); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM mail_accounts WHERE email = ?)`, alias).Scan(&exists); err != nil {
 			return "", fmt.Errorf("store: check split alias: %w", err)
 		}
 		if !exists {

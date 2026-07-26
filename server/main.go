@@ -19,7 +19,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	database, err := store.New(ctx, cfg.DatabaseURL, cfg.TokenKey)
+	database, err := store.New(ctx, cfg.SQLitePath, cfg.TokenKey)
 	if err != nil {
 		log.Fatalf("database failed: %v", err)
 	}

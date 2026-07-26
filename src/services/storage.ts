@@ -445,8 +445,15 @@ const deleteSyncStatesForAccount = async (
   }
 }
 
+// Compare as instants, not strings: receivedAt keeps the sender's timezone
+// offset, so "…+08:00" and "…Z" for the same moment sort wrong lexically.
+const receivedAtValue = (message: { receivedAt?: string }): number => {
+  const value = Date.parse(message.receivedAt ?? '')
+  return Number.isNaN(value) ? 0 : value
+}
+
 const sortByReceivedAtDesc = (left: StoredMailMessage, right: StoredMailMessage): number =>
-  right.receivedAt.localeCompare(left.receivedAt)
+  receivedAtValue(right) - receivedAtValue(left)
 
 const matchesMessageQuery = (message: StoredMailMessage, query: string): boolean => {
   const searchableValues = [

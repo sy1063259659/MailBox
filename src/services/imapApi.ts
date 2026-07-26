@@ -50,7 +50,8 @@ export interface ImapMessageDetail {
   cc: ImapAddress[]
   receivedAt: string
   isRead: boolean
-  contentType: 'text' | 'html'
+  // The backend emits the full MIME type (imapmail/client.go), not a short name.
+  contentType: 'text/plain' | 'text/html'
   content: string
 }
 
@@ -65,7 +66,7 @@ export interface GetMessageResult {
   ok: boolean
   message: ImapMessageDetail
   body: {
-    contentType: 'text' | 'html'
+    contentType: 'text/plain' | 'text/html'
     content: string
   }
 }

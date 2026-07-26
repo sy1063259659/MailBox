@@ -16,6 +16,7 @@ type updateICloudHMEAutomationRequest struct {
 	TargetAvailableCount int    `json:"targetAvailableCount"`
 	TargetGroup          string `json:"targetGroup"`
 	LabelPrefix          string `json:"labelPrefix"`
+	PublicMailOrigin     string `json:"publicMailOrigin"`
 }
 
 type updateICloudHMEInventoryRequest struct {
@@ -39,7 +40,7 @@ func (api *iCloudHMEAPI) automationSettings(w http.ResponseWriter, r *http.Reque
 		}
 		settings, err := api.store.UpdateICloudHMEAutomation(
 			r.Context(), req.Enabled, req.TargetAvailableCount, req.TargetGroup,
-			req.LabelPrefix, requestActor(r),
+			req.LabelPrefix, req.PublicMailOrigin, requestActor(r),
 		)
 		if err != nil {
 			WriteError(w, 400, "bad_request", err.Error())

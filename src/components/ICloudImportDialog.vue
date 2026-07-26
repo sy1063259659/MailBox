@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 import { ICLOUD_DEFAULT_GROUP, useICloudAccountStore } from '@/stores/iCloudAccount'
+import { confirmAction } from '@/utils/confirm'
 
 const visible = defineModel<boolean>({ required: true })
 const store = useICloudAccountStore()
@@ -28,7 +29,7 @@ watch(
 
 async function submit(overwrite: boolean) {
   if (overwrite) {
-    await ElMessageBox.confirm(
+    const confirmed = await confirmAction(
       '覆盖导入只会清空现有 iCloud 账号，Outlook/Hotmail 账号和两套分组不受影响。',
       '覆盖导入 iCloud',
       {
@@ -37,6 +38,9 @@ async function submit(overwrite: boolean) {
         type: 'warning',
       },
     )
+    if (!confirmed) {
+      return
+    }
   }
 
   importing.value = true

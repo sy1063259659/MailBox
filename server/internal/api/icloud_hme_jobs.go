@@ -2,14 +2,13 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"gptbox-server/internal/icloudhme"
 	"gptbox-server/internal/store"
@@ -119,7 +118,7 @@ func (api *iCloudHMEAPI) wakeJobWorker() {
 func (api *iCloudHMEAPI) runAvailableJobs() {
 	for {
 		job, err := api.store.NextRunnableICloudHMEJob(context.Background())
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return
 		}
 		if err != nil {
@@ -142,7 +141,7 @@ func (api *iCloudHMEAPI) runJob(job store.ICloudHMECreateJob) {
 			return
 		}
 		item, err := api.store.ClaimNextICloudHMEJobItem(ctx, job.ID)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			_, _ = api.store.RefreshICloudHMEJobProgress(ctx, job.ID)
 			return
 		}

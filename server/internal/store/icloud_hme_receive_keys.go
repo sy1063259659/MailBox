@@ -2,12 +2,11 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"gptbox-server/internal/secure"
 )
@@ -41,9 +40,8 @@ func (s *Store) GenerateMissingICloudHMEReceiveKeys(ctx context.Context, emails 
 	rows, err := tx.Query(ctx, `
 		SELECT email, receive_key_encrypted
 		FROM icloud_hme_aliases
-		WHERE lower(email) = ANY($1)
-		FOR UPDATE
-	`, normalized)
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalized))+`)
+	`, stringArgs(normalized)...)
 	if err != nil {
 		return 0, fmt.Errorf("store: select aliases for receive keys: %w", err)
 	}
@@ -78,10 +76,10 @@ func (s *Store) GenerateMissingICloudHMEReceiveKeys(ctx context.Context, emails 
 		_ = key
 		if _, err := tx.Exec(ctx, `
 			UPDATE icloud_hme_aliases
-			SET receive_key_encrypted = $2, receive_key_digest = $3,
-			    receive_key_updated_at = now(), updated_at = now()
-			WHERE lower(email) = $1
-		`, normalizeEmail(item.email), encrypted, digest); err != nil {
+			SET receive_key_encrypted = ?, receive_key_digest = ?,
+			    receive_key_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+			WHERE lower(email) = ?
+		`, encrypted, digest, normalizeEmail(item.email)); err != nil {
 			return 0, fmt.Errorf("store: save generated receive key: %w", err)
 		}
 		generated++
@@ -95,17 +93,19 @@ func (s *Store) GenerateMissingICloudHMEReceiveKeys(ctx context.Context, emails 
 func (s *Store) RevealICloudHMEReceiveKey(ctx context.Context, email string) (ICloudHMEReceiveKeyRecord, error) {
 	var record ICloudHMEReceiveKeyRecord
 	var encrypted string
+	var updatedAt sqliteTime
 	err := s.pool.QueryRow(ctx, `
 		SELECT email, receive_key_encrypted, COALESCE(receive_key_updated_at, updated_at)
 		FROM icloud_hme_aliases
-		WHERE lower(email) = $1
-	`, normalizeEmail(email)).Scan(&record.Email, &encrypted, &record.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
+		WHERE lower(email) = ?
+	`, normalizeEmail(email)).Scan(&record.Email, &encrypted, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
 		return record, errors.New("隐藏邮箱不存在")
 	}
 	if err != nil {
 		return record, fmt.Errorf("store: reveal receive key: %w", err)
 	}
+	record.UpdatedAt = updatedAt.Time()
 	if strings.TrimSpace(encrypted) == "" {
 		return record, errors.New("该隐藏邮箱尚未生成收件密钥")
 	}
@@ -127,9 +127,9 @@ func (s *Store) ExportICloudHMEReceiveKeys(ctx context.Context, emails []string)
 	rows, err := s.pool.Query(ctx, `
 		SELECT email, receive_key_encrypted, COALESCE(receive_key_updated_at, updated_at)
 		FROM icloud_hme_aliases
-		WHERE lower(email) = ANY($1)
+		WHERE lower(email) IN (`+sqlInPlaceholders(len(normalized))+`)
 		ORDER BY created_at DESC, email ASC
-	`, normalized)
+	`, stringArgs(normalized)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: export receive keys: %w", err)
 	}
@@ -138,9 +138,11 @@ func (s *Store) ExportICloudHMEReceiveKeys(ctx context.Context, emails []string)
 	for rows.Next() {
 		var record ICloudHMEReceiveKeyRecord
 		var encrypted string
-		if err := rows.Scan(&record.Email, &encrypted, &record.UpdatedAt); err != nil {
+		var updatedAt sqliteTime
+		if err := rows.Scan(&record.Email, &encrypted, &updatedAt); err != nil {
 			return nil, fmt.Errorf("store: scan exported receive key: %w", err)
 		}
+		record.UpdatedAt = updatedAt.Time()
 		if strings.TrimSpace(encrypted) == "" {
 			continue
 		}
@@ -158,19 +160,25 @@ func (s *Store) ResetICloudHMEReceiveKey(ctx context.Context, email string) (ICl
 	if err != nil {
 		return ICloudHMEReceiveKeyRecord{}, err
 	}
+	normalized := normalizeEmail(email)
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE icloud_hme_aliases
+		SET receive_key_encrypted = ?, receive_key_digest = ?,
+		    receive_key_updated_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		WHERE lower(email) = ?
+	`, encrypted, digest, normalized)
+	if err != nil {
+		return ICloudHMEReceiveKeyRecord{}, fmt.Errorf("store: reset receive key: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ICloudHMEReceiveKeyRecord{}, errors.New("隐藏邮箱不存在")
+	}
 	var record ICloudHMEReceiveKeyRecord
 	err = s.pool.QueryRow(ctx, `
-		UPDATE icloud_hme_aliases
-		SET receive_key_encrypted = $2, receive_key_digest = $3,
-		    receive_key_updated_at = now(), updated_at = now()
-		WHERE lower(email) = $1
-		RETURNING email, receive_key_updated_at
-	`, normalizeEmail(email), encrypted, digest).Scan(&record.Email, &record.UpdatedAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return record, errors.New("隐藏邮箱不存在")
-	}
+		SELECT email, receive_key_updated_at FROM icloud_hme_aliases WHERE lower(email) = ?
+	`, normalized).Scan(&record.Email, &record.UpdatedAt)
 	if err != nil {
-		return record, fmt.Errorf("store: reset receive key: %w", err)
+		return ICloudHMEReceiveKeyRecord{}, fmt.Errorf("store: reset receive key: %w", err)
 	}
 	record.Key = key
 	return record, nil
@@ -185,12 +193,12 @@ func (s *Store) AuthenticateICloudHMEPublicMail(ctx context.Context, email, rece
 		       a.receive_key_digest, a.apple_status, a.active
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
-		WHERE lower(a.email) = $1
+		WHERE lower(a.email) = ?
 	`, normalizeEmail(email)).Scan(
 		&credentials.AliasEmail, &credentials.ICloudEmail, &encryptedPassword,
 		&digest, &status, &active,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, sql.ErrNoRows) {
 		_ = secure.VerifyReceiveKey(s.tokenKey, receiveKey, strings.Repeat("0", 64))
 		return ICloudHMEMailCredentials{}, ErrInvalidICloudHMEReceiveCredentials
 	}

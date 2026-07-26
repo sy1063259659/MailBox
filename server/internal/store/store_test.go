@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -82,68 +83,73 @@ func TestSplitIndexUniqueIndexStatement(t *testing.T) {
 	t.Fatalf("migrationIndexStatements() missing %q", want)
 }
 
-func TestMailAccountsMigrationCreatesRemarkColumn(t *testing.T) {
-	statements := migrationColumnStatements()
-	for _, statement := range statements {
-		if strings.Contains(statement, "ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''") {
-			return
-		}
+func TestMailAccountsSchemaContainsRemarkColumn(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	if !strings.Contains(statements, "remark TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("migrationCreateStatements() missing remark column")
 	}
-	t.Fatal("migrationColumnStatements() missing remark column")
 }
 
-func TestMailAccountsMigrationCreatesEncryptedPasswordColumn(t *testing.T) {
-	statements := migrationColumnStatements()
-	for _, statement := range statements {
-		if strings.Contains(statement, "ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''") {
-			return
-		}
+func TestMailAccountsSchemaContainsEncryptedPasswordColumn(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	if !strings.Contains(statements, "password_encrypted TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("migrationCreateStatements() missing password_encrypted column")
 	}
-	t.Fatal("migrationColumnStatements() missing password_encrypted column")
 }
 
 func TestMigrationsDoNotCreateLegacyGPTAccountsTable(t *testing.T) {
-	statements := strings.Join(append(append(migrationCreateStatements(), migrationColumnStatements()...), migrationIndexStatements()...), "\n")
+	statements := strings.Join(append(migrationCreateStatements(), migrationIndexStatements()...), "\n")
 	if strings.Contains(statements, "gpt_accounts") {
 		t.Fatal("active migrations must not create or alter gpt_accounts")
 	}
 }
 
-func TestLegacyGPTAccountsTableCleanupIsIdempotent(t *testing.T) {
-	statements := legacyCleanupStatements()
-	joined := strings.Join(statements, "\n")
-	for _, want := range []string{"DROP TABLE IF EXISTS gpt_accounts", "UPDATE icloud_hme_source_accounts", "trustTokens"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("legacyCleanupStatements() missing %q: %v", want, statements)
+// Columns added after the first release must appear both in CREATE TABLE (for
+// fresh databases) and in an ALTER TABLE step (for databases already created by
+// an older build).
+func TestPublicMailOriginColumnIsCreatedAndBackfilled(t *testing.T) {
+	creates := strings.Join(migrationCreateStatements(), "\n")
+	if !strings.Contains(creates, "public_mail_origin TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("migrationCreateStatements() missing public_mail_origin column")
+	}
+	columns := strings.Join(migrationColumnStatements(), "\n")
+	if !strings.Contains(columns, "ADD COLUMN public_mail_origin TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("migrationColumnStatements() missing public_mail_origin upgrade step")
+	}
+}
+
+func TestMigrationColumnStatementsAlwaysCarryDefaults(t *testing.T) {
+	// SQLite rejects ADD COLUMN ... NOT NULL without a DEFAULT.
+	for _, statement := range migrationColumnStatements() {
+		if strings.Contains(statement, "NOT NULL") && !strings.Contains(statement, "DEFAULT") {
+			t.Fatalf("ADD COLUMN with NOT NULL needs a DEFAULT: %s", statement)
 		}
 	}
 }
 
-func TestGroupsMigrationCreatesSortOrderColumn(t *testing.T) {
-	statements := migrationColumnStatements()
-	for _, statement := range statements {
-		if strings.Contains(statement, "ALTER TABLE groups ADD COLUMN IF NOT EXISTS sort_order INTEGER NOT NULL DEFAULT 0") {
-			return
-		}
+func TestIsDuplicateColumnError(t *testing.T) {
+	if !isDuplicateColumnError(errors.New(`SQL logic error: duplicate column name: public_mail_origin (1)`)) {
+		t.Fatal("expected duplicate column name to be tolerated")
 	}
-	t.Fatal("migrationColumnStatements() missing group sort_order column")
+	if isDuplicateColumnError(errors.New("no such table: icloud_hme_automation_settings")) {
+		t.Fatal("unrelated errors must not be treated as duplicate columns")
+	}
+	if isDuplicateColumnError(nil) {
+		t.Fatal("nil error must not be treated as a duplicate column")
+	}
+}
+
+func TestGroupsSchemaContainsSortOrderColumn(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	if !strings.Contains(statements, "sort_order INTEGER NOT NULL DEFAULT 0") {
+		t.Fatal("migrationCreateStatements() missing group sort_order column")
+	}
 }
 
 func TestGroupListOrdersBySortOrder(t *testing.T) {
 	query := `SELECT id, name, sort_order, created_at, updated_at FROM groups ORDER BY sort_order ASC, name ASC`
 	if !strings.Contains(query, "ORDER BY sort_order ASC, name ASC") {
 		t.Fatal("group list query must order by sort_order then name")
-	}
-}
-
-func TestRenameGroupQueryProtectsDefaultGroup(t *testing.T) {
-	query := `
-		UPDATE groups SET name = $1, updated_at = now()
-		WHERE id = $2 AND name <> $3
-		RETURNING id, name, sort_order, created_at, updated_at
-	`
-	if !strings.Contains(query, "name <> $3") {
-		t.Fatal("rename group query must protect the default group")
 	}
 }
 
@@ -169,6 +175,44 @@ func TestRandomLetters(t *testing.T) {
 		}
 	}
 }
+
+func TestSQLInPlaceholders(t *testing.T) {
+	if got := sqlInPlaceholders(0); got != "" {
+		t.Fatalf("sqlInPlaceholders(0) = %q", got)
+	}
+	if got := sqlInPlaceholders(1); got != "?" {
+		t.Fatalf("sqlInPlaceholders(1) = %q", got)
+	}
+	if got := sqlInPlaceholders(3); got != "?,?,?" {
+		t.Fatalf("sqlInPlaceholders(3) = %q", got)
+	}
+}
+
+func TestSQLiteTimeScan(t *testing.T) {
+	var value sqliteTime
+	if err := value.Scan("2026-07-26 02:00:00"); err != nil {
+		t.Fatal(err)
+	}
+	if value.value == nil || value.value.Year() != 2026 {
+		t.Fatalf("sqliteTime.Scan seconds format = %v", value.value)
+	}
+	if err := value.Scan("2026-07-26 02:00:00.123456789+00:00"); err != nil {
+		t.Fatal(err)
+	}
+	if value.value == nil || value.value.Nanosecond() != 123456789 {
+		t.Fatalf("sqliteTime.Scan fractional format = %v", value.value)
+	}
+	if err := value.Scan(nil); err != nil {
+		t.Fatal(err)
+	}
+	if value.value != nil {
+		t.Fatalf("sqliteTime.Scan(nil) = %v", value.value)
+	}
+	if !value.Time().IsZero() {
+		t.Fatalf("sqliteTime.Time() for nil = %v", value.Time())
+	}
+}
+
 func TestICloudMigrationCreatesIndependentTables(t *testing.T) {
 	statements := strings.Join(migrationCreateStatements(), "\n")
 	for _, want := range []string{
@@ -184,6 +228,10 @@ func TestICloudMigrationCreatesIndependentTables(t *testing.T) {
 	if strings.Contains(statements, "icloud_accounts") && strings.Contains(statements, "client_id") {
 		iCloudStart := strings.Index(statements, "CREATE TABLE IF NOT EXISTS icloud_accounts")
 		iCloudStatements := statements[iCloudStart:]
+		iCloudEnd := strings.Index(iCloudStatements, "CREATE TABLE IF NOT EXISTS icloud_hme_groups")
+		if iCloudEnd > 0 {
+			iCloudStatements = iCloudStatements[:iCloudEnd]
+		}
 		if strings.Contains(iCloudStatements, "client_id") || strings.Contains(iCloudStatements, "refresh_token") {
 			t.Fatal("icloud_accounts must only contain the encrypted access key and account metadata")
 		}
@@ -195,6 +243,19 @@ func TestICloudMigrationCreatesIndexes(t *testing.T) {
 	for _, want := range []string{
 		"idx_icloud_accounts_group_id",
 		"idx_icloud_accounts_created_at",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("migrationIndexStatements() missing %q", want)
+		}
+	}
+}
+
+func TestLowerEmailExpressionIndexes(t *testing.T) {
+	statements := strings.Join(migrationIndexStatements(), "\n")
+	for _, want := range []string{
+		"idx_mail_accounts_email_lower ON mail_accounts(lower(email))",
+		"idx_icloud_accounts_email_lower ON icloud_accounts(lower(email))",
+		"idx_icloud_hme_aliases_email_lower ON icloud_hme_aliases(lower(email))",
 	} {
 		if !strings.Contains(statements, want) {
 			t.Fatalf("migrationIndexStatements() missing %q", want)
@@ -221,13 +282,6 @@ func TestICloudHMEMigrationCreatesIndependentTables(t *testing.T) {
 	}
 }
 
-func TestICloudHMEMigrationDoesNotAlterExistingICloudTables(t *testing.T) {
-	columns := strings.Join(migrationColumnStatements(), "\n")
-	if strings.Contains(columns, "icloud_accounts") || strings.Contains(columns, "icloud_groups") {
-		t.Fatal("HME migrations must not alter existing iCloud tables")
-	}
-}
-
 func TestICloudHMEManagementMigrations(t *testing.T) {
 	creates := strings.Join(migrationCreateStatements(), "\n")
 	for _, want := range []string{
@@ -238,35 +292,27 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS icloud_hme_automation_events",
 		"UNIQUE(job_id, sequence)",
 		"ON DELETE SET NULL",
+		"last_synced_at TIMESTAMP",
+		"last_created_at TIMESTAMP",
+		"last_error_at TIMESTAMP",
+		"apple_status TEXT NOT NULL DEFAULT 'active'",
+		"inventory_status TEXT NOT NULL DEFAULT 'available'",
+		"gpt_status TEXT NOT NULL DEFAULT 'unregistered'",
+		"gpt_plus_activated_at TIMESTAMP",
+		"gpt_deactivated_at TIMESTAMP",
+		"gpt_last_scanned_at TIMESTAMP",
+		"next_create_at TIMESTAMP",
+		"next_attempt_at TIMESTAMP",
+		"retry_class TEXT NOT NULL DEFAULT ''",
+		"origin TEXT NOT NULL DEFAULT 'manual'",
+		"probe_stage INTEGER NOT NULL DEFAULT 0",
+		"probe_success_streak INTEGER NOT NULL DEFAULT 0",
+		"probe_stable_stage INTEGER NOT NULL DEFAULT -1",
+		"interval_seconds INTEGER NOT NULL DEFAULT 0",
+		"recovery_seconds INTEGER NOT NULL DEFAULT 0",
 	} {
 		if !strings.Contains(creates, want) {
 			t.Fatalf("migrationCreateStatements() missing %q", want)
-		}
-	}
-	columns := strings.Join(migrationColumnStatements(), "\n")
-	for _, want := range []string{
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS apple_status",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS deleted_at",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_encrypted",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS receive_key_digest",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS inventory_status",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_status",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plus_activated_at",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivated_at",
-		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_last_scanned_at",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak",
-		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stable_stage",
-		"icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at",
-		"icloud_hme_automation_events ADD COLUMN IF NOT EXISTS interval_seconds",
-		"icloud_hme_automation_events ADD COLUMN IF NOT EXISTS recovery_seconds",
-	} {
-		if !strings.Contains(columns, want) {
-			t.Fatalf("migrationColumnStatements() missing %q", want)
 		}
 	}
 }
@@ -279,31 +325,10 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 		"idx_icloud_hme_audit_created_at",
 		"idx_icloud_hme_aliases_status",
 		"idx_icloud_hme_aliases_gpt_scan",
+		"idx_icloud_hme_active_job_item_label",
 	} {
 		if !strings.Contains(indexes, want) {
 			t.Fatalf("migrationIndexStatements() missing %q", want)
-		}
-	}
-}
-
-func TestICloudHMEAutomationCleanupUsesProgressiveProbeWindow(t *testing.T) {
-	statements := strings.Join(legacyCleanupStatements(), "\n")
-	for _, want := range []string{
-		"interval '10 minutes'",
-		"interval '15 minutes'",
-		"interval '20 minutes'",
-		"interval '45 minutes'",
-		"interval '1 hour'",
-		"status = 'pending' AND retry_class = 'rate_limit'",
-		"icloud_source_wait",
-		"probe_policy_version = 1",
-		"probe_policy_version = 2",
-		"row_number() OVER (PARTITION BY job.label_prefix ORDER BY item.id)",
-		"恢复已有隐藏邮箱，未新增库存",
-		"idx_icloud_hme_active_job_item_label",
-	} {
-		if !strings.Contains(statements, want) {
-			t.Fatalf("legacyCleanupStatements() missing %q", want)
 		}
 	}
 }
