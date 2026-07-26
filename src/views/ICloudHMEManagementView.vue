@@ -5,11 +5,12 @@ import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Ke
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
   completeICloudHMELogin, getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
-  exportICloudHMEReceiveKeys, generateICloudHMEReceiveKeys,
-  permanentlyDeleteICloudHMEAlias, refreshICloudHMECode, saveICloudHMEAppPassword,
-  revealICloudHMEReceiveKey, resetICloudHMEReceiveKey,
-  saveICloudHMECookies, startICloudHMELogin, syncAllICloudHMESources, syncICloudHMEAliases,
-  updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
+  exportICloudHMEReceiveKeys, generateICloudHMEReceiveKeys, getICloudHMELifecycleTask,
+  permanentlyDeleteICloudHMEAlias, refreshICloudHMECode, resumeICloudHMESourceAutomation,
+  revealICloudHMEReceiveKey, resetICloudHMEReceiveKey, saveICloudHMEAppPassword,
+  saveICloudHMECookies, startICloudHMEAliasLifecycle, startICloudHMELogin,
+  syncAllICloudHMESources, syncICloudHMEAliases,
+  validateAllICloudHMESources, validateICloudHMESource,
   getICloudHMEAutomation, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
   updateICloudHMEInventoryStatus, scanICloudHMEGPTStatus,
   type ICloudHMEAlias, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
@@ -38,6 +39,7 @@ const draggingGroupId = ref<number>()
 const renamingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
 const busy = ref(false)
+const lifecycleProgress = ref<{ label: string; done: number; total: number }>()
 const receiveKeyBusy = ref(false)
 const gptScanBusy = ref(false)
 const receiveURLBusyEmails = ref(new Set<string>())
@@ -248,6 +250,20 @@ function groupCount(group: ICloudHMEGroup) { return groupCounts.value.get(group.
 function canDeleteGroup(group: ICloudHMEGroup) { return group.name !== ICLOUD_HME_DEFAULT_GROUP && groupCount(group) === 0 }
 function sourceStatusType(status: string) { return status === 'active' ? 'success' : ['pending', 'cooldown'].includes(status) ? 'warning' : 'danger' }
 function sourceStatusText(status: string) { return status === 'active' ? '会话正常' : status === 'cooldown' ? '创建冷却' : status === 'pending' ? '待配置' : '需处理' }
+// Automation only picks sources with status active/cooldown, so an enabled
+// switch alone does not mean the account can actually participate.
+function sourceAutomationStuck(source: ICloudHMESourceAccount) {
+  return !source.automationEnabled || !['active', 'cooldown'].includes(source.status)
+}
+function sourceAutomationText(source: ICloudHMESourceAccount) {
+  if (!source.automationEnabled) return '已暂停'
+  if (!['active', 'cooldown'].includes(source.status)) return '被卡住 · ' + sourceStatusText(source.status)
+  if (source.status === 'cooldown') return '冷却中'
+  return source.probeRecoveryMode ? '恢复验证中' : '可参与'
+}
+const lifecycleLoadingText = computed(() => lifecycleProgress.value
+  ? `${lifecycleProgress.value.label}中 ${lifecycleProgress.value.done}/${lifecycleProgress.value.total}…`
+  : '')
 function probeRangeText(stage: number) {
   return ['5–7 分钟', '3–5 分钟', '2–3 分钟'][Math.min(2, Math.max(0, stage))] || '5–7 分钟'
 }
@@ -484,6 +500,14 @@ async function validateSource(source: ICloudHMESourceAccount) {
   try { await validateICloudHMESource(source.id); await store.load(); ElMessage.success('Apple 会话有效') }
   catch (error) { await store.load(); showError(error, '会话验证失败') } finally { sourceActionId.value = undefined }
 }
+async function resumeSourceAutomation(source: ICloudHMESourceAccount) {
+  sourceActionId.value = source.id
+  try {
+    await resumeICloudHMESourceAutomation(source.id)
+    await Promise.all([store.load(), loadAutomation()])
+    ElMessage.success('主账号已恢复自动补货，将立即参与下次探测')
+  } catch (error) { await store.load(); showError(error, '恢复自动补货失败') } finally { sourceActionId.value = undefined }
+}
 async function syncSource(source: ICloudHMESourceAccount) {
   sourceActionId.value = source.id
   try {
@@ -583,11 +607,23 @@ async function lifecycleSelected(action: 'deactivate' | 'reactivate', rows = sel
   if (!await confirmAction('确定在 Apple 侧' + actionText + ' ' + rows.length + ' 个隐藏邮箱？', actionText + '隐藏邮箱')) return
   busy.value = true
   try {
-    const results = await updateICloudHMEAliasLifecycle(rows.map((item) => item.email), action)
+    // The server runs the batch in the background; poll the task for progress
+    // instead of blocking one request until every Apple call finishes.
+    const started = await startICloudHMEAliasLifecycle(rows.map((item) => item.email), action)
+    lifecycleProgress.value = { label: actionText, done: 0, total: started.total }
+    let task = await getICloudHMELifecycleTask(started.taskId)
+    while (task.status === 'running') {
+      lifecycleProgress.value = { label: actionText, done: task.done, total: task.total }
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+      task = await getICloudHMELifecycleTask(started.taskId)
+    }
     await store.load()
-    const failed = results.filter((item) => !item.ok).length
+    const failed = task.results.filter((item) => !item.ok).length
     failed ? ElMessage.warning(actionText + '完成，' + failed + ' 个失败') : ElMessage.success(actionText + '完成')
-  } catch (error) { showError(error, actionText + '失败') } finally { busy.value = false }
+  } catch (error) { showError(error, actionText + '失败') } finally {
+    busy.value = false
+    lifecycleProgress.value = undefined
+  }
 }
 async function permanentlyDeleteAlias(alias: ICloudHMEAlias) {
   const confirmEmail = await promptForValue(
@@ -910,7 +946,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
         <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、取件 URL、邮箱---取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
-        <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
+        <el-table v-loading="store.loading || busy || receiveKeyBusy" :element-loading-text="lifecycleLoadingText" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
           <el-table-column label="隐藏邮箱" min-width="260" show-overflow-tooltip><template #default="{ row }"><div class="copy-cell" :class="{ copied: copiedValues.has(row.email) }"><span>{{ row.email }}</span><el-button link :icon="CopyDocument" @click.stop="copyValue(row.email)" /></div></template></el-table-column>
@@ -985,7 +1021,8 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-table-column label="别名" width="65" align="center"><template #default="{ row }">{{ row.aliasTotal }}</template></el-table-column>
         <el-table-column label="最近活动" min-width="170"><template #default="{ row }"><div class="hme-source-dates"><span>验证 {{ row.lastValidatedAt ? formatDateTime(row.lastValidatedAt) : '无' }}</span><span>同步 {{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '无' }}</span><span>创建 {{ row.lastCreatedAt ? formatDateTime(row.lastCreatedAt) : '无' }}</span><span v-if="row.lastErrorAt">异常 {{ formatDateTime(row.lastErrorAt) }}</span></div></template></el-table-column>
         <el-table-column label="自动补货" min-width="235"><template #default="{ row }"><div class="hme-source-dates">
-          <span>{{ row.automationEnabled ? (row.status === 'cooldown' ? '冷却中' : row.probeRecoveryMode ? '恢复验证中' : '可参与') : '已暂停' }}</span>
+          <span :class="{ 'danger-text': sourceAutomationStuck(row) }">{{ sourceAutomationText(row) }}</span>
+          <el-button v-if="sourceAutomationStuck(row)" size="small" type="warning" plain :loading="sourceActionId === row.id" :disabled="!row.cookieConfigured" @click="resumeSourceAutomation(row)">恢复自动补货</el-button>
           <span>当前 {{ probeRangeText(row.probeStage) }} · {{ row.probeSuccessStreak }}/{{ row.probeSuccessTarget }} 次</span>
           <span>暂定稳定 {{ probeStableText(row.probeStableStage) }}</span>
           <span v-if="row.probeLastIntervalSeconds">上次间隔 {{ formatProbeDuration(row.probeLastIntervalSeconds) }}</span>

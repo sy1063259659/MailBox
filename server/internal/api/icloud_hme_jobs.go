@@ -254,7 +254,7 @@ func randomICloudHMEDelay() time.Duration {
 
 func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHMECreateJob, item store.ICloudHMECreateJobItem) (int64, string, bool, string, error) {
 	if usesFixedICloudHMESource(job) {
-		email, created, err := api.createOrRecoverJobAlias(ctx, *job.SourceAccountID, item.Label, job.GroupName)
+		email, created, err := api.createOrRecoverJobAlias(ctx, *job.SourceAccountID, item.Label, job.GroupName, false)
 		if err != nil {
 			return *job.SourceAccountID, "", false, classifyICloudHMECode(err), err
 		}
@@ -283,14 +283,11 @@ func (api *iCloudHMEAPI) processJobItem(ctx context.Context, job store.ICloudHME
 		if job.Origin == "automation" {
 			_ = api.store.MarkICloudHMEAutomationAttempt(ctx, source.ID)
 		}
-		email, created, err := api.createOrRecoverJobAlias(ctx, source.ID, item.Label, job.GroupName)
+		email, created, err := api.createOrRecoverJobAlias(ctx, source.ID, item.Label, job.GroupName, job.Origin == "automation")
 		if err == nil {
 			return source.ID, email, created, "", nil
 		}
 		lastErr = err
-		if job.Origin != "automation" {
-			_ = api.store.MarkICloudHMESourceActivity(ctx, source.ID, "create", err)
-		}
 		if job.Origin == "automation" {
 			break
 		}
@@ -304,24 +301,34 @@ func usesFixedICloudHMESource(job store.ICloudHMECreateJob) bool {
 		job.SourceAccountID != nil
 }
 
-func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID int64, label, group string) (string, bool, error) {
+// createOrRecoverJobAlias creates the labelled alias, or adopts an existing one
+// with the same label. For automation jobs the source status is owned by
+// handleAutomationFailure: marking the source 'error' here would permanently
+// remove it from automation because the automation retry paths never reset that
+// status, so only manual jobs mark the source inline.
+func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID int64, label, group string, automation bool) (string, bool, error) {
 	api.aliasCreateMu.Lock()
 	defer api.aliasCreateMu.Unlock()
 	lock := api.lockForSource(sourceID)
 	lock.Lock()
 	defer lock.Unlock()
 
+	markFailure := func(err error) {
+		if !automation {
+			api.markSourceError(ctx, sourceID, err)
+		}
+	}
 	client, _, err := api.clientForSource(ctx, sourceID)
 	if err != nil {
 		return "", false, err
 	}
 	if err := client.ValidateSession(); err != nil {
-		api.markSourceError(ctx, sourceID, err)
+		markFailure(err)
 		return "", false, err
 	}
 	aliases, err := client.ListAliases()
 	if err != nil {
-		api.markSourceError(ctx, sourceID, err)
+		markFailure(err)
 		return "", false, err
 	}
 	if _, _, err := api.syncAliasList(ctx, sourceID, aliases, group); err != nil {
@@ -334,7 +341,7 @@ func (api *iCloudHMEAPI) createOrRecoverJobAlias(ctx context.Context, sourceID i
 	}
 	created, err := client.CreateAlias(label, 5)
 	if err != nil {
-		api.markSourceError(ctx, sourceID, err)
+		markFailure(err)
 		return "", false, err
 	}
 	_, _, err = api.store.UpsertICloudHMEAliases(ctx, sourceID, []store.ICloudHMEAliasInput{{

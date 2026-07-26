@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gptbox-server/internal/icloudhme"
@@ -32,17 +33,19 @@ type iCloudHMEClient interface {
 type iCloudHMEClientFactory func(map[string]string, string) (iCloudHMEClient, error)
 
 type iCloudHMEAPI struct {
-	store         *store.Store
-	newClient     iCloudHMEClientFactory
-	mailClient    imapmail.Client
-	createLocks   sync.Map
-	aliasCreateMu sync.Mutex
-	challenges    sync.Map
-	jobWake       chan struct{}
-	jobPaceMu     sync.Mutex
-	lastJobItem   time.Time
-	gptScanMu     sync.Mutex
-	publicLimiter *iCloudHMEPublicLimiter
+	store            *store.Store
+	newClient        iCloudHMEClientFactory
+	mailClient       imapmail.Client
+	createLocks      sync.Map
+	aliasCreateMu    sync.Mutex
+	challenges       sync.Map
+	jobWake          chan struct{}
+	jobPaceMu        sync.Mutex
+	lastJobItem      time.Time
+	gptScanMu        sync.Mutex
+	publicLimiter    *iCloudHMEPublicLimiter
+	lifecycleTasks   sync.Map
+	lifecycleTaskSeq atomic.Int64
 }
 
 func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
@@ -230,6 +233,36 @@ func (api *iCloudHMEAPI) validateSource(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	WriteJSON(w, 200, map[string]any{"ok": true, "accountInfo": client.AccountInfo()})
+}
+
+// resumeSourceAutomation validates the Apple session, then puts the source back
+// into automation rotation: status 'active', automation re-enabled and the next
+// probe scheduled immediately. This is the recovery path for sources that got
+// stuck at 'error' or had automation paused.
+func (api *iCloudHMEAPI) resumeSourceAutomation(w http.ResponseWriter, r *http.Request, id int64) {
+	client, _, err := api.clientForSource(r.Context(), id)
+	if err == nil {
+		err = client.ValidateSession()
+	}
+	if err != nil {
+		api.markSourceError(r.Context(), id, err)
+		writeICloudHMEError(w, err)
+		return
+	}
+	if err := api.store.SaveICloudHMECookies(r.Context(), id, client.GetCookies(), "active", ""); err != nil {
+		WriteError(w, 500, "internal_error", err.Error())
+		return
+	}
+	if err := api.store.ResumeICloudHMESourceAutomation(r.Context(), id); err != nil {
+		WriteError(w, 500, "internal_error", err.Error())
+		return
+	}
+	_ = api.store.AddICloudHMEAudit(r.Context(), store.ICloudHMEAuditLog{
+		Actor: requestActor(r), Action: "resume_automation", TargetType: "source",
+		Target: strconv.FormatInt(id, 10), Result: "success",
+	})
+	api.wakeJobWorker()
+	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (api *iCloudHMEAPI) deleteSource(w http.ResponseWriter, r *http.Request, id int64) {
@@ -450,6 +483,20 @@ func (api *iCloudHMEAPI) markSourceError(ctx context.Context, id int64, err erro
 	_ = api.store.UpdateICloudHMESourceStatus(ctx, id, status, message, nil, false)
 }
 
+func isICloudHMEAuthError(err error) bool {
+	code := classifyICloudHMECode(err)
+	return code == "icloud_session_expired" || code == "icloud_otp_required" || code == "icloud_plus_required"
+}
+
+// markSourceAuthError records session/iCloud+ problems on the source but leaves
+// its status alone for alias-level failures: a single alias operation failing
+// must not take the whole source out of rotation.
+func (api *iCloudHMEAPI) markSourceAuthError(ctx context.Context, id int64, err error) {
+	if isICloudHMEAuthError(err) {
+		api.markSourceError(ctx, id, err)
+	}
+}
+
 func (api *iCloudHMEAPI) lockForSource(id int64) *sync.Mutex {
 	value, _ := api.createLocks.LoadOrStore(id, &sync.Mutex{})
 	return value.(*sync.Mutex)
@@ -584,6 +631,8 @@ func (api *iCloudHMEAPI) routeSourceAccount(w http.ResponseWriter, r *http.Reque
 		api.saveAppPassword(w, r, id)
 	case r.Method == http.MethodPost && action == "validate":
 		api.validateSource(w, r, id)
+	case r.Method == http.MethodPost && action == "automation/resume":
+		api.resumeSourceAutomation(w, r, id)
 	case r.Method == http.MethodPost && action == "aliases":
 		api.createAlias(w, r, id)
 	case r.Method == http.MethodPost && action == "aliases/sync":

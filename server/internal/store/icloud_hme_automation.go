@@ -348,10 +348,17 @@ func (s *Store) MarkICloudHMEAutomationAttempt(ctx context.Context, sourceID int
 	return err
 }
 
+// DelayICloudHMESourceAutomation pushes back the next automated attempt. A
+// source stuck at status 'error' (e.g. marked by an older build or a manual
+// operation) is pulled back to 'cooldown' so the retry it just got scheduled
+// for is actually eligible to run; reauth/iCloud+ states need operator action
+// and stay untouched.
 func (s *Store) DelayICloudHMESourceAutomation(ctx context.Context, sourceID int64, next time.Time) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
-		SET next_create_at = ?, last_error_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+		SET next_create_at = ?, last_error_at = CURRENT_TIMESTAMP,
+		    status = CASE WHEN status = 'error' THEN 'cooldown' ELSE status END,
+		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
 	`, next, sourceID)
 	return err
@@ -437,6 +444,27 @@ func (s *Store) MarkICloudHMEAutomationLimited(ctx context.Context, sourceID int
 	result.Next = time.Now().Add(iCloudHMEAutomationCooldownDelay(result.CooldownLevel))
 	_, err = s.pool.Exec(ctx, `UPDATE icloud_hme_source_accounts SET next_create_at = ? WHERE id = ?`, result.Next, sourceID)
 	return result, err
+}
+
+// ResumeICloudHMESourceAutomation is the operator escape hatch for a source
+// stuck outside automation (status 'error', paused automation, far-future
+// next_create_at). The caller validates the Apple session first.
+func (s *Store) ResumeICloudHMESourceAutomation(ctx context.Context, sourceID int64) error {
+	result, err := s.pool.Exec(ctx, `
+		UPDATE icloud_hme_source_accounts
+		SET automation_enabled = true, status = 'active', status_reason = '',
+		    next_create_at = CURRENT_TIMESTAMP, cooldown_level = 0,
+		    consecutive_limit_count = 0, probe_limit_started_at = NULL,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = ?
+	`, sourceID)
+	if err != nil {
+		return fmt.Errorf("store: resume iCloud HME source automation: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return errors.New("iCloud 主账号不存在")
+	}
+	return nil
 }
 
 func (s *Store) PauseICloudHMESourceAutomation(ctx context.Context, sourceID int64, status, reason string) error {

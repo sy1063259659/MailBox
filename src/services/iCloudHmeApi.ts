@@ -225,6 +225,10 @@ export async function validateICloudHMESource(id: number): Promise<void> {
   await apiPost(`/icloud-hme/source-accounts/${id}/validate`)
 }
 
+export async function resumeICloudHMESourceAutomation(id: number): Promise<void> {
+  await apiPost(`/icloud-hme/source-accounts/${id}/automation/resume`)
+}
+
 export async function deleteICloudHMESource(id: number): Promise<void> {
   await apiDelete(`/icloud-hme/source-accounts/${id}`)
 }
@@ -396,15 +400,31 @@ export async function retryICloudHMEJob(id: number): Promise<void> {
   await apiPost('/icloud-hme/jobs/' + id + '/retry')
 }
 
-export async function updateICloudHMEAliasLifecycle(
+export interface ICloudHMELifecycleTask {
+  id: string
+  action: 'deactivate' | 'reactivate'
+  status: 'running' | 'completed'
+  total: number
+  done: number
+  results: Array<{ email: string; ok: boolean; error?: string }>
+}
+
+export async function startICloudHMEAliasLifecycle(
   emails: string[],
   action: 'deactivate' | 'reactivate',
-): Promise<Array<{ email: string; ok: boolean; error?: string }>> {
-  const response = await apiPost<{ ok: boolean; results: Array<{ email: string; ok: boolean; error?: string }> }>(
+): Promise<{ taskId: string; total: number }> {
+  const response = await apiPost<{ ok: boolean; taskId: string; total: number }>(
     '/icloud-hme/aliases/lifecycle',
     { emails, action },
   )
-  return response.results
+  return { taskId: response.taskId, total: response.total }
+}
+
+export async function getICloudHMELifecycleTask(taskId: string): Promise<ICloudHMELifecycleTask> {
+  const response = await apiGet<{ ok: boolean; task: ICloudHMELifecycleTask }>(
+    '/icloud-hme/lifecycle-tasks/' + encodeURIComponent(taskId),
+  )
+  return response.task
 }
 
 export async function permanentlyDeleteICloudHMEAlias(email: string, confirmEmail: string): Promise<void> {

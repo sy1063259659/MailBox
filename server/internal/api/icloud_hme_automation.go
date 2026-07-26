@@ -97,9 +97,15 @@ func (api *iCloudHMEAPI) ensureAutomationInventory(ctx context.Context) {
 	}
 	job, err := api.store.CreateICloudHMEAutomationJob(ctx, settings, shortage)
 	if err != nil {
-		_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "waiting",
-			"icloud_source_wait", "主账号正在等待下一次单项探测或需要重新验证",
-			settings.NextCreateAt, 0, noProbeEventMetrics())
+		// Surface the real failure: hiding it behind a generic "waiting for the
+		// next probe" message made a fleet with zero eligible sources look like
+		// it was merely pacing itself.
+		code := "icloud_queue_failed"
+		if strings.Contains(err.Error(), "健康 Apple 主账号") {
+			code = "icloud_no_healthy_source"
+		}
+		_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "failed",
+			code, err.Error(), settings.NextCreateAt, 0, noProbeEventMetrics())
 		return
 	}
 	_ = api.store.AddICloudHMEAutomationEvent(ctx, nil, nil, "queue", "scheduled", "",
