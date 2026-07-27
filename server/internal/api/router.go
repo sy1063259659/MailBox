@@ -22,6 +22,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	accountAPI := accountAPI{store: store}
 	iCloudAPI := iCloudAPI{store: store, latestFetch: newICloudLatestClient()}
 	iCloudHMEAPI := newICloudHMEAPI(store)
+	smsAPI := newSMSAPI(store)
 	mailAPI := newMailAPI(store)
 	mux.HandleFunc("/api/health", methodHandler(http.MethodGet, healthHandler))
 
@@ -50,6 +51,14 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-accounts/", authRequired(sessions, iCloudAccountPathHandler(iCloudAPI)))
 	mux.HandleFunc("/api/icloud-groups", authRequired(sessions, iCloudGroupsHandler(iCloudAPI)))
 	mux.HandleFunc("/api/icloud-groups/", authRequired(sessions, iCloudGroupIDHandler(iCloudAPI)))
+
+	mux.HandleFunc("/api/sms-accounts", authRequired(sessions, methodHandler(http.MethodGet, smsAPI.listAccounts)))
+	mux.HandleFunc("/api/sms-accounts/import", authRequired(sessions, methodHandler(http.MethodPost, smsAPI.importAccounts)))
+	mux.HandleFunc("/api/sms-accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.updateRemark)))
+	mux.HandleFunc("/api/sms-accounts/binding", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.bindMailbox)))
+	mux.HandleFunc("/api/sms-accounts/mailboxes", authRequired(sessions, methodHandler(http.MethodGet, smsAPI.listMailboxes)))
+	mux.HandleFunc("/api/sms-accounts/latest", authRequired(sessions, methodHandler(http.MethodPost, smsAPI.latestMessage)))
+	mux.HandleFunc("/api/sms-accounts/", authRequired(sessions, smsAPI.routeAccount))
 
 	mux.HandleFunc("/api/icloud-hme/source-accounts", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

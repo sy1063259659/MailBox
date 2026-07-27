@@ -190,6 +190,23 @@ func TestICloudMigrationCreatesIndependentTables(t *testing.T) {
 	}
 }
 
+func TestSMSMigrationCreatesEncryptedIndependentTable(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	for _, want := range []string{
+		"CREATE TABLE IF NOT EXISTS sms_accounts",
+		"receive_url_encrypted TEXT NOT NULL",
+		"linked_mailbox_type TEXT NOT NULL",
+		"linked_mailbox_email TEXT NOT NULL",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("migrationCreateStatements() missing %q", want)
+		}
+	}
+	if strings.Contains(statements, "receive_url TEXT") {
+		t.Fatal("SMS receive URL must not be stored as plaintext")
+	}
+}
+
 func TestICloudMigrationCreatesIndexes(t *testing.T) {
 	statements := strings.Join(migrationIndexStatements(), "\n")
 	for _, want := range []string{

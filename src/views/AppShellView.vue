@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { defineAsyncComponent, ref } from 'vue'
+import { computed, defineAsyncComponent, nextTick, ref, watch } from 'vue'
 import type { AppRouteName } from '@/composables/useAppRoute'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAuthStore } from '@/stores/auth'
 
-type MailboxSection = 'outlook' | 'icloud' | 'icloudHme'
+type MailboxSection = 'outlook' | 'icloud' | 'icloudHme' | 'sms'
 
 const MailboxManagementView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
 const ICloudAccountManagementView = defineAsyncComponent(() => import('@/views/ICloudAccountManagementView.vue'))
 const ICloudHMEManagementView = defineAsyncComponent(() => import('@/views/ICloudHMEManagementView.vue'))
+const SMSManagementView = defineAsyncComponent(() => import('@/views/SMSManagementView.vue'))
 
 defineProps<{
   clearingData?: boolean
@@ -23,8 +24,15 @@ const emit = defineEmits<{
 const authStore = useAuthStore()
 const loggingOut = ref(false)
 const activeSection = useLocalUiState<MailboxSection>('mailbox.ui.mailboxSection', 'outlook', {
-  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud' || value === 'icloudHme',
+  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud' || value === 'icloudHme' || value === 'sms',
 })
+const workspaceTitle = computed(() => activeSection.value === 'sms' ? '接码管理' : '邮箱管理')
+
+watch(activeSection, async () => {
+  await nextTick()
+  document.querySelector('.mailbox-section-switch .el-segmented__item.is-selected')
+    ?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+}, { immediate: true })
 
 async function logout() {
   if (loggingOut.value) {
@@ -47,13 +55,14 @@ async function logout() {
   <section class="workspace-shell">
     <header class="workspace-topbar">
       <div class="topbar-left">
-        <strong class="workspace-title">邮箱管理</strong>
+        <strong class="workspace-title">{{ workspaceTitle }}</strong>
         <el-segmented
           v-model="activeSection"
           :options="[
             { label: 'Outlook / Hotmail', value: 'outlook' },
             { label: 'iCloud', value: 'icloud' },
             { label: 'iCloud隐藏邮箱', value: 'icloudHme' },
+            { label: '接码管理', value: 'sms' },
           ]"
           class="mailbox-section-switch"
         />
@@ -71,7 +80,8 @@ async function logout() {
         @import-accounts="emit('importAccounts')"
       />
       <ICloudAccountManagementView v-else-if="activeSection === 'icloud'" />
-      <ICloudHMEManagementView v-else />
+      <ICloudHMEManagementView v-else-if="activeSection === 'icloudHme'" />
+      <SMSManagementView v-else />
     </main>
   </section>
 </template>

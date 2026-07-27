@@ -295,6 +295,34 @@ func TestICloudRoutesRejectMissingSession(t *testing.T) {
 	}
 }
 
+func TestSMSRoutesRejectMissingSession(t *testing.T) {
+	handler := NewRouter(nil, session.NewManager([]byte("test-secret"), false))
+	tests := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/api/sms-accounts", ""},
+		{http.MethodPost, "/api/sms-accounts/import", `{}`},
+		{http.MethodPatch, "/api/sms-accounts/remark", `{}`},
+		{http.MethodPatch, "/api/sms-accounts/binding", `{}`},
+		{http.MethodGet, "/api/sms-accounts/mailboxes", ""},
+		{http.MethodPost, "/api/sms-accounts/latest", `{}`},
+		{http.MethodDelete, "/api/sms-accounts/%2B12025550123", ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want %d", recorder.Code, http.StatusUnauthorized)
+			}
+		})
+	}
+}
+
 func TestParseICloudImportText(t *testing.T) {
 	inputs, parseErrors := parseICloudImportText(`
  Example-Alias@iCloud.com ---- first-key

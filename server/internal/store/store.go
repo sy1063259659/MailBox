@@ -192,6 +192,19 @@ func migrationCreateStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`CREATE TABLE IF NOT EXISTS sms_accounts (
+			id BIGSERIAL PRIMARY KEY,
+			phone TEXT NOT NULL UNIQUE,
+			receive_url_encrypted TEXT NOT NULL,
+			provider_host TEXT NOT NULL DEFAULT '',
+			remark TEXT NOT NULL DEFAULT '',
+			linked_mailbox_type TEXT NOT NULL DEFAULT '',
+			linked_mailbox_email TEXT NOT NULL DEFAULT '',
+			last_checked_at TIMESTAMPTZ,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_groups (
 			id BIGSERIAL PRIMARY KEY,
 			name TEXT NOT NULL UNIQUE,
@@ -393,6 +406,10 @@ func migrationIndexStatements() []string {
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_sms_accounts_created_at ON sms_accounts(created_at DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_accounts_linked_mailbox
+			ON sms_accounts(linked_mailbox_type, linked_mailbox_email)
+			WHERE linked_mailbox_type <> '' AND linked_mailbox_email <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_account_id ON icloud_hme_aliases(source_account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_id ON icloud_hme_aliases(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
