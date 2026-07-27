@@ -1,6 +1,6 @@
 import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
 
-export type SMSMailboxType = 'outlook' | 'icloud' | 'icloud_hme'
+export type SMSMailboxType = 'icloud_hme'
 
 export interface SMSAccount {
   id: number
@@ -9,6 +9,7 @@ export interface SMSAccount {
   remark: string
   linkedMailboxType: SMSMailboxType | ''
   linkedMailboxEmail: string
+  linkedMailboxEmails: string[]
   lastCheckedAt?: string
   lastError?: string
   createdAt: string
@@ -38,7 +39,11 @@ export interface SMSLatestResult {
 
 export async function listSMSAccounts(): Promise<SMSAccount[]> {
   const response = await apiGet<{ ok: boolean; accounts: SMSAccount[] }>('/sms-accounts')
-  return response.accounts
+  return response.accounts.map((account) => ({
+    ...account,
+    linkedMailboxEmails: account.linkedMailboxEmails
+      ?? (account.linkedMailboxType === 'icloud_hme' && account.linkedMailboxEmail ? [account.linkedMailboxEmail] : []),
+  }))
 }
 
 export async function importSMSAccounts(text: string, overwrite: boolean): Promise<SMSImportResult> {
@@ -52,13 +57,11 @@ export async function updateSMSRemark(phone: string, remark: string): Promise<SM
 
 export async function bindSMSMailbox(
   phone: string,
-  mailboxType: SMSMailboxType | '',
-  email: string,
+  emails: string[],
 ): Promise<SMSAccount> {
   const response = await apiPatch<{ ok: boolean; account: SMSAccount }>('/sms-accounts/binding', {
     phone,
-    mailboxType,
-    email,
+    emails,
   })
   return response.account
 }

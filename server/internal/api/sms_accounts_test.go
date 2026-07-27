@@ -1,6 +1,8 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -71,5 +73,24 @@ func TestValidateSMSReceiveURL(t *testing.T) {
 		if _, err := validateSMSReceiveURL(value); err == nil {
 			t.Fatalf("validateSMSReceiveURL(%q) should fail", value)
 		}
+	}
+}
+
+func TestSMSBindingRejectsNonHiddenMailbox(t *testing.T) {
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/api/sms-accounts/binding",
+		strings.NewReader(`{"phone":"+12025550123","mailboxType":"outlook","email":"user@outlook.com"}`),
+	)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	(smsAPI{}).bindMailbox(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(response.Body.String(), "只能绑定 iCloud 隐藏邮箱") {
+		t.Fatalf("body = %s", response.Body.String())
 	}
 }

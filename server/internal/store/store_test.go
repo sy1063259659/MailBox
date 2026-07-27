@@ -194,9 +194,10 @@ func TestSMSMigrationCreatesEncryptedIndependentTable(t *testing.T) {
 	statements := strings.Join(migrationCreateStatements(), "\n")
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS sms_accounts",
+		"CREATE TABLE IF NOT EXISTS sms_account_bindings",
 		"receive_url_encrypted TEXT NOT NULL",
-		"linked_mailbox_type TEXT NOT NULL",
-		"linked_mailbox_email TEXT NOT NULL",
+		"REFERENCES icloud_hme_aliases(email)",
+		"UNIQUE (mailbox_email)",
 	} {
 		if !strings.Contains(statements, want) {
 			t.Fatalf("migrationCreateStatements() missing %q", want)
@@ -204,6 +205,25 @@ func TestSMSMigrationCreatesEncryptedIndependentTable(t *testing.T) {
 	}
 	if strings.Contains(statements, "receive_url TEXT") {
 		t.Fatal("SMS receive URL must not be stored as plaintext")
+	}
+}
+
+func TestNormalizeSMSMailboxEmails(t *testing.T) {
+	emails, err := normalizeSMSMailboxEmails([]string{
+		" First@iCloud.com ",
+		"second@icloud.com",
+		"FIRST@ICLOUD.COM",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(emails) != 2 || emails[0] != "first@icloud.com" || emails[1] != "second@icloud.com" {
+		t.Fatalf("emails = %#v", emails)
+	}
+	if _, err := normalizeSMSMailboxEmails([]string{
+		"1@icloud.com", "2@icloud.com", "3@icloud.com", "4@icloud.com",
+	}); err == nil {
+		t.Fatal("four bindings should fail")
 	}
 }
 

@@ -56,9 +56,10 @@ type smsRemarkRequest struct {
 }
 
 type smsBindingRequest struct {
-	Phone       string `json:"phone"`
-	MailboxType string `json:"mailboxType"`
-	Email       string `json:"email"`
+	Phone       string   `json:"phone"`
+	MailboxType string   `json:"mailboxType"`
+	Email       string   `json:"email"`
+	Emails      []string `json:"emails"`
 }
 
 type smsLatestResponse struct {
@@ -149,7 +150,15 @@ func (api smsAPI) bindMailbox(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "bad_request", "手机号不能为空")
 		return
 	}
-	account, err := api.store.BindSMSMailbox(r.Context(), phone, request.MailboxType, request.Email)
+	emails := request.Emails
+	if len(emails) == 0 && strings.TrimSpace(request.Email) != "" {
+		if request.MailboxType != "icloud_hme" {
+			WriteError(w, http.StatusBadRequest, "sms_binding_failed", "接码账号只能绑定 iCloud 隐藏邮箱")
+			return
+		}
+		emails = []string{request.Email}
+	}
+	account, err := api.store.BindSMSMailboxes(r.Context(), phone, emails)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "sms_binding_failed", err.Error())
 		return

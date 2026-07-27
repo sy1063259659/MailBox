@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, More, Refresh, Setting, View } from '@element-plus/icons-vue'
+import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, Message, More, Refresh, Setting, View } from '@element-plus/icons-vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
   completeICloudHMELogin, getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
@@ -20,6 +20,9 @@ import {
   cacheICloudHMEBody, cacheICloudHMEMessages, deleteICloudHMECacheForAlias,
   getCachedICloudHMEBody, listCachedICloudHMEMessages,
 } from '@/services/iCloudHmeStorage'
+import {
+  getLatestSMS, listSMSAccounts, type SMSAccount, type SMSLatestResult,
+} from '@/services/smsApi'
 import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
@@ -86,6 +89,13 @@ const mailNextCursor = ref('')
 const selectedMail = ref<ICloudHMEMailSummary>()
 const mailDetail = ref<ICloudHMEMail>()
 const verificationCode = ref('')
+const smsAccounts = ref<SMSAccount[]>([])
+const smsCodeVisible = ref(false)
+const smsCodeAlias = ref<ICloudHMEAlias>()
+const smsCodeAccount = ref<SMSAccount>()
+const smsCodeResult = ref<SMSLatestResult>()
+const smsCodeLoading = ref(false)
+const smsCodePolling = ref(false)
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -127,18 +137,32 @@ const mailHtml = computed(() => {
   return '<!doctype html><html><head>' + styles + '</head><body>' + content + '</body></html>'
 })
 const mailBlocks = computed(() => plainMailBlocks(mailDetail.value?.contentType === 'text/plain' ? mailDetail.value.content : ''))
+const smsAccountByAlias = computed(() => {
+  const accounts = new Map<string, SMSAccount>()
+  smsAccounts.value.forEach((account) => {
+    account.linkedMailboxEmails.forEach((email) => accounts.set(email.toLowerCase(), account))
+  })
+  return accounts
+})
 
 let jobPollTimer: number | undefined
 let jobPolling = false
+let smsCodeTimer: number | undefined
 watch([keyword, sourceFilter, statusFilter, gptStatusFilter, () => store.selectedGroup], () => { page.value = 1; selectedRows.value = [] })
 watch(() => filteredAliases.value.length, (total) => { page.value = Math.min(page.value, Math.max(1, Math.ceil(total / pageSize.value))) })
 onMounted(async () => {
   try {
-    await Promise.all([store.load(), loadAutomation()])
+    await Promise.all([store.load(), loadAutomation(), loadSMSBindings()])
   } catch (error) { showError(error, '加载隐藏邮箱失败') }
   jobPollTimer = window.setInterval(pollJobs, 15000)
 })
-onBeforeUnmount(() => { if (jobPollTimer) window.clearInterval(jobPollTimer) })
+onBeforeUnmount(() => {
+  if (jobPollTimer) window.clearInterval(jobPollTimer)
+  stopSMSCodePolling()
+})
+watch(smsCodeVisible, (visible) => {
+  if (!visible) stopSMSCodePolling()
+})
 
 async function pollJobs() {
   if (jobPolling) return
@@ -152,6 +176,71 @@ async function pollJobs() {
 
 async function loadAutomation() {
   automation.value = await getICloudHMEAutomation()
+}
+
+async function loadSMSBindings() {
+  smsAccounts.value = await listSMSAccounts()
+}
+
+function boundSMSAccount(alias: ICloudHMEAlias) {
+  return smsAccountByAlias.value.get(alias.email.toLowerCase())
+}
+
+async function openSMSCode(alias: ICloudHMEAlias) {
+  let account = boundSMSAccount(alias)
+  if (!account) {
+    try {
+      await loadSMSBindings()
+      account = boundSMSAccount(alias)
+    } catch (error) {
+      showError(error, '加载接码绑定失败')
+      return
+    }
+  }
+  if (!account) {
+    ElMessage.info('该隐藏邮箱尚未绑定接码账号')
+    return
+  }
+  smsCodeAlias.value = alias
+  smsCodeAccount.value = account
+  smsCodeResult.value = undefined
+  smsCodeVisible.value = true
+  startSMSCodePolling()
+}
+
+async function refreshSMSCode() {
+  if (!smsCodeAccount.value || smsCodeLoading.value) return
+  smsCodeLoading.value = true
+  try {
+    smsCodeResult.value = await getLatestSMS(smsCodeAccount.value.phone)
+    if (smsCodeResult.value.code) {
+      stopSMSCodePolling()
+      ElMessage.success('已获取短信验证码')
+    }
+  } catch (error) {
+    stopSMSCodePolling()
+    showError(error, '获取短信验证码失败')
+  } finally {
+    smsCodeLoading.value = false
+  }
+}
+
+function startSMSCodePolling() {
+  stopSMSCodePolling()
+  smsCodePolling.value = true
+  void refreshSMSCode()
+  smsCodeTimer = window.setInterval(refreshSMSCode, 5000)
+}
+
+function stopSMSCodePolling() {
+  if (smsCodeTimer) window.clearInterval(smsCodeTimer)
+  smsCodeTimer = undefined
+  smsCodePolling.value = false
+}
+
+async function copySMSCode() {
+  if (!smsCodeResult.value?.code) return
+  await copyValue(smsCodeResult.value.code, '短信验证码')
 }
 
 function openAutomationSettings() {
@@ -782,6 +871,13 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>
+          <el-table-column label="接码验证码" width="185" align="center"><template #default="{ row }">
+            <div v-if="boundSMSAccount(row)" class="hme-sms-cell">
+              <span>{{ boundSMSAccount(row)?.phone }}</span>
+              <el-button link type="primary" :icon="Message" @click.stop="openSMSCode(row)">查看验证码</el-button>
+            </div>
+            <span v-else class="muted">未绑定接码</span>
+          </template></el-table-column>
           <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</template></el-table-column>
@@ -944,6 +1040,29 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-empty v-else description="选择一封邮件查看正文" />
         </section>
       </div>
+    </el-dialog>
+
+    <el-dialog v-model="smsCodeVisible" title="隐藏邮箱短信验证码" width="620px" class="sms-code-dialog">
+      <div class="sms-code-head">
+        <div><span>隐藏邮箱</span><strong>{{ smsCodeAlias?.email }}</strong></div>
+        <el-tag :type="smsCodePolling ? 'success' : 'info'">{{ smsCodePolling ? '每 5 秒自动刷新' : '已停止自动刷新' }}</el-tag>
+      </div>
+      <div class="hme-sms-phone"><span>接码号码</span><strong>{{ smsCodeAccount?.phone }}</strong></div>
+      <div class="sms-code-result" :class="{ available: smsCodeResult?.code }">
+        <span>最新验证码</span>
+        <strong>{{ smsCodeResult?.code || '等待短信' }}</strong>
+        <el-button v-if="smsCodeResult?.code" type="primary" :icon="CopyDocument" @click="copySMSCode">复制验证码</el-button>
+      </div>
+      <div class="sms-message-panel">
+        <span>最新短信</span>
+        <p>{{ smsCodeResult?.message || '正在查询最新短信…' }}</p>
+        <small v-if="smsCodeResult?.checkedAt">最后刷新 {{ formatDateTime(smsCodeResult.checkedAt) }}</small>
+      </div>
+      <template #footer>
+        <el-button v-if="smsCodePolling" @click="stopSMSCodePolling">停止刷新</el-button>
+        <el-button v-else :icon="Refresh" @click="startSMSCodePolling">开始实时刷新</el-button>
+        <el-button type="primary" :icon="Refresh" :loading="smsCodeLoading" @click="refreshSMSCode">立即刷新</el-button>
+      </template>
     </el-dialog>
   </section>
 </template>

@@ -2328,6 +2328,42 @@ textarea {
   white-space: nowrap;
 }
 
+.sms-binding-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  white-space: normal !important;
+}
+
+.hme-sms-cell {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+
+.hme-sms-cell > span,
+.hme-sms-phone span {
+  color: #64748b;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.hme-sms-phone {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e1e7ef;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.hme-sms-phone strong {
+  color: #172033;
+  font-variant-numeric: tabular-nums;
+}
+
 .sms-import-summary {
   padding: 10px 0;
   display: flex;

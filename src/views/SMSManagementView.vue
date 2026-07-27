@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox, type UploadFile } from 'element-plus'
 import { Connection, CopyDocument, Delete, EditPen, Link, Message, Refresh, Upload } from '@element-plus/icons-vue'
-import { getLatestSMS, type SMSAccount, type SMSLatestResult, type SMSMailboxType } from '@/services/smsApi'
+import { getLatestSMS, type SMSAccount, type SMSLatestResult } from '@/services/smsApi'
 import { useSMSStore } from '@/stores/sms'
 import { formatDateTime } from '@/utils/dateTime'
 
@@ -21,7 +21,7 @@ const importing = ref(false)
 
 const bindingVisible = ref(false)
 const bindingAccount = ref<SMSAccount>()
-const bindingValue = ref('')
+const bindingValues = ref<string[]>([])
 const bindingSaving = ref(false)
 
 const smsVisible = ref(false)
@@ -34,13 +34,13 @@ let smsTimer: number | undefined
 const filteredAccounts = computed(() => {
   const query = keyword.value.trim().toLowerCase()
   return store.accounts.filter((account) => {
-    if (bindingFilter.value === 'bound' && !account.linkedMailboxEmail) return false
-    if (bindingFilter.value === 'unbound' && account.linkedMailboxEmail) return false
+    if (bindingFilter.value === 'bound' && !account.linkedMailboxEmails.length) return false
+    if (bindingFilter.value === 'unbound' && account.linkedMailboxEmails.length) return false
     return !query || [
       account.phone,
       account.providerHost,
       account.remark,
-      account.linkedMailboxEmail,
+      ...account.linkedMailboxEmails,
     ].some((value) => value.toLowerCase().includes(query))
   })
 })
@@ -48,7 +48,7 @@ const filteredAccounts = computed(() => {
 const pagedAccounts = computed(() =>
   filteredAccounts.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
 )
-const boundCount = computed(() => store.accounts.filter((account) => account.linkedMailboxEmail).length)
+const boundCount = computed(() => store.accounts.reduce((total, account) => total + account.linkedMailboxEmails.length, 0))
 const importLineCount = computed(() => importText.value.split(/\r?\n/).filter((line) => line.trim()).length)
 
 watch([keyword, bindingFilter], () => {
@@ -77,11 +77,6 @@ function showError(error: unknown, fallback: string) {
 
 function handleSelection(rows: SMSAccount[]) {
   selectedRows.value = rows
-}
-
-function mailboxTypeText(type: SMSMailboxType | '') {
-  if (!type) return ''
-  return { outlook: 'Outlook', icloud: 'iCloud', icloud_hme: 'iCloud隐藏邮箱' }[type]
 }
 
 function openImport() {
@@ -133,23 +128,34 @@ function openBinding(account?: SMSAccount) {
   const target = account ?? (selectedRows.value.length === 1 ? selectedRows.value[0] : undefined)
   if (!target) return ElMessage.warning('请选择一个接码账号')
   bindingAccount.value = target
-  bindingValue.value = target.linkedMailboxType && target.linkedMailboxEmail
-    ? `${target.linkedMailboxType}|${target.linkedMailboxEmail}`
-    : ''
+  bindingValues.value = [...target.linkedMailboxEmails]
   bindingVisible.value = true
+}
+
+function mailboxBindingOwner(email: string) {
+  return store.accounts.find((account) => account.linkedMailboxEmails.includes(email))
+}
+
+function mailboxOptionDisabled(email: string) {
+  const owner = mailboxBindingOwner(email)
+  return Boolean(owner && owner.phone !== bindingAccount.value?.phone)
+}
+
+function mailboxOptionLabel(email: string) {
+  const owner = mailboxBindingOwner(email)
+  return owner && owner.phone !== bindingAccount.value?.phone
+    ? `${email} · 已绑定 ${owner.phone}`
+    : email
 }
 
 async function saveBinding() {
   const account = bindingAccount.value
   if (!account) return
-  const separator = bindingValue.value.indexOf('|')
-  const mailboxType = separator > 0 ? bindingValue.value.slice(0, separator) as SMSMailboxType : ''
-  const email = separator > 0 ? bindingValue.value.slice(separator + 1) : ''
   bindingSaving.value = true
   try {
-    await store.bindMailbox(account.phone, mailboxType, email)
+    await store.bindMailbox(account.phone, bindingValues.value)
     bindingVisible.value = false
-    ElMessage.success(email ? '邮箱绑定已保存' : '已解除邮箱绑定')
+    ElMessage.success(bindingValues.value.length ? '隐藏邮箱绑定已保存' : '已解除邮箱绑定')
   } catch (error) {
     showError(error, '保存邮箱绑定失败')
   } finally {
@@ -238,8 +244,8 @@ async function copyCode() {
     <section class="faka-card sms-summary-card">
       <div class="sms-summary">
         <div><span>接码账号</span><strong>{{ store.accounts.length }}</strong></div>
-        <div><span>已绑定邮箱</span><strong>{{ boundCount }}</strong></div>
-        <div><span>待绑定</span><strong>{{ store.accounts.length - boundCount }}</strong></div>
+        <div><span>已绑定隐藏邮箱</span><strong>{{ boundCount }}</strong></div>
+        <div><span>未使用接码</span><strong>{{ store.accounts.filter((account) => !account.linkedMailboxEmails.length).length }}</strong></div>
       </div>
       <div class="faka-action-row sms-action-row">
         <el-button type="primary" :icon="Upload" @click="openImport">批量导入</el-button>
@@ -280,11 +286,13 @@ async function copyCode() {
         <el-table-column label="取件来源" min-width="155">
           <template #default="{ row }"><el-tag type="info" effect="plain">{{ row.providerHost }}</el-tag></template>
         </el-table-column>
-        <el-table-column label="绑定邮箱" min-width="270" show-overflow-tooltip>
+        <el-table-column label="绑定隐藏邮箱" min-width="320">
           <template #default="{ row }">
             <button class="sms-binding-cell" @click="openBinding(row)">
-              <el-tag v-if="row.linkedMailboxEmail" size="small" type="success">{{ mailboxTypeText(row.linkedMailboxType) }}</el-tag>
-              <span :class="{ muted: !row.linkedMailboxEmail }">{{ row.linkedMailboxEmail || '未绑定' }}</span>
+              <span v-if="!row.linkedMailboxEmails.length" class="muted">未绑定</span>
+              <span v-else class="sms-binding-list">
+                <el-tag v-for="email in row.linkedMailboxEmails" :key="email" size="small" type="success">{{ email }}</el-tag>
+              </span>
             </button>
           </template>
         </el-table-column>
@@ -338,23 +346,34 @@ async function copyCode() {
       </template>
     </el-dialog>
 
-    <el-dialog v-model="bindingVisible" title="绑定邮箱账号" width="560px">
+    <el-dialog v-model="bindingVisible" title="绑定 iCloud 隐藏邮箱" width="620px">
       <el-form label-width="88px">
         <el-form-item label="手机号"><strong>{{ bindingAccount?.phone }}</strong></el-form-item>
-        <el-form-item label="邮箱账号">
-          <el-select v-model="bindingValue" filterable clearable placeholder="选择 Outlook、iCloud 或隐藏邮箱">
+        <el-form-item label="隐藏邮箱">
+          <el-select
+            v-model="bindingValues"
+            multiple
+            filterable
+            clearable
+            collapse-tags
+            collapse-tags-tooltip
+            :multiple-limit="3"
+            placeholder="最多选择 3 个 iCloud 隐藏邮箱"
+          >
             <el-option
               v-for="mailbox in store.mailboxes"
-              :key="`${mailbox.type}|${mailbox.email}`"
-              :value="`${mailbox.type}|${mailbox.email}`"
-              :label="`[${mailboxTypeText(mailbox.type)}] ${mailbox.email}`"
+              :key="mailbox.email"
+              :value="mailbox.email"
+              :label="mailboxOptionLabel(mailbox.email)"
+              :disabled="mailboxOptionDisabled(mailbox.email)"
             />
           </el-select>
         </el-form-item>
+        <el-alert title="一个接码账号最多绑定 3 个隐藏邮箱；同一隐藏邮箱不能绑定多个接码账号。" type="info" :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="bindingVisible = false">取消</el-button>
-        <el-button type="primary" :loading="bindingSaving" @click="saveBinding">{{ bindingValue ? '保存绑定' : '解除绑定' }}</el-button>
+        <el-button type="primary" :loading="bindingSaving" @click="saveBinding">{{ bindingValues.length ? '保存绑定' : '解除绑定' }}</el-button>
       </template>
     </el-dialog>
 

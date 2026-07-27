@@ -262,6 +262,13 @@ func migrationCreateStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`CREATE TABLE IF NOT EXISTS sms_account_bindings (
+			sms_account_id BIGINT NOT NULL REFERENCES sms_accounts(id) ON DELETE CASCADE,
+			mailbox_email TEXT NOT NULL REFERENCES icloud_hme_aliases(email) ON DELETE CASCADE,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (sms_account_id, mailbox_email),
+			UNIQUE (mailbox_email)
+		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_create_jobs (
 			id BIGSERIAL PRIMARY KEY,
 			mode TEXT NOT NULL,
@@ -410,6 +417,8 @@ func migrationIndexStatements() []string {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_accounts_linked_mailbox
 			ON sms_accounts(linked_mailbox_type, linked_mailbox_email)
 			WHERE linked_mailbox_type <> '' AND linked_mailbox_email <> ''`,
+		`CREATE INDEX IF NOT EXISTS idx_sms_account_bindings_account
+			ON sms_account_bindings(sms_account_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_account_id ON icloud_hme_aliases(source_account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_id ON icloud_hme_aliases(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
@@ -435,6 +444,13 @@ func legacyCleanupStatements() []string {
 		 SET status_reason = 'Apple 会话异常，请重新验证', updated_at = now()
 		 WHERE status_reason ~* '(trustTokens|X-APPLE|Bearer|Set-Cookie|webauth-token|scnt)'`,
 		`INSERT INTO icloud_hme_automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
+		`INSERT INTO sms_account_bindings (sms_account_id, mailbox_email)
+		 SELECT account.id, alias.email
+		 FROM sms_accounts account
+		 JOIN icloud_hme_aliases alias ON lower(alias.email) = lower(account.linked_mailbox_email)
+		 WHERE account.linked_mailbox_type = 'icloud_hme'
+		   AND account.linked_mailbox_email <> ''
+		 ON CONFLICT DO NOTHING`,
 		`UPDATE icloud_hme_create_job_items
 		 SET status = 'pending', retry_class = 'rate_limit',
 		     error_code = 'icloud_alias_rate_limited',

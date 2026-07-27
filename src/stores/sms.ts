@@ -9,7 +9,6 @@ import {
   type SMSAccount,
   type SMSImportResult,
   type SMSMailboxReference,
-  type SMSMailboxType,
 } from '@/services/smsApi'
 
 interface SMSState {
@@ -55,8 +54,8 @@ export const useSMSStore = defineStore('sms', {
       this.replaceAccount(await updateSMSRemark(phone, remark))
     },
 
-    async bindMailbox(phone: string, mailboxType: SMSMailboxType | '', email: string): Promise<void> {
-      this.replaceAccount(await bindSMSMailbox(phone, mailboxType, email))
+    async bindMailbox(phone: string, emails: string[]): Promise<void> {
+      this.replaceAccount(await bindSMSMailbox(phone, emails))
     },
 
     async deleteAccount(phone: string): Promise<void> {
