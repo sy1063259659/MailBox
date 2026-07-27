@@ -444,13 +444,28 @@ func legacyCleanupStatements() []string {
 		 SET status_reason = 'Apple 会话异常，请重新验证', updated_at = now()
 		 WHERE status_reason ~* '(trustTokens|X-APPLE|Bearer|Set-Cookie|webauth-token|scnt)'`,
 		`INSERT INTO icloud_hme_automation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`,
-		`INSERT INTO sms_account_bindings (sms_account_id, mailbox_email)
-		 SELECT account.id, alias.email
+		`INSERT INTO sms_account_bindings (sms_account_id, mailbox_email, created_at)
+		 SELECT account.id, alias.email, COALESCE(account.last_checked_at, now())
 		 FROM sms_accounts account
 		 JOIN icloud_hme_aliases alias ON lower(alias.email) = lower(account.linked_mailbox_email)
 		 WHERE account.linked_mailbox_type = 'icloud_hme'
 		   AND account.linked_mailbox_email <> ''
 		 ON CONFLICT DO NOTHING`,
+		`UPDATE sms_account_bindings binding
+		 SET created_at = account.last_checked_at
+		 FROM sms_accounts account
+		 WHERE binding.sms_account_id = account.id
+		   AND account.linked_mailbox_type = 'icloud_hme'
+		   AND lower(account.linked_mailbox_email) = lower(binding.mailbox_email)
+		   AND account.last_checked_at IS NOT NULL`,
+		`UPDATE sms_accounts account
+		 SET linked_mailbox_type = '', linked_mailbox_email = ''
+		 WHERE account.linked_mailbox_type = 'icloud_hme'
+		   AND EXISTS (
+		     SELECT 1 FROM sms_account_bindings binding
+		     WHERE binding.sms_account_id = account.id
+		       AND lower(binding.mailbox_email) = lower(account.linked_mailbox_email)
+		   )`,
 		`UPDATE icloud_hme_create_job_items
 		 SET status = 'pending', retry_class = 'rate_limit',
 		     error_code = 'icloud_alias_rate_limited',

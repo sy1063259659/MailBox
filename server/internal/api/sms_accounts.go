@@ -62,6 +62,11 @@ type smsBindingRequest struct {
 	Emails      []string `json:"emails"`
 }
 
+type smsMailboxAssignmentRequest struct {
+	Email string `json:"email"`
+	Phone string `json:"phone"`
+}
+
 type smsLatestResponse struct {
 	OK        bool      `json:"ok"`
 	Phone     string    `json:"phone"`
@@ -173,6 +178,28 @@ func (api smsAPI) listMailboxes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "mailboxes": references})
+}
+
+func (api smsAPI) assignMailbox(w http.ResponseWriter, r *http.Request) {
+	var request smsMailboxAssignmentRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	email := strings.ToLower(strings.TrimSpace(request.Email))
+	phone := ""
+	if strings.TrimSpace(request.Phone) != "" {
+		phone = normalizeSMSPhone(request.Phone)
+		if phone == "" {
+			WriteError(w, http.StatusBadRequest, "bad_request", "手机号格式错误")
+			return
+		}
+	}
+	accounts, err := api.store.AssignSMSMailbox(r.Context(), email, phone)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "sms_binding_failed", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "accounts": accounts})
 }
 
 func (api smsAPI) latestMessage(w http.ResponseWriter, r *http.Request) {

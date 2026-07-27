@@ -21,7 +21,7 @@ import {
   getCachedICloudHMEBody, listCachedICloudHMEMessages,
 } from '@/services/iCloudHmeStorage'
 import {
-  getLatestSMS, listSMSAccounts, type SMSAccount, type SMSLatestResult,
+  assignSMSMailbox, getLatestSMS, listSMSAccounts, type SMSAccount, type SMSLatestResult,
 } from '@/services/smsApi'
 import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
 import { formatDateTime } from '@/utils/dateTime'
@@ -96,6 +96,11 @@ const smsCodeAccount = ref<SMSAccount>()
 const smsCodeResult = ref<SMSLatestResult>()
 const smsCodeLoading = ref(false)
 const smsCodePolling = ref(false)
+const smsBindingVisible = ref(false)
+const smsBindingAlias = ref<ICloudHMEAlias>()
+const smsBindingPhone = ref('')
+const smsBindingKeyword = ref('')
+const smsBindingSaving = ref(false)
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -144,6 +149,22 @@ const smsAccountByAlias = computed(() => {
   })
   return accounts
 })
+const sortedSMSAccounts = computed(() => {
+  const query = smsBindingKeyword.value.trim().toLowerCase()
+  return [...smsAccounts.value]
+    .filter((account) => !query || [
+      account.phone,
+      account.remark,
+      ...account.linkedMailboxEmails,
+    ].some((value) => value.toLowerCase().includes(query)))
+    .sort((left, right) =>
+      left.linkedMailboxEmails.length - right.linkedMailboxEmails.length
+      || left.phone.localeCompare(right.phone),
+    )
+})
+const smsBindingCurrentAccount = computed(() =>
+  smsBindingAlias.value ? boundSMSAccount(smsBindingAlias.value) : undefined,
+)
 
 let jobPollTimer: number | undefined
 let jobPolling = false
@@ -184,6 +205,40 @@ async function loadSMSBindings() {
 
 function boundSMSAccount(alias: ICloudHMEAlias) {
   return smsAccountByAlias.value.get(alias.email.toLowerCase())
+}
+
+function boundSMSBinding(alias: ICloudHMEAlias) {
+  const account = boundSMSAccount(alias)
+  if (!account) return undefined
+  const binding = account.linkedMailboxes.find((item) => item.email.toLowerCase() === alias.email.toLowerCase())
+  return binding ? { account, binding } : undefined
+}
+
+function openSMSBinding(alias: ICloudHMEAlias) {
+  const current = boundSMSAccount(alias)
+  smsBindingAlias.value = alias
+  smsBindingPhone.value = current?.phone ?? ''
+  smsBindingKeyword.value = ''
+  smsBindingVisible.value = true
+}
+
+function smsAccountSelectable(account: SMSAccount) {
+  return account.phone === smsBindingPhone.value || account.linkedMailboxEmails.length < 3
+}
+
+async function saveSMSBinding(phone = smsBindingPhone.value) {
+  if (!smsBindingAlias.value || smsBindingSaving.value) return
+  smsBindingSaving.value = true
+  try {
+    smsAccounts.value = await assignSMSMailbox(smsBindingAlias.value.email, phone)
+    smsBindingPhone.value = phone
+    smsBindingVisible.value = false
+    ElMessage.success(phone ? '接码绑定已保存' : '接码绑定已解除')
+  } catch (error) {
+    showError(error, '保存接码绑定失败')
+  } finally {
+    smsBindingSaving.value = false
+  }
 }
 
 async function openSMSCode(alias: ICloudHMEAlias) {
@@ -871,12 +926,24 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="group" label="分组" width="125" />
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>
-          <el-table-column label="接码验证码" width="185" align="center"><template #default="{ row }">
-            <div v-if="boundSMSAccount(row)" class="hme-sms-cell">
-              <span>{{ boundSMSAccount(row)?.phone }}</span>
-              <el-button link type="primary" :icon="Message" @click.stop="openSMSCode(row)">查看验证码</el-button>
+          <el-table-column label="接码验证码" width="230" align="center"><template #default="{ row }">
+            <div v-if="boundSMSBinding(row)" class="hme-sms-cell">
+              <div class="hme-sms-number">
+                <span>{{ boundSMSBinding(row)?.account.phone }}</span>
+                <el-button
+                  link
+                  :icon="CopyDocument"
+                  title="复制手机号"
+                  @click.stop="copyValue(boundSMSBinding(row)!.account.phone, '手机号')"
+                />
+              </div>
+              <small>绑定 {{ formatDateTime(boundSMSBinding(row)!.binding.boundAt) }}</small>
+              <div>
+                <el-button link type="primary" :icon="Message" @click.stop="openSMSCode(row)">查看验证码</el-button>
+                <el-button link @click.stop="openSMSBinding(row)">更换</el-button>
+              </div>
             </div>
-            <span v-else class="muted">未绑定接码</span>
+            <el-button v-else link type="primary" :icon="Link" @click.stop="openSMSBinding(row)">绑定接码</el-button>
           </template></el-table-column>
           <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
@@ -1047,7 +1114,18 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <div><span>隐藏邮箱</span><strong>{{ smsCodeAlias?.email }}</strong></div>
         <el-tag :type="smsCodePolling ? 'success' : 'info'">{{ smsCodePolling ? '每 5 秒自动刷新' : '已停止自动刷新' }}</el-tag>
       </div>
-      <div class="hme-sms-phone"><span>接码号码</span><strong>{{ smsCodeAccount?.phone }}</strong></div>
+      <div class="hme-sms-phone">
+        <span>接码号码</span>
+        <div>
+          <strong>{{ smsCodeAccount?.phone }}</strong>
+          <el-button
+            link
+            :icon="CopyDocument"
+            title="复制手机号"
+            @click="copyValue(smsCodeAccount?.phone || '', '手机号')"
+          />
+        </div>
+      </div>
       <div class="sms-code-result" :class="{ available: smsCodeResult?.code }">
         <span>最新验证码</span>
         <strong>{{ smsCodeResult?.code || '等待短信' }}</strong>
@@ -1062,6 +1140,58 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-button v-if="smsCodePolling" @click="stopSMSCodePolling">停止刷新</el-button>
         <el-button v-else :icon="Refresh" @click="startSMSCodePolling">开始实时刷新</el-button>
         <el-button type="primary" :icon="Refresh" :loading="smsCodeLoading" @click="refreshSMSCode">立即刷新</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="smsBindingVisible" title="选择接码账号" width="760px" class="hme-sms-binding-dialog">
+      <div class="hme-sms-binding-head">
+        <div><span>隐藏邮箱</span><strong>{{ smsBindingAlias?.email }}</strong></div>
+        <el-input v-model="smsBindingKeyword" clearable placeholder="搜索手机号、绑定邮箱或备注" />
+      </div>
+      <div class="hme-sms-picker-list">
+        <button
+          v-for="account in sortedSMSAccounts"
+          :key="account.phone"
+          type="button"
+          class="hme-sms-picker-item"
+          :class="{ selected: smsBindingPhone === account.phone, full: !smsAccountSelectable(account) }"
+          :disabled="!smsAccountSelectable(account)"
+          @click="smsBindingPhone = account.phone"
+        >
+          <header>
+            <strong>{{ account.phone }}</strong>
+            <el-tag
+              size="small"
+              :type="account.linkedMailboxEmails.length >= 3 ? 'danger' : account.linkedMailboxEmails.length ? 'warning' : 'success'"
+            >
+              已绑 {{ account.linkedMailboxEmails.length }}/3
+            </el-tag>
+          </header>
+          <div v-if="account.linkedMailboxes.length" class="hme-sms-picker-bindings">
+            <div v-for="binding in account.linkedMailboxes" :key="binding.email">
+              <span>{{ binding.email }}</span>
+              <time>{{ formatDateTime(binding.boundAt) }}</time>
+            </div>
+          </div>
+          <span v-else class="hme-sms-picker-empty">暂无绑定邮箱，优先推荐</span>
+          <small v-if="account.remark">{{ account.remark }}</small>
+        </button>
+        <el-empty v-if="!sortedSMSAccounts.length" description="暂无可用接码账号" />
+      </div>
+      <template #footer>
+        <el-button
+          v-if="smsBindingCurrentAccount"
+          type="danger"
+          plain
+          :loading="smsBindingSaving"
+          @click="saveSMSBinding('')"
+        >
+          解除绑定
+        </el-button>
+        <el-button @click="smsBindingVisible = false">取消</el-button>
+        <el-button type="primary" :loading="smsBindingSaving" :disabled="!smsBindingPhone" @click="saveSMSBinding()">
+          保存绑定
+        </el-button>
       </template>
     </el-dialog>
   </section>

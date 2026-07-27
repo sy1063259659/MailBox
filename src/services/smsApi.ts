@@ -2,6 +2,11 @@ import { apiDelete, apiGet, apiPatch, apiPost } from './apiClient'
 
 export type SMSMailboxType = 'icloud_hme'
 
+export interface SMSMailboxBinding {
+  email: string
+  boundAt: string
+}
+
 export interface SMSAccount {
   id: number
   phone: string
@@ -10,6 +15,7 @@ export interface SMSAccount {
   linkedMailboxType: SMSMailboxType | ''
   linkedMailboxEmail: string
   linkedMailboxEmails: string[]
+  linkedMailboxes: SMSMailboxBinding[]
   lastCheckedAt?: string
   lastError?: string
   createdAt: string
@@ -37,13 +43,22 @@ export interface SMSLatestResult {
   checkedAt: string
 }
 
+function normalizeSMSAccount(account: SMSAccount): SMSAccount {
+  const linkedMailboxEmails = account.linkedMailboxEmails
+    ?? (account.linkedMailboxType === 'icloud_hme' && account.linkedMailboxEmail ? [account.linkedMailboxEmail] : [])
+  return {
+    ...account,
+    linkedMailboxEmails,
+    linkedMailboxes: account.linkedMailboxes ?? linkedMailboxEmails.map((email) => ({
+      email,
+      boundAt: account.lastCheckedAt ?? account.updatedAt,
+    })),
+  }
+}
+
 export async function listSMSAccounts(): Promise<SMSAccount[]> {
   const response = await apiGet<{ ok: boolean; accounts: SMSAccount[] }>('/sms-accounts')
-  return response.accounts.map((account) => ({
-    ...account,
-    linkedMailboxEmails: account.linkedMailboxEmails
-      ?? (account.linkedMailboxType === 'icloud_hme' && account.linkedMailboxEmail ? [account.linkedMailboxEmail] : []),
-  }))
+  return response.accounts.map(normalizeSMSAccount)
 }
 
 export async function importSMSAccounts(text: string, overwrite: boolean): Promise<SMSImportResult> {
@@ -52,7 +67,7 @@ export async function importSMSAccounts(text: string, overwrite: boolean): Promi
 
 export async function updateSMSRemark(phone: string, remark: string): Promise<SMSAccount> {
   const response = await apiPatch<{ ok: boolean; account: SMSAccount }>('/sms-accounts/remark', { phone, remark })
-  return response.account
+  return normalizeSMSAccount(response.account)
 }
 
 export async function bindSMSMailbox(
@@ -63,12 +78,20 @@ export async function bindSMSMailbox(
     phone,
     emails,
   })
-  return response.account
+  return normalizeSMSAccount(response.account)
 }
 
 export async function listSMSMailboxes(): Promise<SMSMailboxReference[]> {
   const response = await apiGet<{ ok: boolean; mailboxes: SMSMailboxReference[] }>('/sms-accounts/mailboxes')
   return response.mailboxes
+}
+
+export async function assignSMSMailbox(email: string, phone: string): Promise<SMSAccount[]> {
+  const response = await apiPatch<{ ok: boolean; accounts: SMSAccount[] }>('/sms-accounts/mailbox-binding', {
+    email,
+    phone,
+  })
+  return response.accounts.map(normalizeSMSAccount)
 }
 
 export async function getLatestSMS(phone: string): Promise<SMSLatestResult> {

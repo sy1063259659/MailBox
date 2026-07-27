@@ -289,9 +289,13 @@ async function copyCode() {
         <el-table-column label="绑定隐藏邮箱" min-width="320">
           <template #default="{ row }">
             <button class="sms-binding-cell" @click="openBinding(row)">
-              <span v-if="!row.linkedMailboxEmails.length" class="muted">未绑定</span>
+              <span v-if="!row.linkedMailboxes.length" class="muted">未绑定 · 0/3</span>
               <span v-else class="sms-binding-list">
-                <el-tag v-for="email in row.linkedMailboxEmails" :key="email" size="small" type="success">{{ email }}</el-tag>
+                <strong>已绑 {{ row.linkedMailboxes.length }}/3</strong>
+                <span v-for="binding in row.linkedMailboxes" :key="binding.email" class="sms-binding-entry">
+                  <el-tag size="small" type="success">{{ binding.email }}</el-tag>
+                  <small>{{ formatDateTime(binding.boundAt) }}</small>
+                </span>
               </span>
             </button>
           </template>

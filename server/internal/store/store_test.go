@@ -227,6 +227,19 @@ func TestNormalizeSMSMailboxEmails(t *testing.T) {
 	}
 }
 
+func TestSMSLegacyBindingUsesLastCheckedTimeOnce(t *testing.T) {
+	statements := strings.Join(legacyCleanupStatements(), "\n")
+	for _, want := range []string{
+		"COALESCE(account.last_checked_at, now())",
+		"SET created_at = account.last_checked_at",
+		"SET linked_mailbox_type = '', linked_mailbox_email = ''",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("legacyCleanupStatements() missing %q", want)
+		}
+	}
+}
+
 func TestICloudMigrationCreatesIndexes(t *testing.T) {
 	statements := strings.Join(migrationIndexStatements(), "\n")
 	for _, want := range []string{
