@@ -6,6 +6,7 @@ import {
   listSMSAccounts,
   listSMSMailboxes,
   updateSMSRemark,
+  updateSMSStatus,
   type SMSAccount,
   type SMSImportResult,
   type SMSMailboxReference,
@@ -52,6 +53,10 @@ export const useSMSStore = defineStore('sms', {
 
     async updateRemark(phone: string, remark: string): Promise<void> {
       this.replaceAccount(await updateSMSRemark(phone, remark))
+    },
+
+    async updateStatus(phone: string, status: SMSAccount['status']): Promise<void> {
+      this.replaceAccount(await updateSMSStatus(phone, status))
     },
 
     async bindMailbox(phone: string, emails: string[]): Promise<void> {

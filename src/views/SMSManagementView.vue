@@ -9,10 +9,12 @@ import { formatDateTime } from '@/utils/dateTime'
 const store = useSMSStore()
 const keyword = ref('')
 const bindingFilter = ref<'all' | 'bound' | 'unbound'>('all')
+const statusFilter = ref<'all' | SMSAccount['status']>('all')
 const page = ref(1)
 const pageSize = ref(20)
 const selectedRows = ref<SMSAccount[]>([])
 const busy = ref(false)
+const statusUpdatingPhone = ref('')
 
 const importVisible = ref(false)
 const importText = ref('')
@@ -36,6 +38,7 @@ const filteredAccounts = computed(() => {
   return store.accounts.filter((account) => {
     if (bindingFilter.value === 'bound' && !account.linkedMailboxEmails.length) return false
     if (bindingFilter.value === 'unbound' && account.linkedMailboxEmails.length) return false
+    if (statusFilter.value !== 'all' && account.status !== statusFilter.value) return false
     return !query || [
       account.phone,
       account.providerHost,
@@ -51,7 +54,7 @@ const pagedAccounts = computed(() =>
 const boundCount = computed(() => store.accounts.reduce((total, account) => total + account.linkedMailboxEmails.length, 0))
 const importLineCount = computed(() => importText.value.split(/\r?\n/).filter((line) => line.trim()).length)
 
-watch([keyword, bindingFilter], () => {
+watch([keyword, bindingFilter, statusFilter], () => {
   page.value = 1
   selectedRows.value = []
 })
@@ -196,10 +199,31 @@ async function deleteSelected() {
 async function openSMS(account?: SMSAccount) {
   const target = account ?? (selectedRows.value.length === 1 ? selectedRows.value[0] : undefined)
   if (!target) return ElMessage.warning('请选择一个接码账号')
+  if (target.status === 'invalid') return ElMessage.warning('该接码账号已失效，请先恢复')
   smsAccount.value = target
   smsResult.value = undefined
   smsVisible.value = true
   startPolling()
+}
+
+async function toggleStatus(account: SMSAccount) {
+  const nextStatus: SMSAccount['status'] = account.status === 'active' ? 'invalid' : 'active'
+  if (nextStatus === 'invalid') {
+    await ElMessageBox.confirm(
+      `标记失效后将停止取码，但保留已绑定的 ${account.linkedMailboxEmails.length} 个隐藏邮箱。`,
+      '标记接码失效',
+      { type: 'warning', confirmButtonText: '标记失效' },
+    )
+  }
+  statusUpdatingPhone.value = account.phone
+  try {
+    await store.updateStatus(account.phone, nextStatus)
+    ElMessage.success(nextStatus === 'invalid' ? '接码已标记失效' : '接码已恢复')
+  } catch (error) {
+    showError(error, '更新接码状态失败')
+  } finally {
+    statusUpdatingPhone.value = ''
+  }
 }
 
 async function refreshSMS() {
@@ -245,7 +269,7 @@ async function copyCode() {
       <div class="sms-summary">
         <div><span>接码账号</span><strong>{{ store.accounts.length }}</strong></div>
         <div><span>已绑定隐藏邮箱</span><strong>{{ boundCount }}</strong></div>
-        <div><span>未使用接码</span><strong>{{ store.accounts.filter((account) => !account.linkedMailboxEmails.length).length }}</strong></div>
+        <div><span>失效接码</span><strong>{{ store.accounts.filter((account) => account.status === 'invalid').length }}</strong></div>
       </div>
       <div class="faka-action-row sms-action-row">
         <el-button type="primary" :icon="Upload" @click="openImport">批量导入</el-button>
@@ -260,6 +284,11 @@ async function copyCode() {
           <el-option label="全部绑定状态" value="all" />
           <el-option label="已绑定邮箱" value="bound" />
           <el-option label="未绑定邮箱" value="unbound" />
+        </el-select>
+        <el-select v-model="statusFilter">
+          <el-option label="全部状态" value="all" />
+          <el-option label="正常" value="active" />
+          <el-option label="已失效" value="invalid" />
         </el-select>
         <span>{{ filteredAccounts.length }} 个结果</span>
       </div>
@@ -286,6 +315,16 @@ async function copyCode() {
         <el-table-column label="取件来源" min-width="155">
           <template #default="{ row }"><el-tag type="info" effect="plain">{{ row.providerHost }}</el-tag></template>
         </el-table-column>
+        <el-table-column label="状态" width="120" align="center">
+          <template #default="{ row }">
+            <div class="sms-status-cell">
+              <el-tag :type="row.status === 'active' ? 'success' : 'danger'">
+                {{ row.status === 'active' ? '正常' : '已失效' }}
+              </el-tag>
+              <small v-if="row.invalidAt">{{ formatDateTime(row.invalidAt) }}</small>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="绑定隐藏邮箱" min-width="320">
           <template #default="{ row }">
             <button class="sms-binding-cell" @click="openBinding(row)">
@@ -311,10 +350,19 @@ async function copyCode() {
         <el-table-column label="导入时间" width="165">
           <template #default="{ row }">{{ formatDateTime(row.createdAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="225" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button size="small" type="primary" :icon="Message" @click.stop="openSMS(row)">收码</el-button>
+            <el-button size="small" type="primary" :icon="Message" :disabled="row.status === 'invalid'" @click.stop="openSMS(row)">收码</el-button>
             <el-button size="small" :icon="Link" @click.stop="openBinding(row)" />
+            <el-button
+              size="small"
+              :type="row.status === 'active' ? 'danger' : 'success'"
+              link
+              :loading="statusUpdatingPhone === row.phone"
+              @click.stop="toggleStatus(row)"
+            >
+              {{ row.status === 'active' ? '失效' : '恢复' }}
+            </el-button>
           </template>
         </el-table-column>
       </el-table>

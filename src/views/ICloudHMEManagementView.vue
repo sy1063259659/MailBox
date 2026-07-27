@@ -21,7 +21,8 @@ import {
   getCachedICloudHMEBody, listCachedICloudHMEMessages,
 } from '@/services/iCloudHmeStorage'
 import {
-  assignSMSMailbox, getLatestSMS, listSMSAccounts, type SMSAccount, type SMSLatestResult,
+  assignSMSMailbox, getLatestSMS, listSMSAccounts, updateSMSStatus,
+  type SMSAccount, type SMSLatestResult,
 } from '@/services/smsApi'
 import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
 import { formatDateTime } from '@/utils/dateTime'
@@ -101,6 +102,7 @@ const smsBindingAlias = ref<ICloudHMEAlias>()
 const smsBindingPhone = ref('')
 const smsBindingKeyword = ref('')
 const smsBindingSaving = ref(false)
+const smsStatusUpdatingPhone = ref('')
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -158,6 +160,8 @@ const sortedSMSAccounts = computed(() => {
       ...account.linkedMailboxEmails,
     ].some((value) => value.toLowerCase().includes(query)))
     .sort((left, right) => {
+      const statusDifference = Number(left.status === 'invalid') - Number(right.status === 'invalid')
+      if (statusDifference) return statusDifference
       const countDifference = left.linkedMailboxEmails.length - right.linkedMailboxEmails.length
       if (countDifference) return countDifference
       const leftLastBoundAt = lastSMSBindingTime(left)
@@ -228,13 +232,39 @@ function boundSMSBinding(alias: ICloudHMEAlias) {
 function openSMSBinding(alias: ICloudHMEAlias) {
   const current = boundSMSAccount(alias)
   smsBindingAlias.value = alias
-  smsBindingPhone.value = current?.phone ?? ''
+  smsBindingPhone.value = current?.status === 'active' ? current.phone : ''
   smsBindingKeyword.value = ''
   smsBindingVisible.value = true
 }
 
 function smsAccountSelectable(account: SMSAccount) {
-  return account.phone === smsBindingPhone.value || account.linkedMailboxEmails.length < 3
+  return account.status === 'active'
+    && (account.phone === smsBindingPhone.value || account.linkedMailboxEmails.length < 3)
+}
+
+async function toggleSMSStatus(account: SMSAccount) {
+  const nextStatus: SMSAccount['status'] = account.status === 'active' ? 'invalid' : 'active'
+  if (nextStatus === 'invalid') {
+    await ElMessageBox.confirm(
+      `标记失效后将停止取码，但保留已绑定的 ${account.linkedMailboxEmails.length} 个隐藏邮箱。`,
+      '标记接码失效',
+      { type: 'warning', confirmButtonText: '标记失效' },
+    )
+  }
+  smsStatusUpdatingPhone.value = account.phone
+  try {
+    const updated = await updateSMSStatus(account.phone, nextStatus)
+    const index = smsAccounts.value.findIndex((item) => item.phone === account.phone)
+    if (index >= 0) smsAccounts.value[index] = updated
+    if (nextStatus === 'invalid' && smsBindingPhone.value === account.phone) {
+      smsBindingPhone.value = ''
+    }
+    ElMessage.success(nextStatus === 'invalid' ? '接码已标记失效' : '接码已恢复')
+  } catch (error) {
+    showError(error, '更新接码状态失败')
+  } finally {
+    smsStatusUpdatingPhone.value = ''
+  }
 }
 
 async function saveSMSBinding(phone = smsBindingPhone.value) {
@@ -265,6 +295,10 @@ async function openSMSCode(alias: ICloudHMEAlias) {
   }
   if (!account) {
     ElMessage.info('该隐藏邮箱尚未绑定接码账号')
+    return
+  }
+  if (account.status === 'invalid') {
+    ElMessage.warning('该接码账号已失效，请更换或恢复后再查看验证码')
     return
   }
   smsCodeAlias.value = alias
@@ -941,6 +975,13 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
             <div v-if="boundSMSBinding(row)" class="hme-sms-cell">
               <div class="hme-sms-number">
                 <span>{{ boundSMSBinding(row)?.account.phone }}</span>
+                <el-tag
+                  v-if="boundSMSBinding(row)?.account.status === 'invalid'"
+                  size="small"
+                  type="danger"
+                >
+                  已失效
+                </el-tag>
                 <el-button
                   link
                   :icon="CopyDocument"
@@ -950,8 +991,24 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
               </div>
               <small>绑定 {{ formatDateTime(boundSMSBinding(row)!.binding.boundAt) }}</small>
               <div>
-                <el-button link type="primary" :icon="Message" @click.stop="openSMSCode(row)">查看验证码</el-button>
+                <el-button
+                  link
+                  type="primary"
+                  :icon="Message"
+                  :disabled="boundSMSBinding(row)?.account.status === 'invalid'"
+                  @click.stop="openSMSCode(row)"
+                >
+                  查看验证码
+                </el-button>
                 <el-button link @click.stop="openSMSBinding(row)">更换</el-button>
+                <el-button
+                  link
+                  :type="boundSMSBinding(row)?.account.status === 'active' ? 'danger' : 'success'"
+                  :loading="smsStatusUpdatingPhone === boundSMSBinding(row)?.account.phone"
+                  @click.stop="toggleSMSStatus(boundSMSBinding(row)!.account)"
+                >
+                  {{ boundSMSBinding(row)?.account.status === 'active' ? '失效' : '恢复' }}
+                </el-button>
               </div>
             </div>
             <el-button v-else link type="primary" :icon="Link" @click.stop="openSMSBinding(row)">绑定接码</el-button>
@@ -1160,23 +1217,37 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
         <el-input v-model="smsBindingKeyword" clearable placeholder="搜索手机号、绑定邮箱或备注" />
       </div>
       <div class="hme-sms-picker-list">
-        <button
+        <div
           v-for="account in sortedSMSAccounts"
           :key="account.phone"
-          type="button"
+          role="button"
+          :tabindex="smsAccountSelectable(account) ? 0 : -1"
           class="hme-sms-picker-item"
-          :class="{ selected: smsBindingPhone === account.phone, full: !smsAccountSelectable(account) }"
-          :disabled="!smsAccountSelectable(account)"
-          @click="smsBindingPhone = account.phone"
+          :class="{ selected: smsBindingPhone === account.phone, full: !smsAccountSelectable(account), invalid: account.status === 'invalid' }"
+          @click="smsAccountSelectable(account) && (smsBindingPhone = account.phone)"
+          @keydown.enter="smsAccountSelectable(account) && (smsBindingPhone = account.phone)"
         >
           <header>
             <strong>{{ account.phone }}</strong>
-            <el-tag
-              size="small"
-              :type="account.linkedMailboxEmails.length >= 3 ? 'danger' : account.linkedMailboxEmails.length ? 'warning' : 'success'"
-            >
-              已绑 {{ account.linkedMailboxEmails.length }}/3
-            </el-tag>
+            <div>
+              <el-tag v-if="account.status === 'invalid'" size="small" type="danger">
+                已失效{{ account.invalidAt ? ' · ' + formatDateTime(account.invalidAt) : '' }}
+              </el-tag>
+              <el-tag
+                size="small"
+                :type="account.linkedMailboxEmails.length >= 3 ? 'danger' : account.linkedMailboxEmails.length ? 'warning' : 'success'"
+              >
+                已绑 {{ account.linkedMailboxEmails.length }}/3
+              </el-tag>
+              <el-button
+                link
+                :type="account.status === 'active' ? 'danger' : 'success'"
+                :loading="smsStatusUpdatingPhone === account.phone"
+                @click.stop="toggleSMSStatus(account)"
+              >
+                {{ account.status === 'active' ? '设为失效' : '恢复' }}
+              </el-button>
+            </div>
           </header>
           <div v-if="account.linkedMailboxes.length" class="hme-sms-picker-bindings">
             <div v-for="binding in account.linkedMailboxes" :key="binding.email">
@@ -1186,7 +1257,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           </div>
           <span v-else class="hme-sms-picker-empty">暂无绑定邮箱，优先推荐</span>
           <small v-if="account.remark">{{ account.remark }}</small>
-        </button>
+        </div>
         <el-empty v-if="!sortedSMSAccounts.length" description="暂无可用接码账号" />
       </div>
       <template #footer>

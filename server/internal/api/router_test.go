@@ -305,6 +305,7 @@ func TestSMSRoutesRejectMissingSession(t *testing.T) {
 		{http.MethodGet, "/api/sms-accounts", ""},
 		{http.MethodPost, "/api/sms-accounts/import", `{}`},
 		{http.MethodPatch, "/api/sms-accounts/remark", `{}`},
+		{http.MethodPatch, "/api/sms-accounts/status", `{}`},
 		{http.MethodPatch, "/api/sms-accounts/binding", `{}`},
 		{http.MethodPatch, "/api/sms-accounts/mailbox-binding", `{}`},
 		{http.MethodGet, "/api/sms-accounts/mailboxes", ""},

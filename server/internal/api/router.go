@@ -55,6 +55,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/sms-accounts", authRequired(sessions, methodHandler(http.MethodGet, smsAPI.listAccounts)))
 	mux.HandleFunc("/api/sms-accounts/import", authRequired(sessions, methodHandler(http.MethodPost, smsAPI.importAccounts)))
 	mux.HandleFunc("/api/sms-accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.updateRemark)))
+	mux.HandleFunc("/api/sms-accounts/status", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.updateStatus)))
 	mux.HandleFunc("/api/sms-accounts/binding", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.bindMailbox)))
 	mux.HandleFunc("/api/sms-accounts/mailbox-binding", authRequired(sessions, methodHandler(http.MethodPatch, smsAPI.assignMailbox)))
 	mux.HandleFunc("/api/sms-accounts/mailboxes", authRequired(sessions, methodHandler(http.MethodGet, smsAPI.listMailboxes)))

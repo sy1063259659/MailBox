@@ -55,6 +55,11 @@ type smsRemarkRequest struct {
 	Remark string `json:"remark"`
 }
 
+type smsStatusRequest struct {
+	Phone  string `json:"phone"`
+	Status string `json:"status"`
+}
+
 type smsBindingRequest struct {
 	Phone       string   `json:"phone"`
 	MailboxType string   `json:"mailboxType"`
@@ -140,6 +145,25 @@ func (api smsAPI) updateRemark(w http.ResponseWriter, r *http.Request) {
 	account, err := api.store.UpdateSMSRemark(r.Context(), phone, remark)
 	if err != nil {
 		WriteError(w, http.StatusBadRequest, "sms_remark_failed", err.Error())
+		return
+	}
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "account": account})
+}
+
+func (api smsAPI) updateStatus(w http.ResponseWriter, r *http.Request) {
+	var request smsStatusRequest
+	if !decodeJSON(w, r, &request) {
+		return
+	}
+	phone := normalizeSMSPhone(request.Phone)
+	status := strings.ToLower(strings.TrimSpace(request.Status))
+	if phone == "" {
+		WriteError(w, http.StatusBadRequest, "bad_request", "手机号不能为空")
+		return
+	}
+	account, err := api.store.UpdateSMSStatus(r.Context(), phone, status)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, "sms_status_failed", err.Error())
 		return
 	}
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "account": account})

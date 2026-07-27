@@ -17,6 +17,8 @@ type SMSAccount struct {
 	Phone                string              `json:"phone"`
 	ProviderHost         string              `json:"providerHost"`
 	Remark               string              `json:"remark"`
+	Status               string              `json:"status"`
+	InvalidAt            *time.Time          `json:"invalidAt,omitempty"`
 	LinkedMailboxType    string              `json:"linkedMailboxType"`
 	LinkedMailboxEmail   string              `json:"linkedMailboxEmail"`
 	LinkedMailboxEmails  []string            `json:"linkedMailboxEmails"`
@@ -47,7 +49,8 @@ type SMSMailboxReference struct {
 func (s *Store) ListSMSAccounts(ctx context.Context) ([]SMSAccount, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT account.id, account.phone, account.provider_host, account.remark,
-		       account.last_checked_at, account.last_error, account.created_at, account.updated_at,
+		       account.status, account.invalid_at, account.last_checked_at, account.last_error,
+		       account.created_at, account.updated_at,
 		       account.receive_url_encrypted <> ''
 		FROM sms_accounts account
 		ORDER BY account.created_at DESC, account.id DESC
@@ -62,7 +65,7 @@ func (s *Store) ListSMSAccounts(ctx context.Context) ([]SMSAccount, error) {
 		var account SMSAccount
 		if err := rows.Scan(
 			&account.ID, &account.Phone, &account.ProviderHost, &account.Remark,
-			&account.LastCheckedAt, &account.LastError, &account.CreatedAt,
+			&account.Status, &account.InvalidAt, &account.LastCheckedAt, &account.LastError, &account.CreatedAt,
 			&account.UpdatedAt, &account.ReceiveURLConfigured,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan SMS account: %w", err)
@@ -152,11 +155,15 @@ func (s *Store) BindSMSMailboxes(ctx context.Context, phone string, emails []str
 	defer tx.Rollback(ctx)
 
 	var accountID int64
-	if err := tx.QueryRow(ctx, `SELECT id FROM sms_accounts WHERE phone = $1 FOR UPDATE`, phone).Scan(&accountID); err != nil {
+	var status string
+	if err := tx.QueryRow(ctx, `SELECT id, status FROM sms_accounts WHERE phone = $1 FOR UPDATE`, phone).Scan(&accountID, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SMSAccount{}, errors.New("接码账号不存在")
 		}
 		return SMSAccount{}, fmt.Errorf("store: find SMS account: %w", err)
+	}
+	if len(normalized) > 0 && status != "active" {
+		return SMSAccount{}, errors.New("失效接码账号不能绑定隐藏邮箱")
 	}
 	if len(normalized) > 0 {
 		var existing int
@@ -230,13 +237,17 @@ func (s *Store) AssignSMSMailbox(ctx context.Context, email string, phone string
 		}
 	} else {
 		var accountID int64
+		var status string
 		if err := tx.QueryRow(ctx, `
-			SELECT id FROM sms_accounts WHERE phone = $1 FOR UPDATE
-		`, phone).Scan(&accountID); err != nil {
+			SELECT id, status FROM sms_accounts WHERE phone = $1 FOR UPDATE
+		`, phone).Scan(&accountID, &status); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, errors.New("接码账号不存在")
 			}
 			return nil, fmt.Errorf("store: find SMS account: %w", err)
+		}
+		if status != "active" {
+			return nil, errors.New("失效接码账号不能绑定隐藏邮箱")
 		}
 
 		var currentAccountID int64
@@ -272,6 +283,26 @@ func (s *Store) AssignSMSMailbox(ctx context.Context, email string, phone string
 	return s.ListSMSAccounts(ctx)
 }
 
+func (s *Store) UpdateSMSStatus(ctx context.Context, phone string, status string) (SMSAccount, error) {
+	if status != "active" && status != "invalid" {
+		return SMSAccount{}, errors.New("接码状态无效")
+	}
+	result, err := s.pool.Exec(ctx, `
+		UPDATE sms_accounts
+		SET status = $2,
+		    invalid_at = CASE WHEN $2 = 'invalid' THEN COALESCE(invalid_at, now()) ELSE NULL END,
+		    updated_at = now()
+		WHERE phone = $1
+	`, phone, status)
+	if err != nil {
+		return SMSAccount{}, fmt.Errorf("store: update SMS status: %w", err)
+	}
+	if result.RowsAffected() == 0 {
+		return SMSAccount{}, errors.New("接码账号不存在")
+	}
+	return s.getSMSAccount(ctx, phone)
+}
+
 func (s *Store) DeleteSMSAccount(ctx context.Context, phone string) error {
 	result, err := s.pool.Exec(ctx, `DELETE FROM sms_accounts WHERE phone = $1`, phone)
 	if err != nil {
@@ -285,11 +316,17 @@ func (s *Store) DeleteSMSAccount(ctx context.Context, phone string) error {
 
 func (s *Store) GetSMSReceiveURL(ctx context.Context, phone string) (string, error) {
 	var encrypted string
-	if err := s.pool.QueryRow(ctx, `SELECT receive_url_encrypted FROM sms_accounts WHERE phone = $1`, phone).Scan(&encrypted); err != nil {
+	var status string
+	if err := s.pool.QueryRow(ctx, `
+		SELECT receive_url_encrypted, status FROM sms_accounts WHERE phone = $1
+	`, phone).Scan(&encrypted, &status); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return "", errors.New("接码账号不存在")
 		}
 		return "", fmt.Errorf("store: get SMS receive URL: %w", err)
+	}
+	if status != "active" {
+		return "", errors.New("接码账号已失效")
 	}
 	value, err := secure.DecryptString(s.tokenKey, encrypted)
 	if err != nil {
@@ -331,13 +368,14 @@ func (s *Store) getSMSAccount(ctx context.Context, phone string) (SMSAccount, er
 	var account SMSAccount
 	err := s.pool.QueryRow(ctx, `
 		SELECT account.id, account.phone, account.provider_host, account.remark,
-		       account.last_checked_at, account.last_error, account.created_at, account.updated_at,
+		       account.status, account.invalid_at, account.last_checked_at, account.last_error,
+		       account.created_at, account.updated_at,
 		       account.receive_url_encrypted <> ''
 		FROM sms_accounts account
 		WHERE account.phone = $1
 	`, phone).Scan(
 		&account.ID, &account.Phone, &account.ProviderHost, &account.Remark,
-		&account.LastCheckedAt, &account.LastError, &account.CreatedAt,
+		&account.Status, &account.InvalidAt, &account.LastCheckedAt, &account.LastError, &account.CreatedAt,
 		&account.UpdatedAt, &account.ReceiveURLConfigured,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

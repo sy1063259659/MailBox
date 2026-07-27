@@ -12,6 +12,8 @@ export interface SMSAccount {
   phone: string
   providerHost: string
   remark: string
+  status: 'active' | 'invalid'
+  invalidAt?: string
   linkedMailboxType: SMSMailboxType | ''
   linkedMailboxEmail: string
   linkedMailboxEmails: string[]
@@ -48,6 +50,7 @@ function normalizeSMSAccount(account: SMSAccount): SMSAccount {
     ?? (account.linkedMailboxType === 'icloud_hme' && account.linkedMailboxEmail ? [account.linkedMailboxEmail] : [])
   return {
     ...account,
+    status: account.status ?? 'active',
     linkedMailboxEmails,
     linkedMailboxes: account.linkedMailboxes ?? linkedMailboxEmails.map((email) => ({
       email,
@@ -84,6 +87,11 @@ export async function bindSMSMailbox(
 export async function listSMSMailboxes(): Promise<SMSMailboxReference[]> {
   const response = await apiGet<{ ok: boolean; mailboxes: SMSMailboxReference[] }>('/sms-accounts/mailboxes')
   return response.mailboxes
+}
+
+export async function updateSMSStatus(phone: string, status: SMSAccount['status']): Promise<SMSAccount> {
+  const response = await apiPatch<{ ok: boolean; account: SMSAccount }>('/sms-accounts/status', { phone, status })
+  return normalizeSMSAccount(response.account)
 }
 
 export async function assignSMSMailbox(email: string, phone: string): Promise<SMSAccount[]> {

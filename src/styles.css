@@ -2298,7 +2298,7 @@ textarea {
 
 .sms-filter-row {
   display: grid;
-  grid-template-columns: minmax(240px, 420px) 180px auto;
+  grid-template-columns: minmax(240px, 420px) 180px 150px auto;
   align-items: center;
   gap: 10px;
 }
@@ -2325,6 +2325,18 @@ textarea {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sms-status-cell {
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+}
+
+.sms-status-cell small {
+  color: #94a3b8;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -2479,12 +2491,24 @@ textarea {
   opacity: .58;
 }
 
+.hme-sms-picker-item.invalid {
+  border-color: #fecaca;
+  background: #fffafa;
+}
+
 .hme-sms-picker-item > header,
 .hme-sms-picker-bindings > div {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.hme-sms-picker-item > header > div {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .hme-sms-picker-item > header strong {

@@ -198,6 +198,8 @@ func migrationCreateStatements() []string {
 			receive_url_encrypted TEXT NOT NULL,
 			provider_host TEXT NOT NULL DEFAULT '',
 			remark TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT 'active',
+			invalid_at TIMESTAMPTZ,
 			linked_mailbox_type TEXT NOT NULL DEFAULT '',
 			linked_mailbox_email TEXT NOT NULL DEFAULT '',
 			last_checked_at TIMESTAMPTZ,
@@ -354,6 +356,8 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sms_accounts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE sms_accounts ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_created_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_error_at TIMESTAMPTZ`,
@@ -414,6 +418,7 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_sms_accounts_created_at ON sms_accounts(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_sms_accounts_status ON sms_accounts(status, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_accounts_linked_mailbox
 			ON sms_accounts(linked_mailbox_type, linked_mailbox_email)
 			WHERE linked_mailbox_type <> '' AND linked_mailbox_email <> ''`,
