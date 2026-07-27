@@ -157,10 +157,14 @@ const sortedSMSAccounts = computed(() => {
       account.remark,
       ...account.linkedMailboxEmails,
     ].some((value) => value.toLowerCase().includes(query)))
-    .sort((left, right) =>
-      left.linkedMailboxEmails.length - right.linkedMailboxEmails.length
-      || left.phone.localeCompare(right.phone),
-    )
+    .sort((left, right) => {
+      const countDifference = left.linkedMailboxEmails.length - right.linkedMailboxEmails.length
+      if (countDifference) return countDifference
+      const leftLastBoundAt = lastSMSBindingTime(left)
+      const rightLastBoundAt = lastSMSBindingTime(right)
+      if (leftLastBoundAt !== rightLastBoundAt) return leftLastBoundAt - rightLastBoundAt
+      return left.phone.localeCompare(right.phone)
+    })
 })
 const smsBindingCurrentAccount = computed(() =>
   smsBindingAlias.value ? boundSMSAccount(smsBindingAlias.value) : undefined,
@@ -205,6 +209,13 @@ async function loadSMSBindings() {
 
 function boundSMSAccount(alias: ICloudHMEAlias) {
   return smsAccountByAlias.value.get(alias.email.toLowerCase())
+}
+
+function lastSMSBindingTime(account: SMSAccount) {
+  return account.linkedMailboxes.reduce((latest, binding) => {
+    const timestamp = Date.parse(binding.boundAt)
+    return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest
+  }, 0)
 }
 
 function boundSMSBinding(alias: ICloudHMEAlias) {
