@@ -2,12 +2,14 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"gptbox-server/internal/imapmail"
 	"gptbox-server/internal/session"
 )
 
@@ -56,6 +58,36 @@ func TestPublicICloudHMEMailRejectsUnsupportedMethod(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", recorder.Code)
+	}
+}
+
+func TestPublicLatestMessageReturnsCompactMailMetadata(t *testing.T) {
+	receivedAt := time.Date(2026, time.July, 28, 9, 30, 0, 0, time.UTC)
+	payload, err := json.Marshal(publicLatestMessage("alias@icloud.com", imapmail.MessageDetail{
+		Subject:    "Your verification code",
+		ReceivedAt: receivedAt,
+		Content:    "Code: 482913",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response) != 3 ||
+		response["ok"] != true ||
+		response["address"] != "alias@icloud.com" ||
+		response["message"] == nil {
+		t.Fatalf("response = %#v", response)
+	}
+	message, ok := response["message"].(map[string]any)
+	if !ok ||
+		len(message) != 3 ||
+		message["subject"] != "Your verification code" ||
+		message["receivedAt"] != receivedAt.Format(time.RFC3339) ||
+		message["verificationCode"] != "482913" {
+		t.Fatalf("message = %#v", response["message"])
 	}
 }
 

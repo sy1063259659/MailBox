@@ -40,6 +40,18 @@ type publicICloudHMEMessage struct {
 	VerificationCode string `json:"verificationCode"`
 }
 
+type publicLatestICloudHMEResponse struct {
+	OK      bool                         `json:"ok"`
+	Address string                       `json:"address"`
+	Message publicLatestICloudHMEMessage `json:"message"`
+}
+
+type publicLatestICloudHMEMessage struct {
+	Subject          string    `json:"subject"`
+	ReceivedAt       time.Time `json:"receivedAt"`
+	VerificationCode string    `json:"verificationCode"`
+}
+
 func newICloudHMEPublicLimiter() *iCloudHMEPublicLimiter {
 	return &iCloudHMEPublicLimiter{
 		ip: make(map[string]publicMailBucket), alias: make(map[string]publicMailBucket),
@@ -142,8 +154,7 @@ func (api *iCloudHMEAPI) publicLatestMail(w http.ResponseWriter, r *http.Request
 		WriteError(w, http.StatusNotFound, "mail_not_found", "暂未收到邮件")
 		return
 	}
-	message := publicMessage(result.Messages[0])
-	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "address": credentials.AliasEmail, "message": message})
+	WriteJSON(w, http.StatusOK, publicLatestMessage(credentials.AliasEmail, result.Messages[0]))
 }
 
 func (api *iCloudHMEAPI) publicMailHistory(w http.ResponseWriter, r *http.Request) {
@@ -235,6 +246,18 @@ func (api *iCloudHMEAPI) authenticatePublicMail(w http.ResponseWriter, r *http.R
 func publicMessage(message imapmail.MessageDetail) publicICloudHMEMessage {
 	return publicICloudHMEMessage{
 		MessageDetail: message, VerificationCode: extractICloudHMEVerificationCode(message),
+	}
+}
+
+func publicLatestMessage(address string, message imapmail.MessageDetail) publicLatestICloudHMEResponse {
+	return publicLatestICloudHMEResponse{
+		OK:      true,
+		Address: address,
+		Message: publicLatestICloudHMEMessage{
+			Subject:          message.Subject,
+			ReceivedAt:       message.ReceivedAt,
+			VerificationCode: extractICloudHMEVerificationCode(message),
+		},
 	}
 }
 
