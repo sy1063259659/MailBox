@@ -317,6 +317,8 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_plus_activated_at",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivated_at",
 		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_last_scanned_at",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS group_moved_at",
+		"icloud_hme_aliases ADD COLUMN IF NOT EXISTS import_order",
 		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS next_create_at",
 		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_stage",
 		"icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS probe_success_streak",
@@ -339,6 +341,7 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 		"idx_icloud_hme_audit_created_at",
 		"idx_icloud_hme_aliases_status",
 		"idx_icloud_hme_aliases_gpt_scan",
+		"idx_icloud_hme_aliases_group_order",
 	} {
 		if !strings.Contains(indexes, want) {
 			t.Fatalf("migrationIndexStatements() missing %q", want)

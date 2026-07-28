@@ -165,6 +165,15 @@ func TestDeleteAppleAliasRequiresExactConfirmationBeforeStoreLookup(t *testing.T
 	}
 }
 
+func TestICloudHMELocalOnlyAliasDeleteIsDisabled(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/icloud-hme/aliases/alias%40icloud.com", nil)
+	(&iCloudHMEAPI{}).routeAlias(recorder, request)
+	if recorder.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusMethodNotAllowed)
+	}
+}
+
 func TestICloudHMELoginChallengeExpiry(t *testing.T) {
 	challenge := iCloudHMELoginChallenge{ExpiresAt: time.Now().Add(-time.Second)}
 	if !time.Now().After(challenge.ExpiresAt) {

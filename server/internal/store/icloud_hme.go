@@ -85,6 +85,8 @@ type ICloudHMEAlias struct {
 	GPTDeactivatedAt     *time.Time `json:"gptDeactivatedAt,omitempty"`
 	GPTLastScannedAt     *time.Time `json:"gptLastScannedAt,omitempty"`
 	GPTScanError         string     `json:"gptScanError,omitempty"`
+	GroupMovedAt         time.Time  `json:"groupMovedAt"`
+	ImportOrder          int64      `json:"importOrder"`
 	CreatedAt            time.Time  `json:"createdAt"`
 	UpdatedAt            time.Time  `json:"updatedAt"`
 }
@@ -445,11 +447,12 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 		       a.inventory_status, a.sold_at,
 		       a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
 		       a.gpt_last_scanned_at, a.gpt_scan_error,
+		       a.group_moved_at, a.import_order,
 		       a.created_at, a.updated_at
 		FROM icloud_hme_aliases a
 		JOIN icloud_hme_source_accounts s ON s.id = a.source_account_id
 		JOIN icloud_hme_groups g ON g.id = a.group_id
-		ORDER BY a.created_at DESC, a.email ASC
+		ORDER BY g.sort_order ASC, a.group_moved_at DESC, a.import_order ASC, a.email ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list iCloud HME aliases: %w", err)
@@ -467,6 +470,7 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 			&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
 			&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
 			&alias.GPTLastScannedAt, &alias.GPTScanError,
+			&alias.GroupMovedAt, &alias.ImportOrder,
 			&alias.CreatedAt, &alias.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("store: scan iCloud HME alias: %w", err)
@@ -595,6 +599,7 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		          a.inventory_status, a.sold_at,
 		          a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
 		          a.gpt_last_scanned_at, a.gpt_scan_error,
+		          a.group_moved_at, a.import_order,
 		          a.created_at, a.updated_at
 	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
 		&alias.Email, &alias.SourceAccountID, &alias.SourceAccountName,
@@ -604,6 +609,7 @@ func (s *Store) UpdateICloudHMEAliasRemark(ctx context.Context, email, remark st
 		&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
 		&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
 		&alias.GPTLastScannedAt, &alias.GPTScanError,
+		&alias.GroupMovedAt, &alias.ImportOrder,
 		&alias.CreatedAt, &alias.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -626,7 +632,9 @@ func (s *Store) MoveICloudHMEAliasesToGroup(ctx context.Context, emails []string
 	}
 	result, err := s.pool.Exec(ctx, `
 		UPDATE icloud_hme_aliases
-		SET group_id = $1, updated_at = now()
+		SET group_id = $1,
+		    group_moved_at = CASE WHEN group_id <> $1 THEN now() ELSE group_moved_at END,
+		    updated_at = now()
 		WHERE lower(email) = ANY($2)
 	`, groupID, normalizedEmails)
 	if err != nil {
@@ -634,6 +642,64 @@ func (s *Store) MoveICloudHMEAliasesToGroup(ctx context.Context, emails []string
 	}
 	if result.RowsAffected() == 0 {
 		return errors.New("隐藏邮箱不存在")
+	}
+	return nil
+}
+
+func (s *Store) backfillICloudHMEAliasOrdering(ctx context.Context) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin backfill iCloud HME alias ordering: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE icloud_hme_aliases
+		SET group_moved_at = created_at
+		WHERE group_moved_at IS NULL
+	`); err != nil {
+		return fmt.Errorf("store: backfill iCloud HME group move time: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		WITH ordered AS (
+			SELECT email, row_number() OVER (ORDER BY created_at ASC, email ASC) AS position
+			FROM icloud_hme_aliases
+			WHERE import_order IS NULL
+		)
+		UPDATE icloud_hme_aliases alias
+		SET import_order = ordered.position +
+			COALESCE((SELECT max(import_order) FROM icloud_hme_aliases), 0)
+		FROM ordered
+		WHERE alias.email = ordered.email
+	`); err != nil {
+		return fmt.Errorf("store: backfill iCloud HME import order: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		SELECT setval(
+			'icloud_hme_alias_import_order_seq',
+			GREATEST(COALESCE((SELECT max(import_order) FROM icloud_hme_aliases), 0) + 1, 1),
+			false
+		)
+	`); err != nil {
+		return fmt.Errorf("store: advance iCloud HME import order sequence: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		ALTER TABLE icloud_hme_aliases
+			ALTER COLUMN group_moved_at SET DEFAULT now(),
+			ALTER COLUMN group_moved_at SET NOT NULL,
+			ALTER COLUMN import_order SET DEFAULT nextval('icloud_hme_alias_import_order_seq'),
+			ALTER COLUMN import_order SET NOT NULL
+	`); err != nil {
+		return fmt.Errorf("store: enforce iCloud HME alias ordering columns: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		ALTER SEQUENCE icloud_hme_alias_import_order_seq
+		OWNED BY icloud_hme_aliases.import_order
+	`); err != nil {
+		return fmt.Errorf("store: own iCloud HME import order sequence: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit iCloud HME alias ordering backfill: %w", err)
 	}
 	return nil
 }

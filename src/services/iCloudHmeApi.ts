@@ -64,6 +64,8 @@ export interface ICloudHMEAlias {
   gptDeactivatedAt?: string
   gptLastScannedAt?: string
   gptScanError?: string
+  groupMovedAt: string
+  importOrder: number
   createdAt: string
   updatedAt: string
 }
@@ -284,10 +286,6 @@ export async function updateICloudHMERemark(email: string, remark: string): Prom
 
 export async function moveICloudHMEAliases(emails: string[], group: string): Promise<void> {
   await apiPost('/icloud-hme/aliases/move-group', { emails, group })
-}
-
-export async function deleteICloudHMEAlias(email: string): Promise<void> {
-  await apiDelete(`/icloud-hme/aliases/${encodeURIComponent(email)}`)
 }
 
 export async function generateICloudHMEReceiveKeys(emails: string[]): Promise<number> {

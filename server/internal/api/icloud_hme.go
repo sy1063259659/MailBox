@@ -331,14 +331,6 @@ func (api *iCloudHMEAPI) moveAliases(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]bool{"ok": true})
 }
 
-func (api *iCloudHMEAPI) deleteAlias(w http.ResponseWriter, r *http.Request, email string) {
-	if err := api.store.DeleteICloudHMEAlias(r.Context(), email); err != nil {
-		WriteError(w, 400, "bad_request", err.Error())
-		return
-	}
-	WriteJSON(w, 200, map[string]bool{"ok": true})
-}
-
 func (api *iCloudHMEAPI) latestMail(w http.ResponseWriter, r *http.Request) {
 	var req iCloudHMEMailRequest
 	if !decodeJSON(w, r, &req) {
@@ -613,8 +605,6 @@ func (api *iCloudHMEAPI) routeAlias(w http.ResponseWriter, r *http.Request) {
 		api.revealReceiveKey(w, r, email)
 	case r.Method == http.MethodPost && action == "receive-key/reset":
 		api.resetReceiveKey(w, r, email)
-	case r.Method == http.MethodDelete && action == "":
-		api.deleteAlias(w, r, email)
 	default:
 		WriteError(w, 405, "method_not_allowed", "method not allowed")
 	}

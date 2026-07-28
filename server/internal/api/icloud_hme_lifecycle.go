@@ -159,28 +159,35 @@ func (api *iCloudHMEAPI) deleteAppleAlias(w http.ResponseWriter, r *http.Request
 		writeICloudHMEError(w, err)
 		return
 	}
-	if alias.AnonymousID == "" {
+	if alias.AppleStatus != "deleted" && alias.AnonymousID == "" {
 		WriteError(w, http.StatusBadRequest, "bad_request", "隐藏邮箱缺少 Apple anonymousId，请先同步")
 		return
 	}
-	lock := api.lockForSource(alias.SourceAccountID)
-	lock.Lock()
-	defer lock.Unlock()
-	client, _, err := api.clientForSource(r.Context(), alias.SourceAccountID)
-	if err == nil {
-		err = client.Delete(alias.AnonymousID)
+	if alias.AppleStatus != "deleted" {
+		lock := api.lockForSource(alias.SourceAccountID)
+		lock.Lock()
+		defer lock.Unlock()
+		client, _, err := api.clientForSource(r.Context(), alias.SourceAccountID)
+		if err == nil {
+			err = client.Delete(alias.AnonymousID)
+		}
+		if err != nil {
+			api.markSourceError(r.Context(), alias.SourceAccountID, err)
+			_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "failed", classifyICloudHMECode(err), err.Error())
+			writeICloudHMEError(w, err)
+			return
+		}
+		if err := api.store.UpdateICloudHMEAliasLifecycle(r.Context(), alias.Email, "deleted"); err != nil {
+			writeICloudHMEError(w, err)
+			return
+		}
 	}
-	if err != nil {
-		api.markSourceError(r.Context(), alias.SourceAccountID, err)
-		_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_apple", alias.Email, "failed", classifyICloudHMECode(err), err.Error())
+	if err := api.store.DeleteICloudHMEAlias(r.Context(), alias.Email); err != nil {
+		_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "failed", "local_delete_failed", err.Error())
 		writeICloudHMEError(w, err)
 		return
 	}
-	if err := api.store.UpdateICloudHMEAliasLifecycle(r.Context(), alias.Email, "deleted"); err != nil {
-		writeICloudHMEError(w, err)
-		return
-	}
-	_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_apple", alias.Email, "success", "", "")
+	_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "success", "", "")
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 

@@ -696,44 +696,24 @@ async function lifecycleSelected(action: 'deactivate' | 'reactivate', rows = sel
 }
 async function permanentlyDeleteAlias(alias: ICloudHMEAlias) {
   const result = await ElMessageBox.prompt(
-    '该操作不可恢复。请输入完整隐藏邮箱确认：' + alias.email,
-    'Apple 永久删除',
+    '该操作会永久删除 Apple 侧隐藏邮箱、本地记录和本地邮件缓存，且不可恢复。请输入完整隐藏邮箱确认：' + alias.email,
+    '永久删除隐藏邮箱',
     { type: 'warning', inputValidator: (value) => value.trim().toLowerCase() === alias.email.toLowerCase() || '输入的邮箱不匹配' },
   )
   busy.value = true
   try {
     await permanentlyDeleteICloudHMEAlias(alias.email, result.value)
-    await store.load()
-    ElMessage.success('Apple 侧隐藏邮箱已永久删除，审计记录已保留')
-  } catch (error) { showError(error, '永久删除失败') } finally { busy.value = false }
-}
-async function deleteAlias(alias: ICloudHMEAlias) {
-  await ElMessageBox.confirm('只删除本地记录，不会操作 Apple 侧别名。确定删除 ' + alias.email + '？', '删除本地记录', { type: 'warning' })
-  try {
-    await store.deleteAlias(alias.email)
     await deleteICloudHMECacheForAlias(alias.email)
-    ElMessage.success('本地记录与邮件缓存已删除')
-  } catch (error) { showError(error, '删除失败') }
-}
-async function deleteSelected() {
-  if (!selectedRows.value.length) return ElMessage.warning('请先勾选隐藏邮箱')
-  await ElMessageBox.confirm('只删除 ' + selectedRows.value.length + ' 条本地记录，不影响 Apple 侧别名。', '批量删除', { type: 'warning' })
-  busy.value = true
-  try {
-    for (const alias of selectedRows.value) {
-      await store.deleteAlias(alias.email)
-      await deleteICloudHMECacheForAlias(alias.email)
-    }
-    selectedRows.value = []
-    ElMessage.success('本地记录与缓存已删除')
-  } catch (error) { await store.load(); showError(error, '批量删除失败') } finally { busy.value = false }
+    store.aliases = store.aliases.filter((item) => item.email !== alias.email)
+    selectedRows.value = selectedRows.value.filter((item) => item.email !== alias.email)
+    ElMessage.success('Apple 隐藏邮箱、本地记录与邮件缓存已永久删除')
+  } catch (error) { showError(error, '永久删除失败') } finally { busy.value = false }
 }
 async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
   if (command === 'receive-key') await openReceiveKey(alias)
   if (command === 'deactivate') await lifecycleSelected('deactivate', [alias])
   if (command === 'reactivate') await lifecycleSelected('reactivate', [alias])
-  if (command === 'delete-apple') await permanentlyDeleteAlias(alias)
-  if (command === 'delete-local') await deleteAlias(alias)
+  if (command === 'delete') await permanentlyDeleteAlias(alias)
 }
 async function handleToolbarCommand(command: string) {
   if (command === 'automation-events') await openAutomationEvents()
@@ -744,7 +724,6 @@ async function handleToolbarCommand(command: string) {
   if (command === 'reactivate') await lifecycleSelected('reactivate')
   if (command === 'export-txt') exportAliases('txt')
   if (command === 'export-csv') exportAliases('csv')
-  if (command === 'delete-local') await deleteSelected()
 }
 function exportAliases(format: 'txt' | 'csv') {
   const targets = selectedRows.value.length ? selectedRows.value : filteredAliases.value
@@ -950,7 +929,6 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
               <el-dropdown-item command="export-csv">导出 CSV</el-dropdown-item>
               <el-dropdown-item command="deactivate" divided :disabled="!selectedRows.length">Apple 停用</el-dropdown-item>
               <el-dropdown-item command="reactivate" :disabled="!selectedRows.length">Apple 恢复</el-dropdown-item>
-              <el-dropdown-item command="delete-local" divided :icon="Delete" :disabled="!selectedRows.length">删除本地记录</el-dropdown-item>
             </el-dropdown-menu></template>
           </el-dropdown>
         </div>
@@ -960,7 +938,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-select v-model="gptStatusFilter" style="width:150px"><el-option label="全部 GPT 状态" value="all" /><el-option label="未开通" value="unregistered" /><el-option label="PLUS" value="plus" /><el-option label="已封号" value="deactivated" /></el-select>
           <span>{{ filteredAliases.length }} 个结果</span>
         </div>
-        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、取件 URL、邮箱---取件 URL、停用、恢复、移动和本地删除优先作用于已选项；永久删除仅支持单个</span></div>
+        <div class="account-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个隐藏邮箱</strong><span>复制邮箱、取件 URL、邮箱---取件 URL、停用、恢复和移动优先作用于已选项；永久删除仅支持单个</span></div>
         <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table" height="calc(100vh - 282px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
@@ -1023,8 +1001,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
                 <el-dropdown-item command="receive-key" :icon="Key">收件密钥与 API</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'active'" command="deactivate">Apple 停用</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'inactive'" command="reactivate">Apple 恢复</el-dropdown-item>
-                <el-dropdown-item v-if="row.appleStatus !== 'deleted'" command="delete-apple" divided>Apple 永久删除</el-dropdown-item>
-                <el-dropdown-item command="delete-local">删除本地记录</el-dropdown-item>
+                <el-dropdown-item command="delete" divided :icon="Delete">永久删除</el-dropdown-item>
               </el-dropdown-menu></template>
             </el-dropdown>
           </template></el-table-column>

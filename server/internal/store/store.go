@@ -121,6 +121,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 			return fmt.Errorf("store: cleanup legacy schema: %w", err)
 		}
 	}
+	if err := s.backfillICloudHMEAliasOrdering(ctx); err != nil {
+		return err
+	}
 	if err := s.backfillAuthEmails(ctx); err != nil {
 		return err
 	}
@@ -239,6 +242,7 @@ func migrationCreateStatements() []string {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`CREATE SEQUENCE IF NOT EXISTS icloud_hme_alias_import_order_seq`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_aliases (
 			email TEXT PRIMARY KEY,
 			source_account_id BIGINT NOT NULL REFERENCES icloud_hme_source_accounts(id),
@@ -261,6 +265,8 @@ func migrationCreateStatements() []string {
 			gpt_deactivation_message_uid TEXT NOT NULL DEFAULT '',
 			gpt_last_scanned_at TIMESTAMPTZ,
 			gpt_scan_error TEXT NOT NULL DEFAULT '',
+			group_moved_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			import_order BIGINT NOT NULL DEFAULT nextval('icloud_hme_alias_import_order_seq'),
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -396,6 +402,8 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_deactivation_message_uid TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_last_scanned_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS gpt_scan_error TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS group_moved_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_hme_aliases ADD COLUMN IF NOT EXISTS import_order BIGINT`,
 		`ALTER TABLE icloud_hme_create_jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'manual'`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS next_attempt_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_create_job_items ADD COLUMN IF NOT EXISTS retry_class TEXT NOT NULL DEFAULT ''`,
@@ -427,6 +435,8 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_account_id ON icloud_hme_aliases(source_account_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_id ON icloud_hme_aliases(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_created_at ON icloud_hme_aliases(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_group_order
+			ON icloud_hme_aliases(group_id, group_moved_at DESC, import_order ASC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_icloud_hme_aliases_source_anonymous_id
 			ON icloud_hme_aliases(source_account_id, anonymous_id)
 			WHERE anonymous_id <> ''`,

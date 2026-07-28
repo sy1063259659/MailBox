@@ -4,7 +4,6 @@ import {
   createICloudHMEAlias,
   createICloudHMEJob,
   createICloudHMESourceAccount,
-  deleteICloudHMEAlias,
   deleteICloudHMEGroup,
   deleteICloudHMESource,
   listICloudHMEAliases,
@@ -104,10 +103,6 @@ export const useICloudHmeStore = defineStore('iCloudHme', {
     async moveToGroup(emails: string[], group: string) {
       await moveICloudHMEAliases(emails, group || ICLOUD_HME_DEFAULT_GROUP)
       await this.load()
-    },
-    async deleteAlias(email: string) {
-      await deleteICloudHMEAlias(email)
-      this.aliases = this.aliases.filter((alias) => alias.email !== email)
     },
     async reorderGroups(ids: number[]) {
       this.groups = await reorderICloudHMEGroups(ids)
