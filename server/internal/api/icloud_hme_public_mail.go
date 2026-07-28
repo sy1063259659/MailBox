@@ -23,6 +23,8 @@ const (
 	publicMailLimiterMaxKeys = 10000
 )
 
+var chinaStandardTime = time.FixedZone("Asia/Shanghai", 8*60*60)
+
 type publicMailBucket struct {
 	StartedAt time.Time
 	Count     int
@@ -47,9 +49,9 @@ type publicLatestICloudHMEResponse struct {
 }
 
 type publicLatestICloudHMEMessage struct {
-	Subject          string    `json:"subject"`
-	ReceivedAt       time.Time `json:"receivedAt"`
-	VerificationCode string    `json:"verificationCode"`
+	Subject          string `json:"subject"`
+	ReceivedAt       string `json:"receivedAt"`
+	VerificationCode string `json:"verificationCode"`
 }
 
 func newICloudHMEPublicLimiter() *iCloudHMEPublicLimiter {
@@ -255,7 +257,7 @@ func publicLatestMessage(address string, message imapmail.MessageDetail) publicL
 		Address: address,
 		Message: publicLatestICloudHMEMessage{
 			Subject:          message.Subject,
-			ReceivedAt:       message.ReceivedAt,
+			ReceivedAt:       message.ReceivedAt.In(chinaStandardTime).Format("2006-01-02 15:04:05"),
 			VerificationCode: extractICloudHMEVerificationCode(message),
 		},
 	}

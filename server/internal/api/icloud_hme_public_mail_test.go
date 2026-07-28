@@ -85,7 +85,7 @@ func TestPublicLatestMessageReturnsCompactMailMetadata(t *testing.T) {
 	if !ok ||
 		len(message) != 3 ||
 		message["subject"] != "Your verification code" ||
-		message["receivedAt"] != receivedAt.Format(time.RFC3339) ||
+		message["receivedAt"] != "2026-07-28 17:30:00" ||
 		message["verificationCode"] != "482913" {
 		t.Fatalf("message = %#v", response["message"])
 	}
