@@ -5,6 +5,9 @@ export type SMSMailboxType = 'icloud_hme'
 export interface SMSMailboxBinding {
   email: string
   boundAt: string
+  unboundAt?: string
+  endReason?: 'manual_unbind' | 'reassigned' | 'mailbox_deleted' | string
+  active: boolean
 }
 
 export interface SMSAccount {
@@ -18,6 +21,9 @@ export interface SMSAccount {
   linkedMailboxEmail: string
   linkedMailboxEmails: string[]
   linkedMailboxes: SMSMailboxBinding[]
+  bindingHistory: SMSMailboxBinding[]
+  deletedMailboxSlots: number
+  occupiedMailboxSlots: number
   lastCheckedAt?: string
   lastError?: string
   createdAt: string
@@ -48,14 +54,22 @@ export interface SMSLatestResult {
 function normalizeSMSAccount(account: SMSAccount): SMSAccount {
   const linkedMailboxEmails = account.linkedMailboxEmails
     ?? (account.linkedMailboxType === 'icloud_hme' && account.linkedMailboxEmail ? [account.linkedMailboxEmail] : [])
+  const linkedMailboxes = (account.linkedMailboxes ?? linkedMailboxEmails.map((email) => ({
+    email,
+    boundAt: account.lastCheckedAt ?? account.updatedAt,
+    active: true,
+  }))).map((binding) => ({ ...binding, active: true }))
+  const bindingHistory = account.bindingHistory ?? linkedMailboxes
+  const deletedMailboxSlots = account.deletedMailboxSlots
+    ?? bindingHistory.filter((binding) => binding.endReason === 'mailbox_deleted').length
   return {
     ...account,
     status: account.status ?? 'active',
     linkedMailboxEmails,
-    linkedMailboxes: account.linkedMailboxes ?? linkedMailboxEmails.map((email) => ({
-      email,
-      boundAt: account.lastCheckedAt ?? account.updatedAt,
-    })),
+    linkedMailboxes,
+    bindingHistory,
+    deletedMailboxSlots,
+    occupiedMailboxSlots: account.occupiedMailboxSlots ?? linkedMailboxes.length + deletedMailboxSlots,
   }
 }
 

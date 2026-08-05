@@ -158,11 +158,12 @@ const sortedSMSAccounts = computed(() => {
       account.phone,
       account.remark,
       ...account.linkedMailboxEmails,
+      ...account.bindingHistory.map((binding) => binding.email),
     ].some((value) => value.toLowerCase().includes(query)))
     .sort((left, right) => {
       const statusDifference = Number(left.status === 'invalid') - Number(right.status === 'invalid')
       if (statusDifference) return statusDifference
-      const countDifference = left.linkedMailboxEmails.length - right.linkedMailboxEmails.length
+      const countDifference = left.occupiedMailboxSlots - right.occupiedMailboxSlots
       if (countDifference) return countDifference
       const leftLastBoundAt = lastSMSBindingTime(left)
       const rightLastBoundAt = lastSMSBindingTime(right)
@@ -216,7 +217,7 @@ function boundSMSAccount(alias: ICloudHMEAlias) {
 }
 
 function lastSMSBindingTime(account: SMSAccount) {
-  return account.linkedMailboxes.reduce((latest, binding) => {
+  return account.bindingHistory.reduce((latest, binding) => {
     const timestamp = Date.parse(binding.boundAt)
     return Number.isFinite(timestamp) ? Math.max(latest, timestamp) : latest
   }, 0)
@@ -239,7 +240,11 @@ function openSMSBinding(alias: ICloudHMEAlias) {
 
 function smsAccountSelectable(account: SMSAccount) {
   return account.status === 'active'
-    && (account.phone === smsBindingPhone.value || account.linkedMailboxEmails.length < 3)
+    && (account.phone === smsBindingPhone.value || account.occupiedMailboxSlots < 3)
+}
+
+function deletedSMSBindings(account: SMSAccount) {
+  return account.bindingHistory.filter((binding) => binding.endReason === 'mailbox_deleted')
 }
 
 async function toggleSMSStatus(account: SMSAccount) {
@@ -1235,9 +1240,9 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
               </el-tag>
               <el-tag
                 size="small"
-                :type="account.linkedMailboxEmails.length >= 3 ? 'danger' : account.linkedMailboxEmails.length ? 'warning' : 'success'"
+                :type="account.occupiedMailboxSlots >= 3 ? 'danger' : account.occupiedMailboxSlots ? 'warning' : 'success'"
               >
-                已绑 {{ account.linkedMailboxEmails.length }}/3
+                名额 {{ account.occupiedMailboxSlots }}/3 · 当前 {{ account.linkedMailboxEmails.length }}
               </el-tag>
               <el-button
                 link
@@ -1255,7 +1260,13 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
               <time>{{ formatDateTime(binding.boundAt) }}</time>
             </div>
           </div>
-          <span v-else class="hme-sms-picker-empty">暂无绑定邮箱，优先推荐</span>
+          <div v-if="deletedSMSBindings(account).length" class="hme-sms-picker-bindings historical">
+            <div v-for="binding in deletedSMSBindings(account)" :key="`${binding.email}-${binding.boundAt}`">
+              <span>{{ binding.email }} · 邮箱已删除</span>
+              <time>{{ binding.unboundAt ? formatDateTime(binding.unboundAt) : formatDateTime(binding.boundAt) }}</time>
+            </div>
+          </div>
+          <span v-if="!account.occupiedMailboxSlots" class="hme-sms-picker-empty">暂无占用名额，优先推荐</span>
           <small v-if="account.remark">{{ account.remark }}</small>
         </div>
         <el-empty v-if="!sortedSMSAccounts.length" description="暂无可用接码账号" />

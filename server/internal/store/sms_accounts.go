@@ -12,6 +12,8 @@ import (
 	"gptbox-server/internal/secure"
 )
 
+const maxSMSMailboxSlots = 3
+
 type SMSAccount struct {
 	ID                   int64               `json:"id"`
 	Phone                string              `json:"phone"`
@@ -23,6 +25,9 @@ type SMSAccount struct {
 	LinkedMailboxEmail   string              `json:"linkedMailboxEmail"`
 	LinkedMailboxEmails  []string            `json:"linkedMailboxEmails"`
 	LinkedMailboxes      []SMSMailboxBinding `json:"linkedMailboxes"`
+	BindingHistory       []SMSMailboxBinding `json:"bindingHistory"`
+	DeletedMailboxSlots  int                 `json:"deletedMailboxSlots"`
+	OccupiedMailboxSlots int                 `json:"occupiedMailboxSlots"`
 	LastCheckedAt        *time.Time          `json:"lastCheckedAt,omitempty"`
 	LastError            string              `json:"lastError,omitempty"`
 	CreatedAt            time.Time           `json:"createdAt"`
@@ -31,8 +36,11 @@ type SMSAccount struct {
 }
 
 type SMSMailboxBinding struct {
-	Email   string    `json:"email"`
-	BoundAt time.Time `json:"boundAt"`
+	Email     string     `json:"email"`
+	BoundAt   time.Time  `json:"boundAt"`
+	UnboundAt *time.Time `json:"unboundAt,omitempty"`
+	EndReason string     `json:"endReason,omitempty"`
+	Active    bool       `json:"active"`
 }
 
 type SMSAccountInput struct {
@@ -176,6 +184,25 @@ func (s *Store) BindSMSMailboxes(ctx context.Context, phone string, emails []str
 			return SMSAccount{}, errors.New("绑定的 iCloud 隐藏邮箱不存在")
 		}
 	}
+	var deletedSlots int
+	if err := tx.QueryRow(ctx, `
+		SELECT count(*) FROM sms_account_binding_history
+		WHERE sms_account_id = $1 AND end_reason = 'mailbox_deleted'
+	`, accountID).Scan(&deletedSlots); err != nil {
+		return SMSAccount{}, fmt.Errorf("store: count deleted SMS mailbox slots: %w", err)
+	}
+	remainingSlots := remainingSMSMailboxSlots(0, deletedSlots)
+	if len(normalized) > remainingSlots {
+		return SMSAccount{}, fmt.Errorf("该接码账号已有 %d 个邮箱删除快照，最多还能绑定 %d 个隐藏邮箱", deletedSlots, remainingSlots)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE sms_account_binding_history
+		SET unbound_at = COALESCE(unbound_at, now()), end_reason = 'manual_unbind'
+		WHERE sms_account_id = $1 AND unbound_at IS NULL
+		  AND NOT (mailbox_email = ANY($2::text[]))
+	`, accountID, normalized); err != nil {
+		return SMSAccount{}, fmt.Errorf("store: snapshot cleared SMS bindings: %w", err)
+	}
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM sms_account_bindings
 		WHERE sms_account_id = $1
@@ -192,6 +219,20 @@ func (s *Store) BindSMSMailboxes(ctx context.Context, phone string, emails []str
 				return SMSAccount{}, fmt.Errorf("隐藏邮箱 %s 已绑定其他接码账号", email)
 			}
 			return SMSAccount{}, fmt.Errorf("store: bind hidden mailbox: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO sms_account_binding_history (sms_account_id, mailbox_email, bound_at)
+			SELECT binding.sms_account_id, binding.mailbox_email, binding.created_at
+			FROM sms_account_bindings binding
+			WHERE binding.sms_account_id = $1 AND binding.mailbox_email = $2
+			  AND NOT EXISTS (
+			    SELECT 1 FROM sms_account_binding_history history
+			    WHERE history.sms_account_id = binding.sms_account_id
+			      AND lower(history.mailbox_email) = lower(binding.mailbox_email)
+			      AND history.unbound_at IS NULL
+			  )
+		`, accountID, email); err != nil {
+			return SMSAccount{}, fmt.Errorf("store: snapshot SMS binding: %w", err)
 		}
 	}
 	if _, err := tx.Exec(ctx, `
@@ -232,6 +273,17 @@ func (s *Store) AssignSMSMailbox(ctx context.Context, email string, phone string
 	}
 
 	if phone == "" {
+		if _, err := tx.Exec(ctx, `
+			UPDATE sms_account_binding_history history
+			SET unbound_at = COALESCE(history.unbound_at, now()), end_reason = 'manual_unbind'
+			FROM sms_account_bindings binding
+			WHERE binding.mailbox_email = $1
+			  AND history.sms_account_id = binding.sms_account_id
+			  AND lower(history.mailbox_email) = lower(binding.mailbox_email)
+			  AND history.unbound_at IS NULL
+		`, canonicalEmail); err != nil {
+			return nil, fmt.Errorf("store: snapshot unbound hidden mailbox: %w", err)
+		}
 		if _, err := tx.Exec(ctx, `DELETE FROM sms_account_bindings WHERE mailbox_email = $1`, canonicalEmail); err != nil {
 			return nil, fmt.Errorf("store: unbind hidden mailbox: %w", err)
 		}
@@ -257,14 +309,27 @@ func (s *Store) AssignSMSMailbox(ctx context.Context, email string, phone string
 			return nil, fmt.Errorf("store: find current SMS binding: %w", err)
 		}
 		if currentAccountID != accountID {
-			var bindingCount int
+			var occupiedSlots int
 			if err := tx.QueryRow(ctx, `
-				SELECT count(*) FROM sms_account_bindings WHERE sms_account_id = $1
-			`, accountID).Scan(&bindingCount); err != nil {
-				return nil, fmt.Errorf("store: count SMS bindings: %w", err)
+				SELECT
+				  (SELECT count(*) FROM sms_account_bindings WHERE sms_account_id = $1) +
+				  (SELECT count(*) FROM sms_account_binding_history WHERE sms_account_id = $1 AND end_reason = 'mailbox_deleted')
+			`, accountID).Scan(&occupiedSlots); err != nil {
+				return nil, fmt.Errorf("store: count occupied SMS mailbox slots: %w", err)
 			}
-			if bindingCount >= 3 {
-				return nil, errors.New("该接码账号已绑定 3 个隐藏邮箱")
+			if occupiedSlots >= maxSMSMailboxSlots {
+				return nil, fmt.Errorf("该接码账号的 %d 个邮箱名额已占满", maxSMSMailboxSlots)
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE sms_account_binding_history history
+				SET unbound_at = COALESCE(history.unbound_at, now()), end_reason = 'reassigned'
+				FROM sms_account_bindings binding
+				WHERE binding.mailbox_email = $1
+				  AND history.sms_account_id = binding.sms_account_id
+				  AND lower(history.mailbox_email) = lower(binding.mailbox_email)
+				  AND history.unbound_at IS NULL
+			`, canonicalEmail); err != nil {
+				return nil, fmt.Errorf("store: snapshot replaced SMS binding: %w", err)
 			}
 			if _, err := tx.Exec(ctx, `DELETE FROM sms_account_bindings WHERE mailbox_email = $1`, canonicalEmail); err != nil {
 				return nil, fmt.Errorf("store: replace SMS binding: %w", err)
@@ -273,6 +338,14 @@ func (s *Store) AssignSMSMailbox(ctx context.Context, email string, phone string
 				INSERT INTO sms_account_bindings (sms_account_id, mailbox_email) VALUES ($1, $2)
 			`, accountID, canonicalEmail); err != nil {
 				return nil, fmt.Errorf("store: assign hidden mailbox: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO sms_account_binding_history (sms_account_id, mailbox_email, bound_at)
+				SELECT sms_account_id, mailbox_email, created_at
+				FROM sms_account_bindings
+				WHERE sms_account_id = $1 AND mailbox_email = $2
+			`, accountID, canonicalEmail); err != nil {
+				return nil, fmt.Errorf("store: snapshot assigned hidden mailbox: %w", err)
 			}
 		}
 	}
@@ -401,6 +474,7 @@ func (s *Store) populateSMSBindings(ctx context.Context, accounts []SMSAccount) 
 	for index := range accounts {
 		accounts[index].LinkedMailboxEmails = []string{}
 		accounts[index].LinkedMailboxes = []SMSMailboxBinding{}
+		accounts[index].BindingHistory = []SMSMailboxBinding{}
 		indexByID[accounts[index].ID] = index
 		ids = append(ids, accounts[index].ID)
 	}
@@ -425,20 +499,51 @@ func (s *Store) populateSMSBindings(ctx context.Context, accounts []SMSAccount) 
 			continue
 		}
 		accounts[index].LinkedMailboxEmails = append(accounts[index].LinkedMailboxEmails, binding.Email)
+		binding.Active = true
 		accounts[index].LinkedMailboxes = append(accounts[index].LinkedMailboxes, binding)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("store: read SMS bindings: %w", err)
 	}
+	historyRows, err := s.pool.Query(ctx, `
+		SELECT sms_account_id, mailbox_email, bound_at, unbound_at, end_reason
+		FROM sms_account_binding_history
+		WHERE sms_account_id = ANY($1::bigint[])
+		ORDER BY sms_account_id, bound_at DESC, id DESC
+	`, ids)
+	if err != nil {
+		return fmt.Errorf("store: list SMS binding history: %w", err)
+	}
+	defer historyRows.Close()
+	for historyRows.Next() {
+		var accountID int64
+		var binding SMSMailboxBinding
+		if err := historyRows.Scan(&accountID, &binding.Email, &binding.BoundAt, &binding.UnboundAt, &binding.EndReason); err != nil {
+			return fmt.Errorf("store: scan SMS binding history: %w", err)
+		}
+		index, exists := indexByID[accountID]
+		if !exists {
+			continue
+		}
+		binding.Active = binding.UnboundAt == nil
+		accounts[index].BindingHistory = append(accounts[index].BindingHistory, binding)
+		if binding.EndReason == "mailbox_deleted" {
+			accounts[index].DeletedMailboxSlots++
+		}
+	}
+	if err := historyRows.Err(); err != nil {
+		return fmt.Errorf("store: read SMS binding history: %w", err)
+	}
 	for index := range accounts {
+		accounts[index].OccupiedMailboxSlots = len(accounts[index].LinkedMailboxes) + accounts[index].DeletedMailboxSlots
 		setSMSLegacyBindingFields(&accounts[index])
 	}
 	return nil
 }
 
 func normalizeSMSMailboxEmails(emails []string) ([]string, error) {
-	if len(emails) > 3 {
-		return nil, errors.New("一个接码账号最多绑定 3 个 iCloud 隐藏邮箱")
+	if len(emails) > maxSMSMailboxSlots {
+		return nil, fmt.Errorf("一个接码账号最多绑定 %d 个 iCloud 隐藏邮箱", maxSMSMailboxSlots)
 	}
 	normalized := make([]string, 0, len(emails))
 	seen := make(map[string]struct{}, len(emails))
@@ -453,10 +558,18 @@ func normalizeSMSMailboxEmails(emails []string) ([]string, error) {
 		seen[email] = struct{}{}
 		normalized = append(normalized, email)
 	}
-	if len(normalized) > 3 {
-		return nil, errors.New("一个接码账号最多绑定 3 个 iCloud 隐藏邮箱")
+	if len(normalized) > maxSMSMailboxSlots {
+		return nil, fmt.Errorf("一个接码账号最多绑定 %d 个 iCloud 隐藏邮箱", maxSMSMailboxSlots)
 	}
 	return normalized, nil
+}
+
+func remainingSMSMailboxSlots(active, deleted int) int {
+	remaining := maxSMSMailboxSlots - active - deleted
+	if remaining < 0 {
+		return 0
+	}
+	return remaining
 }
 
 func setSMSLegacyBindingFields(account *SMSAccount) {

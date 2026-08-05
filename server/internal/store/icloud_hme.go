@@ -705,15 +705,32 @@ func (s *Store) backfillICloudHMEAliasOrdering(ctx context.Context) error {
 }
 
 func (s *Store) DeleteICloudHMEAlias(ctx context.Context, email string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("store: begin delete iCloud HME alias: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	normalizedEmail := normalizeEmail(email)
+	if _, err := tx.Exec(ctx, `
+		UPDATE sms_account_binding_history history
+		SET unbound_at = COALESCE(history.unbound_at, now()), end_reason = 'mailbox_deleted'
+		FROM sms_account_bindings binding
+		WHERE lower(binding.mailbox_email) = $1
+		  AND history.sms_account_id = binding.sms_account_id
+		  AND lower(history.mailbox_email) = lower(binding.mailbox_email)
+		  AND history.unbound_at IS NULL
+	`, normalizedEmail); err != nil {
+		return fmt.Errorf("store: snapshot SMS binding before iCloud HME alias delete: %w", err)
+	}
 	var sourceID int64
-	err := s.pool.QueryRow(ctx, `DELETE FROM icloud_hme_aliases WHERE lower(email) = $1 RETURNING source_account_id`, normalizeEmail(email)).Scan(&sourceID)
+	err = tx.QueryRow(ctx, `DELETE FROM icloud_hme_aliases WHERE lower(email) = $1 RETURNING source_account_id`, normalizedEmail).Scan(&sourceID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("隐藏邮箱不存在")
 	}
 	if err != nil {
 		return fmt.Errorf("store: delete iCloud HME alias: %w", err)
 	}
-	_, err = s.pool.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE icloud_hme_source_accounts
 		SET alias_total = (SELECT count(*) FROM icloud_hme_aliases WHERE source_account_id = $1),
 		    updated_at = now()
@@ -721,6 +738,9 @@ func (s *Store) DeleteICloudHMEAlias(ctx context.Context, email string) error {
 	`, sourceID)
 	if err != nil {
 		return fmt.Errorf("store: update iCloud HME alias total after delete: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("store: commit delete iCloud HME alias: %w", err)
 	}
 	return nil
 }

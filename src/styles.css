@@ -2582,7 +2582,7 @@ textarea {
 
 .sms-summary {
   display: grid;
-  grid-template-columns: repeat(3, minmax(120px, 190px));
+  grid-template-columns: repeat(5, minmax(120px, 190px));
   gap: 10px;
 }
 
@@ -2680,6 +2680,15 @@ textarea {
   color: #94a3b8;
   font-size: 11px;
   white-space: nowrap;
+}
+
+.sms-binding-entry.historical {
+  opacity: .72;
+}
+
+.sms-binding-entry.historical .el-tag {
+  text-decoration: line-through;
+  text-decoration-color: #cbd5e1;
 }
 
 .hme-sms-cell {
@@ -2836,6 +2845,12 @@ textarea {
 .hme-sms-picker-bindings {
   display: grid;
   gap: 4px;
+}
+
+.hme-sms-picker-bindings.historical {
+  padding-top: 5px;
+  border-top: 1px dashed #e2e8f0;
+  color: #94a3b8;
 }
 
 .hme-sms-picker-bindings span {

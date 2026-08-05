@@ -36,14 +36,15 @@ let smsTimer: number | undefined
 const filteredAccounts = computed(() => {
   const query = keyword.value.trim().toLowerCase()
   return store.accounts.filter((account) => {
-    if (bindingFilter.value === 'bound' && !account.linkedMailboxEmails.length) return false
-    if (bindingFilter.value === 'unbound' && account.linkedMailboxEmails.length) return false
+    if (bindingFilter.value === 'bound' && !account.occupiedMailboxSlots) return false
+    if (bindingFilter.value === 'unbound' && account.occupiedMailboxSlots) return false
     if (statusFilter.value !== 'all' && account.status !== statusFilter.value) return false
     return !query || [
       account.phone,
       account.providerHost,
       account.remark,
       ...account.linkedMailboxEmails,
+      ...account.bindingHistory.map((binding) => binding.email),
     ].some((value) => value.toLowerCase().includes(query))
   })
 })
@@ -52,6 +53,9 @@ const pagedAccounts = computed(() =>
   filteredAccounts.value.slice((page.value - 1) * pageSize.value, page.value * pageSize.value),
 )
 const boundCount = computed(() => store.accounts.reduce((total, account) => total + account.linkedMailboxEmails.length, 0))
+const occupiedSlotCount = computed(() => store.accounts.reduce((total, account) => total + account.occupiedMailboxSlots, 0))
+const bindingHistoryCount = computed(() => store.accounts.reduce((total, account) => total + account.bindingHistory.length, 0))
+const bindingSlotLimit = computed(() => Math.max(0, 3 - (bindingAccount.value?.deletedMailboxSlots ?? 0)))
 const importLineCount = computed(() => importText.value.split(/\r?\n/).filter((line) => line.trim()).length)
 
 watch([keyword, bindingFilter, statusFilter], () => {
@@ -149,6 +153,13 @@ function mailboxOptionLabel(email: string) {
   return owner && owner.phone !== bindingAccount.value?.phone
     ? `${email} · 已绑定 ${owner.phone}`
     : email
+}
+
+function bindingEndText(binding: SMSAccount['bindingHistory'][number]) {
+  if (binding.active) return '当前绑定'
+  if (binding.endReason === 'mailbox_deleted') return '邮箱已删除'
+  if (binding.endReason === 'reassigned') return '已换绑'
+  return '已解绑'
 }
 
 async function saveBinding() {
@@ -268,7 +279,9 @@ async function copyCode() {
     <section class="faka-card sms-summary-card">
       <div class="sms-summary">
         <div><span>接码账号</span><strong>{{ store.accounts.length }}</strong></div>
-        <div><span>已绑定隐藏邮箱</span><strong>{{ boundCount }}</strong></div>
+        <div><span>当前绑定</span><strong>{{ boundCount }}</strong></div>
+        <div><span>已占用名额</span><strong>{{ occupiedSlotCount }}</strong></div>
+        <div><span>历史绑定次数</span><strong>{{ bindingHistoryCount }}</strong></div>
         <div><span>失效接码</span><strong>{{ store.accounts.filter((account) => account.status === 'invalid').length }}</strong></div>
       </div>
       <div class="faka-action-row sms-action-row">
@@ -282,8 +295,8 @@ async function copyCode() {
         <el-input v-model="keyword" clearable placeholder="搜索手机号、邮箱或备注" :prefix-icon="Connection" />
         <el-select v-model="bindingFilter">
           <el-option label="全部绑定状态" value="all" />
-          <el-option label="已绑定邮箱" value="bound" />
-          <el-option label="未绑定邮箱" value="unbound" />
+          <el-option label="已有占用名额" value="bound" />
+          <el-option label="无占用名额" value="unbound" />
         </el-select>
         <el-select v-model="statusFilter">
           <el-option label="全部状态" value="all" />
@@ -325,15 +338,15 @@ async function copyCode() {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="绑定隐藏邮箱" min-width="320">
+        <el-table-column label="绑定记录" min-width="360">
           <template #default="{ row }">
             <button class="sms-binding-cell" @click="openBinding(row)">
-              <span v-if="!row.linkedMailboxes.length" class="muted">未绑定 · 0/3</span>
+              <span v-if="!row.bindingHistory.length" class="muted">当前 0/3 · 暂无历史</span>
               <span v-else class="sms-binding-list">
-                <strong>已绑 {{ row.linkedMailboxes.length }}/3</strong>
-                <span v-for="binding in row.linkedMailboxes" :key="binding.email" class="sms-binding-entry">
-                  <el-tag size="small" type="success">{{ binding.email }}</el-tag>
-                  <small>{{ formatDateTime(binding.boundAt) }}</small>
+                <strong>名额 {{ row.occupiedMailboxSlots }}/3 · 当前 {{ row.linkedMailboxes.length }} · 累计 {{ row.bindingHistory.length }} 次</strong>
+                <span v-for="binding in row.bindingHistory" :key="`${binding.email}-${binding.boundAt}`" class="sms-binding-entry" :class="{ historical: !binding.active }">
+                  <el-tag size="small" :type="binding.active ? 'success' : 'info'" :effect="binding.active ? 'light' : 'plain'">{{ binding.email }}</el-tag>
+                  <small>绑定 {{ formatDateTime(binding.boundAt) }} · {{ bindingEndText(binding) }}<template v-if="binding.unboundAt"> {{ formatDateTime(binding.unboundAt) }}</template></small>
                 </span>
               </span>
             </button>
@@ -409,8 +422,9 @@ async function copyCode() {
             clearable
             collapse-tags
             collapse-tags-tooltip
-            :multiple-limit="3"
-            placeholder="最多选择 3 个 iCloud 隐藏邮箱"
+            :multiple-limit="bindingSlotLimit || 1"
+            :disabled="bindingSlotLimit === 0"
+            :placeholder="bindingSlotLimit ? `最多选择 ${bindingSlotLimit} 个 iCloud 隐藏邮箱` : '3 个名额均被删除邮箱占用'"
           >
             <el-option
               v-for="mailbox in store.mailboxes"
@@ -421,7 +435,7 @@ async function copyCode() {
             />
           </el-select>
         </el-form-item>
-        <el-alert title="一个接码账号最多绑定 3 个隐藏邮箱；同一隐藏邮箱不能绑定多个接码账号。" type="info" :closable="false" />
+        <el-alert :title="`一个接码账号共 3 个名额；已删除邮箱永久占用 ${bindingAccount?.deletedMailboxSlots ?? 0} 个，当前最多可绑定 ${bindingSlotLimit} 个。人工解绑和换绑会释放名额。`" type="info" :closable="false" />
       </el-form>
       <template #footer>
         <el-button @click="bindingVisible = false">取消</el-button>

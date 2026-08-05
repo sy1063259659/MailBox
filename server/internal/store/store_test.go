@@ -195,9 +195,12 @@ func TestSMSMigrationCreatesEncryptedIndependentTable(t *testing.T) {
 	for _, want := range []string{
 		"CREATE TABLE IF NOT EXISTS sms_accounts",
 		"CREATE TABLE IF NOT EXISTS sms_account_bindings",
+		"CREATE TABLE IF NOT EXISTS sms_account_binding_history",
 		"receive_url_encrypted TEXT NOT NULL",
 		"status TEXT NOT NULL DEFAULT 'active'",
 		"REFERENCES icloud_hme_aliases(email)",
+		"mailbox_email TEXT NOT NULL",
+		"unbound_at TIMESTAMPTZ",
 		"UNIQUE (mailbox_email)",
 	} {
 		if !strings.Contains(statements, want) {
@@ -218,6 +221,23 @@ func TestSMSMigrationCreatesEncryptedIndependentTable(t *testing.T) {
 	}
 }
 
+func TestSMSMigrationBackfillsBindingHistory(t *testing.T) {
+	statements := strings.Join(legacyCleanupStatements(), "\n")
+	for _, want := range []string{
+		"INSERT INTO sms_account_binding_history",
+		"FROM sms_account_bindings binding",
+		"ON CONFLICT (sms_account_id, mailbox_email, bound_at) DO NOTHING",
+	} {
+		if !strings.Contains(statements, want) {
+			t.Fatalf("legacyCleanupStatements() missing %q", want)
+		}
+	}
+	indexes := strings.Join(migrationIndexStatements(), "\n")
+	if !strings.Contains(indexes, "idx_sms_account_binding_history_account") {
+		t.Fatal("binding history account index is missing")
+	}
+}
+
 func TestNormalizeSMSMailboxEmails(t *testing.T) {
 	emails, err := normalizeSMSMailboxEmails([]string{
 		" First@iCloud.com ",
@@ -234,6 +254,24 @@ func TestNormalizeSMSMailboxEmails(t *testing.T) {
 		"1@icloud.com", "2@icloud.com", "3@icloud.com", "4@icloud.com",
 	}); err == nil {
 		t.Fatal("four bindings should fail")
+	}
+}
+
+func TestRemainingSMSMailboxSlotsKeepsDeletedAliasesOccupied(t *testing.T) {
+	tests := []struct {
+		active  int
+		deleted int
+		want    int
+	}{
+		{active: 0, deleted: 0, want: 3},
+		{active: 1, deleted: 1, want: 1},
+		{active: 0, deleted: 3, want: 0},
+		{active: 2, deleted: 2, want: 0},
+	}
+	for _, test := range tests {
+		if got := remainingSMSMailboxSlots(test.active, test.deleted); got != test.want {
+			t.Fatalf("remainingSMSMailboxSlots(%d, %d) = %d, want %d", test.active, test.deleted, got, test.want)
+		}
 	}
 }
 
