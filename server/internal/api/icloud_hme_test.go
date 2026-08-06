@@ -38,6 +38,8 @@ func TestICloudHMERoutesRejectMissingSession(t *testing.T) {
 		{http.MethodGet, "/api/icloud-hme/jobs/1", ""},
 		{http.MethodPost, "/api/icloud-hme/jobs/1/cancel", `{}`},
 		{http.MethodPost, "/api/icloud-hme/jobs/1/retry", `{}`},
+		{http.MethodPost, "/api/icloud-hme/delete-jobs", `{}`},
+		{http.MethodGet, "/api/icloud-hme/delete-jobs/1", ""},
 		{http.MethodGet, "/api/icloud-hme/automation", ""},
 		{http.MethodPut, "/api/icloud-hme/automation", `{}`},
 		{http.MethodGet, "/api/icloud-hme/automation/events", ""},

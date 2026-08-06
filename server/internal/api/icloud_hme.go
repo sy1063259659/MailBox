@@ -39,6 +39,7 @@ type iCloudHMEAPI struct {
 	aliasCreateMu sync.Mutex
 	challenges    sync.Map
 	jobWake       chan struct{}
+	deleteJobWake chan struct{}
 	jobPaceMu     sync.Mutex
 	lastJobItem   time.Time
 	gptScanMu     sync.Mutex
@@ -51,10 +52,12 @@ func newICloudHMEAPI(database *store.Store) *iCloudHMEAPI {
 		newClient: func(cookies map[string]string, host string) (iCloudHMEClient, error) {
 			return icloudhme.NewClient(cookies, host, "", false)
 		},
-		jobWake: make(chan struct{}, 1), publicLimiter: newICloudHMEPublicLimiter(),
+		jobWake: make(chan struct{}, 1), deleteJobWake: make(chan struct{}, 1),
+		publicLimiter: newICloudHMEPublicLimiter(),
 	}
 	if database != nil {
 		api.startJobWorker()
+		api.startDeleteJobWorker()
 		api.startGPTStatusWorker()
 	}
 	return api

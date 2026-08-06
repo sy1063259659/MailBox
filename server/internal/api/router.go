@@ -86,6 +86,8 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 		}
 	}))
 	mux.HandleFunc("/api/icloud-hme/jobs/", authRequired(sessions, iCloudHMEAPI.routeJob))
+	mux.HandleFunc("/api/icloud-hme/delete-jobs", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.createDeleteJob)))
+	mux.HandleFunc("/api/icloud-hme/delete-jobs/", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.getDeleteJob)))
 	mux.HandleFunc("/api/icloud-hme/automation", authRequired(sessions, iCloudHMEAPI.automationSettings))
 	mux.HandleFunc("/api/icloud-hme/automation/events", authRequired(sessions, methodHandler(http.MethodGet, iCloudHMEAPI.automationEvents)))
 	mux.HandleFunc("/api/icloud-hme/gpt-status/scan", authRequired(sessions, methodHandler(http.MethodPost, iCloudHMEAPI.scanGPTStatus)))

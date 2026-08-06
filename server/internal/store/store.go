@@ -321,6 +321,34 @@ func migrationCreateStatements() []string {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			UNIQUE(job_id, sequence)
 		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_delete_jobs (
+			id BIGSERIAL PRIMARY KEY,
+			requested_count INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			completed_count INTEGER NOT NULL DEFAULT 0,
+			failed_count INTEGER NOT NULL DEFAULT 0,
+			created_by TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_delete_job_items (
+			id BIGSERIAL PRIMARY KEY,
+			job_id BIGINT NOT NULL REFERENCES icloud_hme_delete_jobs(id) ON DELETE CASCADE,
+			sequence INTEGER NOT NULL,
+			email TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			attempts INTEGER NOT NULL DEFAULT 0,
+			error_code TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ,
+			finished_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(job_id, sequence),
+			UNIQUE(job_id, email)
+		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs (
 			id BIGSERIAL PRIMARY KEY,
 			actor TEXT NOT NULL DEFAULT '',
@@ -457,6 +485,9 @@ func migrationIndexStatements() []string {
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_jobs_status ON icloud_hme_create_jobs(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_status ON icloud_hme_create_job_items(job_id, status, sequence)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_job_items_due ON icloud_hme_create_job_items(status, next_attempt_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_delete_jobs_status ON icloud_hme_delete_jobs(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_delete_job_items_status
+			ON icloud_hme_delete_job_items(job_id, status, sequence)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_inventory ON icloud_hme_aliases(inventory_status, apple_status)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_aliases_gpt_scan
 			ON icloud_hme_aliases(source_account_id, gpt_status, gpt_last_scanned_at)

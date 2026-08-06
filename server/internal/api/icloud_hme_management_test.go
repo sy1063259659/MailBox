@@ -165,6 +165,25 @@ func TestDeleteAppleAliasRequiresExactConfirmationBeforeStoreLookup(t *testing.T
 	}
 }
 
+func TestCreateDeleteJobRequiresExactConfirmationBeforeStoreLookup(t *testing.T) {
+	payload, err := json.Marshal(map[string]any{
+		"emails":      []string{"one@icloud.com", "two@icloud.com"},
+		"confirmText": "永久删除 1 个",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/api/icloud-hme/delete-jobs", bytes.NewReader(payload))
+	(&iCloudHMEAPI{}).createDeleteJob(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "confirmation_mismatch") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+}
+
 func TestICloudHMELocalOnlyAliasDeleteIsDisabled(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodDelete, "/api/icloud-hme/aliases/alias%40icloud.com", nil)

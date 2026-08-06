@@ -4,7 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Check, CopyDocument, Delete, Document, EditPen, Files, FolderOpened, Key, Link, Message, More, Refresh, Setting, View } from '@element-plus/icons-vue'
 import MailboxTopbar from '@/components/MailboxTopbar.vue'
 import {
-  completeICloudHMELogin, getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
+  completeICloudHMELogin, createICloudHMEDeleteJob, getICloudHMEDeleteJob,
+  getICloudHMEJob, getICloudHMEMessage, listICloudHMEMessages,
   exportICloudHMEReceiveKeys, generateICloudHMEReceiveKeys,
   permanentlyDeleteICloudHMEAlias, refreshICloudHMECode, saveICloudHMEAppPassword,
   revealICloudHMEReceiveKey, resetICloudHMEReceiveKey,
@@ -12,7 +13,7 @@ import {
   updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
   getICloudHMEAutomation, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
   updateICloudHMEInventoryStatus, scanICloudHMEGPTStatus,
-  type ICloudHMEAlias, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
+  type ICloudHMEAlias, type ICloudHMEDeleteJob, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
   type ICloudHMEMailSummary, type ICloudHMESourceAccount, type ICloudHMEReceiveKeyRecord,
   type ICloudHMEAutomation, type ICloudHMEAutomationEvent,
 } from '@/services/iCloudHmeApi'
@@ -76,6 +77,8 @@ const loginStep = ref<'password' | 'otp'>('password')
 const jobsDialogVisible = ref(false)
 const selectedJob = ref<ICloudHMEJob>()
 const jobActionId = ref<number>()
+const deleteJobVisible = ref(false)
+const activeDeleteJob = ref<ICloudHMEDeleteJob>()
 const moveDialogVisible = ref(false)
 const targetGroup = ref(ICLOUD_HME_DEFAULT_GROUP)
 
@@ -177,17 +180,22 @@ const smsBindingCurrentAccount = computed(() =>
 
 let jobPollTimer: number | undefined
 let jobPolling = false
+let deleteJobPollTimer: number | undefined
+let deleteJobPolling = false
 let smsCodeTimer: number | undefined
+const DELETE_JOB_STORAGE_KEY = 'mailbox.icloudHme.activeDeleteJobId'
 watch([keyword, sourceFilter, statusFilter, gptStatusFilter, () => store.selectedGroup], () => { page.value = 1; selectedRows.value = [] })
 watch(() => filteredAliases.value.length, (total) => { page.value = Math.min(page.value, Math.max(1, Math.ceil(total / pageSize.value))) })
 onMounted(async () => {
   try {
     await Promise.all([store.load(), loadAutomation(), loadSMSBindings()])
+    await restoreDeleteJob()
   } catch (error) { showError(error, '加载隐藏邮箱失败') }
   jobPollTimer = window.setInterval(pollJobs, 15000)
 })
 onBeforeUnmount(() => {
   if (jobPollTimer) window.clearInterval(jobPollTimer)
+  stopDeleteJobPolling()
   stopSMSCodePolling()
 })
 watch(smsCodeVisible, (visible) => {
@@ -206,6 +214,70 @@ async function pollJobs() {
 
 async function loadAutomation() {
   automation.value = await getICloudHMEAutomation()
+}
+
+function deleteJobFinished(job: ICloudHMEDeleteJob) {
+  return job.status === 'completed' || job.status === 'partial_failed'
+}
+
+const deleteJobPercentage = computed(() => {
+  const job = activeDeleteJob.value
+  if (!job?.requestedCount) return 0
+  return Math.round(((job.completedCount + job.failedCount) / job.requestedCount) * 100)
+})
+
+function stopDeleteJobPolling() {
+  if (deleteJobPollTimer) window.clearInterval(deleteJobPollTimer)
+  deleteJobPollTimer = undefined
+}
+
+async function finishDeleteJob(job: ICloudHMEDeleteJob) {
+  stopDeleteJobPolling()
+  window.localStorage.removeItem(DELETE_JOB_STORAGE_KEY)
+  const completedEmails = job.items.filter((item) => item.status === 'completed').map((item) => item.email)
+  await Promise.allSettled(completedEmails.map((email) => deleteICloudHMECacheForAlias(email)))
+  await Promise.allSettled([store.load(), loadSMSBindings()])
+  selectedRows.value = []
+  if (job.failedCount) {
+    ElMessage.warning(`批量永久删除完成：成功 ${job.completedCount} 个，失败 ${job.failedCount} 个`)
+  } else {
+    ElMessage.success(`已永久删除 ${job.completedCount} 个隐藏邮箱`)
+  }
+}
+
+async function pollDeleteJob() {
+  const current = activeDeleteJob.value
+  if (!current || deleteJobPolling) return
+  deleteJobPolling = true
+  try {
+    const job = await getICloudHMEDeleteJob(current.id)
+    activeDeleteJob.value = job
+    if (deleteJobFinished(job)) await finishDeleteJob(job)
+  } catch { /* Keep polling; a server restart can make the endpoint temporarily unavailable. */ }
+  finally { deleteJobPolling = false }
+}
+
+function startDeleteJobPolling(job: ICloudHMEDeleteJob) {
+  activeDeleteJob.value = job
+  deleteJobVisible.value = true
+  window.localStorage.setItem(DELETE_JOB_STORAGE_KEY, String(job.id))
+  stopDeleteJobPolling()
+  void pollDeleteJob()
+  deleteJobPollTimer = window.setInterval(pollDeleteJob, 2000)
+}
+
+async function restoreDeleteJob() {
+  const id = Number(window.localStorage.getItem(DELETE_JOB_STORAGE_KEY))
+  if (!Number.isSafeInteger(id) || id <= 0) return
+  try {
+    const job = await getICloudHMEDeleteJob(id)
+    activeDeleteJob.value = job
+    deleteJobVisible.value = true
+    if (deleteJobFinished(job)) await finishDeleteJob(job)
+    else startDeleteJobPolling(job)
+  } catch {
+    window.localStorage.removeItem(DELETE_JOB_STORAGE_KEY)
+  }
 }
 
 async function loadSMSBindings() {
@@ -708,11 +780,38 @@ async function permanentlyDeleteAlias(alias: ICloudHMEAlias) {
   busy.value = true
   try {
     await permanentlyDeleteICloudHMEAlias(alias.email, result.value)
-    await deleteICloudHMECacheForAlias(alias.email)
+    let cacheCleanupFailed = false
+    try { await deleteICloudHMECacheForAlias(alias.email) } catch { cacheCleanupFailed = true }
     store.aliases = store.aliases.filter((item) => item.email !== alias.email)
     selectedRows.value = selectedRows.value.filter((item) => item.email !== alias.email)
-    ElMessage.success('Apple 隐藏邮箱、本地记录与邮件缓存已永久删除')
+    try { await loadSMSBindings() } catch { /* The deletion succeeded; bindings refresh on next load. */ }
+    cacheCleanupFailed
+      ? ElMessage.warning('隐藏邮箱已永久删除，但本地邮件缓存清理失败，将在下次清理时重试')
+      : ElMessage.success('Apple 隐藏邮箱、本地记录与邮件缓存已永久删除')
   } catch (error) { showError(error, '永久删除失败') } finally { busy.value = false }
+}
+async function permanentlyDeleteSelectedAliases() {
+  const targets = [...selectedRows.value]
+  if (!targets.length) return ElMessage.warning('请先勾选要永久删除的隐藏邮箱')
+  const confirmation = `永久删除 ${targets.length} 个`
+  const result = await ElMessageBox.prompt(
+    `该操作会依次永久删除 Apple 侧的 ${targets.length} 个隐藏邮箱、本地记录和邮件缓存，且不可恢复。接码绑定会保留删除快照并继续占用名额。请输入“${confirmation}”确认：`,
+    '批量永久删除隐藏邮箱',
+    {
+      type: 'warning',
+      confirmButtonText: '开始永久删除',
+      inputPlaceholder: confirmation,
+      inputValidator: (value) => value.trim() === confirmation || `请输入“${confirmation}”`,
+    },
+  )
+  busy.value = true
+  try {
+    const job = await createICloudHMEDeleteJob(targets.map((alias) => alias.email), result.value)
+    selectedRows.value = []
+    startDeleteJobPolling(job)
+    ElMessage.success('后台永久删除任务已创建，关闭页面后仍会继续执行')
+  } catch (error) { showError(error, '创建批量永久删除任务失败') }
+  finally { busy.value = false }
 }
 async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
   if (command === 'receive-key') await openReceiveKey(alias)
@@ -727,6 +826,7 @@ async function handleToolbarCommand(command: string) {
   if (command === 'export-receive-keys') await exportReceiveKeys()
   if (command === 'deactivate') await lifecycleSelected('deactivate')
   if (command === 'reactivate') await lifecycleSelected('reactivate')
+  if (command === 'batch-delete') await permanentlyDeleteSelectedAliases()
   if (command === 'export-txt') exportAliases('txt')
   if (command === 'export-csv') exportAliases('csv')
 }
@@ -954,6 +1054,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
                 <el-dropdown-item command="export-csv">导出 CSV</el-dropdown-item>
                 <el-dropdown-item command="deactivate" divided :disabled="!selectedRows.length">Apple 停用</el-dropdown-item>
                 <el-dropdown-item command="reactivate" :disabled="!selectedRows.length">Apple 恢复</el-dropdown-item>
+                <el-dropdown-item command="batch-delete" divided :icon="Delete" :disabled="!selectedRows.length">批量永久删除</el-dropdown-item>
               </el-dropdown-menu></template>
             </el-dropdown>
           </div>
@@ -966,7 +1067,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           </div>
           <span class="hme-result-count"><strong>{{ filteredAliases.length }}</strong> 个结果</span>
         </div>
-        <div class="account-selection-hint hme-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个</strong><span>批量操作优先作用于已选邮箱；未选择时复制操作使用当前筛选结果</span></div>
+        <div class="account-selection-hint hme-selection-hint" :class="{ active: selectedRows.length }"><strong>已选 {{ selectedRows.length }} 个</strong><span>批量操作和永久删除作用于已选邮箱；未选择时复制操作使用当前筛选结果</span></div>
         <el-table v-loading="store.loading || busy || receiveKeyBusy" :data="pagedAliases" row-key="email" class="faka-account-table hme-account-table" height="calc(100vh - 350px)" @selection-change="handleSelection">
           <el-table-column type="selection" width="52" align="center" />
           <el-table-column label="#" width="64" align="center"><template #default="{ $index }"><span class="row-number">{{ (page - 1) * pageSize + $index + 1 }}</span></template></el-table-column>
@@ -1122,6 +1223,34 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-scrollbar height="390px"><div v-for="item in selectedJob.items" :key="item.id" class="hme-job-item"><span>#{{ item.sequence }}</span><strong>{{ item.email || item.label }}</strong><el-tag size="small" :type="item.status === 'completed' ? 'success' : item.status === 'failed' ? 'danger' : 'info'">{{ item.status }}</el-tag><small v-if="item.errorMessage">{{ item.errorMessage }}</small></div></el-scrollbar>
         </section>
       </div>
+    </el-dialog>
+    <el-dialog v-model="deleteJobVisible" title="批量永久删除进度" width="760px" :close-on-click-modal="false">
+      <template v-if="activeDeleteJob">
+        <el-alert
+          title="任务由服务器串行执行，关闭弹窗、刷新页面或服务重启都不会丢失进度。"
+          type="warning"
+          :closable="false"
+        />
+        <div class="hme-delete-job-summary">
+          <el-progress :percentage="deleteJobPercentage" :status="activeDeleteJob.failedCount ? 'warning' : undefined" />
+          <span>共 {{ activeDeleteJob.requestedCount }} 个 · 成功 {{ activeDeleteJob.completedCount }} 个 · 失败 {{ activeDeleteJob.failedCount }} 个</span>
+        </div>
+        <el-table :data="activeDeleteJob.items" max-height="390">
+          <el-table-column prop="sequence" label="#" width="58" align="center" />
+          <el-table-column prop="email" label="隐藏邮箱" min-width="245" show-overflow-tooltip />
+          <el-table-column label="状态" width="110" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'completed' ? 'success' : row.status === 'failed' ? 'danger' : row.status === 'running' ? 'warning' : 'info'">
+                {{ row.status === 'completed' ? '已删除' : row.status === 'failed' ? '失败' : row.status === 'running' ? '删除中' : '等待中' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="errorMessage" label="结果" min-width="220" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.errorMessage || (row.status === 'completed' ? 'Apple 与本地记录已删除' : '—') }}</template>
+          </el-table-column>
+        </el-table>
+      </template>
+      <template #footer><el-button @click="deleteJobVisible = false">关闭</el-button></template>
     </el-dialog>
     <el-dialog v-model="moveDialogVisible" title="移动隐藏邮箱分组" width="420px">
       <el-select v-model="targetGroup" filterable allow-create style="width:100%"><el-option v-for="group in store.groups" :key="group.id" :label="group.name" :value="group.name" /></el-select>

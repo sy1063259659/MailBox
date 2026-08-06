@@ -154,41 +154,45 @@ func (api *iCloudHMEAPI) deleteAppleAlias(w http.ResponseWriter, r *http.Request
 		WriteError(w, http.StatusBadRequest, "confirmation_mismatch", "必须输入完整隐藏邮箱进行确认")
 		return
 	}
-	alias, err := api.store.GetICloudHMEAlias(r.Context(), email)
+	err := api.permanentlyDeleteAlias(r.Context(), requestActor(r), email)
 	if err != nil {
 		writeICloudHMEError(w, err)
 		return
 	}
+	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (api *iCloudHMEAPI) permanentlyDeleteAlias(ctx context.Context, actor, email string) error {
+	alias, err := api.store.GetICloudHMEAlias(ctx, email)
+	if err != nil {
+		return err
+	}
 	if alias.AppleStatus != "deleted" && alias.AnonymousID == "" {
-		WriteError(w, http.StatusBadRequest, "bad_request", "隐藏邮箱缺少 Apple anonymousId，请先同步")
-		return
+		return errors.New("隐藏邮箱缺少 Apple anonymousId，请先同步")
 	}
 	if alias.AppleStatus != "deleted" {
 		lock := api.lockForSource(alias.SourceAccountID)
 		lock.Lock()
 		defer lock.Unlock()
-		client, _, err := api.clientForSource(r.Context(), alias.SourceAccountID)
+		client, _, err := api.clientForSource(ctx, alias.SourceAccountID)
 		if err == nil {
 			err = client.Delete(alias.AnonymousID)
 		}
 		if err != nil {
-			api.markSourceError(r.Context(), alias.SourceAccountID, err)
-			_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "failed", classifyICloudHMECode(err), err.Error())
-			writeICloudHMEError(w, err)
-			return
+			api.markSourceError(ctx, alias.SourceAccountID, err)
+			_ = api.auditLifecycle(ctx, actor, "delete_alias", alias.Email, "failed", classifyICloudHMECode(err), err.Error())
+			return err
 		}
-		if err := api.store.UpdateICloudHMEAliasLifecycle(r.Context(), alias.Email, "deleted"); err != nil {
-			writeICloudHMEError(w, err)
-			return
+		if err := api.store.UpdateICloudHMEAliasLifecycle(ctx, alias.Email, "deleted"); err != nil {
+			return err
 		}
 	}
-	if err := api.store.DeleteICloudHMEAlias(r.Context(), alias.Email); err != nil {
-		_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "failed", "local_delete_failed", err.Error())
-		writeICloudHMEError(w, err)
-		return
+	if err := api.store.DeleteICloudHMEAlias(ctx, alias.Email); err != nil {
+		_ = api.auditLifecycle(ctx, actor, "delete_alias", alias.Email, "failed", "local_delete_failed", err.Error())
+		return err
 	}
-	_ = api.auditLifecycle(r.Context(), requestActor(r), "delete_alias", alias.Email, "success", "", "")
-	WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	_ = api.auditLifecycle(ctx, actor, "delete_alias", alias.Email, "success", "", "")
+	return nil
 }
 
 func (api *iCloudHMEAPI) auditLifecycle(ctx context.Context, actor, action, target, result, code, message string) error {

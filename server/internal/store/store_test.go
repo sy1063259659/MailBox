@@ -334,6 +334,8 @@ func TestICloudHMEManagementMigrations(t *testing.T) {
 		"CREATE TABLE IF NOT EXISTS icloud_hme_audit_logs",
 		"CREATE TABLE IF NOT EXISTS icloud_hme_automation_settings",
 		"CREATE TABLE IF NOT EXISTS icloud_hme_automation_events",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_delete_jobs",
+		"CREATE TABLE IF NOT EXISTS icloud_hme_delete_job_items",
 		"UNIQUE(job_id, sequence)",
 		"ON DELETE SET NULL",
 	} {
@@ -380,6 +382,8 @@ func TestICloudHMEManagementIndexes(t *testing.T) {
 		"idx_icloud_hme_aliases_status",
 		"idx_icloud_hme_aliases_gpt_scan",
 		"idx_icloud_hme_aliases_group_order",
+		"idx_icloud_hme_delete_jobs_status",
+		"idx_icloud_hme_delete_job_items_status",
 	} {
 		if !strings.Contains(indexes, want) {
 			t.Fatalf("migrationIndexStatements() missing %q", want)

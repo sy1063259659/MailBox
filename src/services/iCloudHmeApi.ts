@@ -174,6 +174,35 @@ export interface ICloudHMEJob {
   items?: ICloudHMEJobItem[]
 }
 
+export interface ICloudHMEDeleteJobItem {
+  id: number
+  jobId: number
+  sequence: number
+  email: string
+  status: 'pending' | 'running' | 'completed' | 'failed'
+  attempts: number
+  errorCode?: string
+  errorMessage?: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ICloudHMEDeleteJob {
+  id: number
+  requestedCount: number
+  status: 'pending' | 'running' | 'completed' | 'partial_failed'
+  completedCount: number
+  failedCount: number
+  createdBy: string
+  startedAt?: string
+  finishedAt?: string
+  createdAt: string
+  updatedAt: string
+  items: ICloudHMEDeleteJobItem[]
+}
+
 export interface ICloudHMEMailSummary {
   id: string
   subject: string
@@ -404,6 +433,19 @@ export async function updateICloudHMEAliasLifecycle(
 
 export async function permanentlyDeleteICloudHMEAlias(email: string, confirmEmail: string): Promise<void> {
   await apiPost('/icloud-hme/aliases/' + encodeURIComponent(email) + '/delete-apple', { confirmEmail })
+}
+
+export async function createICloudHMEDeleteJob(emails: string[], confirmText: string): Promise<ICloudHMEDeleteJob> {
+  const response = await apiPost<{ ok: boolean; job: ICloudHMEDeleteJob }>('/icloud-hme/delete-jobs', {
+    emails,
+    confirmText,
+  })
+  return response.job
+}
+
+export async function getICloudHMEDeleteJob(id: number): Promise<ICloudHMEDeleteJob> {
+  const response = await apiGet<{ ok: boolean; job: ICloudHMEDeleteJob }>('/icloud-hme/delete-jobs/' + id)
+  return response.job
 }
 
 export async function listICloudHMEMessages(
