@@ -4,12 +4,13 @@ import type { AppRouteName } from '@/composables/useAppRoute'
 import { useLocalUiState } from '@/composables/useLocalUiState'
 import { useAuthStore } from '@/stores/auth'
 
-type MailboxSection = 'outlook' | 'icloud' | 'icloudHme' | 'sms'
+type MailboxSection = 'outlook' | 'icloud' | 'icloudHme' | 'sms' | 'cards'
 
 const MailboxManagementView = defineAsyncComponent(() => import('@/views/AccountWorkspaceView.vue'))
 const ICloudAccountManagementView = defineAsyncComponent(() => import('@/views/ICloudAccountManagementView.vue'))
 const ICloudHMEManagementView = defineAsyncComponent(() => import('@/views/ICloudHMEManagementView.vue'))
 const SMSManagementView = defineAsyncComponent(() => import('@/views/SMSManagementView.vue'))
+const PaymentCardManagementView = defineAsyncComponent(() => import('@/views/PaymentCardManagementView.vue'))
 
 defineProps<{
   clearingData?: boolean
@@ -24,9 +25,9 @@ const emit = defineEmits<{
 const authStore = useAuthStore()
 const loggingOut = ref(false)
 const activeSection = useLocalUiState<MailboxSection>('mailbox.ui.mailboxSection', 'outlook', {
-  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud' || value === 'icloudHme' || value === 'sms',
+  validate: (value): value is MailboxSection => value === 'outlook' || value === 'icloud' || value === 'icloudHme' || value === 'sms' || value === 'cards',
 })
-const workspaceTitle = computed(() => activeSection.value === 'sms' ? '接码管理' : '邮箱管理')
+const workspaceTitle = computed(() => activeSection.value === 'sms' ? '接码管理' : activeSection.value === 'cards' ? '卡管理' : '邮箱管理')
 
 watch(activeSection, async () => {
   await nextTick()
@@ -63,6 +64,7 @@ async function logout() {
             { label: 'iCloud', value: 'icloud' },
             { label: 'iCloud隐藏邮箱', value: 'icloudHme' },
             { label: '接码管理', value: 'sms' },
+            { label: '卡管理', value: 'cards' },
           ]"
           class="mailbox-section-switch"
         />
@@ -81,7 +83,8 @@ async function logout() {
       />
       <ICloudAccountManagementView v-else-if="activeSection === 'icloud'" />
       <ICloudHMEManagementView v-else-if="activeSection === 'icloudHme'" />
-      <SMSManagementView v-else />
+      <SMSManagementView v-else-if="activeSection === 'sms'" />
+      <PaymentCardManagementView v-else />
     </main>
   </section>
 </template>

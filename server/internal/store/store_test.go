@@ -5,6 +5,33 @@ import (
 	"testing"
 )
 
+func TestIntegrationResourceMigrationsExist(t *testing.T) {
+	statements := strings.Join(migrationCreateStatements(), "\n")
+	for _, table := range []string{
+		"payment_cards", "icloud_hme_card_links", "icloud_hme_card_link_history",
+		"integration_resource_leases", "icloud_hme_automation_results",
+	} {
+		if !strings.Contains(statements, "CREATE TABLE IF NOT EXISTS "+table) {
+			t.Fatalf("migration missing table %s", table)
+		}
+	}
+	if !strings.Contains(statements, "UNIQUE(resource_type, resource_key)") {
+		t.Fatal("resource leases must enforce one live row per resource")
+	}
+}
+
+func TestCardNormalizationAndMasking(t *testing.T) {
+	if got := normalizeCardNumber("4242 4242-4242 4242"); got != "4242424242424242" {
+		t.Fatalf("normalized number=%q", got)
+	}
+	if got := normalizeCardExpiry("1/2029"); got != "01/29" {
+		t.Fatalf("normalized expiry=%q", got)
+	}
+	if got := maskCard("4242424242424242"); got != "************4242" {
+		t.Fatalf("masked number=%q", got)
+	}
+}
+
 func TestAuthEmailFor(t *testing.T) {
 	tests := []struct {
 		name  string

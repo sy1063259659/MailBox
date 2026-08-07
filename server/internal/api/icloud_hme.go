@@ -252,6 +252,18 @@ func (api *iCloudHMEAPI) listAliases(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, 200, map[string]any{"ok": true, "aliases": aliases})
 }
 
+func (api *iCloudHMEAPI) automationResult(w http.ResponseWriter, r *http.Request, email string) {
+	result, err := api.store.GetICloudHMEAutomationResult(r.Context(), email)
+	if err != nil {
+		WriteError(w, 404, "automation_result_not_found", err.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	WriteJSON(w, 200, map[string]any{"ok": true, "result": map[string]any{
+		"email": result.MailboxEmail, "accessToken": result.AccessToken, "authFlow": result.AuthFlow, "status": result.Status,
+	}})
+}
+
 func (api *iCloudHMEAPI) createAlias(w http.ResponseWriter, r *http.Request, sourceID int64) {
 	var req createICloudHMEAliasRequest
 	if !decodeJSON(w, r, &req) {
@@ -593,7 +605,7 @@ func (api *iCloudHMEAPI) routeSourceAccount(w http.ResponseWriter, r *http.Reque
 func (api *iCloudHMEAPI) routeAlias(w http.ResponseWriter, r *http.Request) {
 	raw := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/icloud-hme/aliases/"), "/")
 	action := ""
-	for _, candidate := range []string{"delete-apple", "receive-key/reveal", "receive-key/reset"} {
+	for _, candidate := range []string{"delete-apple", "receive-key/reveal", "receive-key/reset", "automation-result"} {
 		if strings.HasSuffix(raw, "/"+candidate) {
 			raw = strings.TrimSuffix(raw, "/"+candidate)
 			action = candidate
@@ -608,6 +620,8 @@ func (api *iCloudHMEAPI) routeAlias(w http.ResponseWriter, r *http.Request) {
 		api.revealReceiveKey(w, r, email)
 	case r.Method == http.MethodPost && action == "receive-key/reset":
 		api.resetReceiveKey(w, r, email)
+	case r.Method == http.MethodGet && action == "automation-result":
+		api.automationResult(w, r, email)
 	default:
 		WriteError(w, 405, "method_not_allowed", "method not allowed")
 	}

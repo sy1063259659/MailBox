@@ -11,7 +11,7 @@ import {
   revealICloudHMEReceiveKey, resetICloudHMEReceiveKey,
   saveICloudHMECookies, startICloudHMELogin, syncAllICloudHMESources, syncICloudHMEAliases,
   updateICloudHMEAliasLifecycle, validateAllICloudHMESources, validateICloudHMESource,
-  getICloudHMEAutomation, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
+  getICloudHMEAutomation, getICloudHMEAutomationResult, listICloudHMEAutomationEvents, updateICloudHMEAutomation,
   updateICloudHMEInventoryStatus, scanICloudHMEGPTStatus,
   type ICloudHMEAlias, type ICloudHMEDeleteJob, type ICloudHMEGroup, type ICloudHMEJob, type ICloudHMEMail,
   type ICloudHMEMailSummary, type ICloudHMESourceAccount, type ICloudHMEReceiveKeyRecord,
@@ -28,6 +28,10 @@ import {
 import { ICLOUD_HME_DEFAULT_GROUP, useICloudHmeStore } from '@/stores/iCloudHme'
 import { formatDateTime } from '@/utils/dateTime'
 import { plainMailBlocks } from '@/utils/mailBody'
+import {
+  linkPaymentCard, listPaymentCards, unlinkPaymentCard,
+  type PaymentCard,
+} from '@/services/paymentCardApi'
 
 const ICLOUD_HME_PUBLIC_MAIL_ORIGIN = 'https://inbox-api.xyue.online'
 
@@ -106,6 +110,11 @@ const smsBindingPhone = ref('')
 const smsBindingKeyword = ref('')
 const smsBindingSaving = ref(false)
 const smsStatusUpdatingPhone = ref('')
+const paymentCards = ref<PaymentCard[]>([])
+const cardBindingVisible = ref(false)
+const cardBindingAlias = ref<ICloudHMEAlias>()
+const cardBindingCardID = ref<number>()
+const cardBindingSaving = ref(false)
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -177,6 +186,11 @@ const sortedSMSAccounts = computed(() => {
 const smsBindingCurrentAccount = computed(() =>
   smsBindingAlias.value ? boundSMSAccount(smsBindingAlias.value) : undefined,
 )
+const paymentCardByAlias = computed(() => {
+  const result = new Map<string, PaymentCard>()
+  paymentCards.value.forEach((card) => card.linkedEmails.forEach((email) => result.set(email.toLowerCase(), card)))
+  return result
+})
 
 let jobPollTimer: number | undefined
 let jobPolling = false
@@ -188,7 +202,7 @@ watch([keyword, sourceFilter, statusFilter, gptStatusFilter, () => store.selecte
 watch(() => filteredAliases.value.length, (total) => { page.value = Math.min(page.value, Math.max(1, Math.ceil(total / pageSize.value))) })
 onMounted(async () => {
   try {
-    await Promise.all([store.load(), loadAutomation(), loadSMSBindings()])
+    await Promise.all([store.load(), loadAutomation(), loadSMSBindings(), loadPaymentCards()])
     await restoreDeleteJob()
   } catch (error) { showError(error, '加载隐藏邮箱失败') }
   jobPollTimer = window.setInterval(pollJobs, 15000)
@@ -214,6 +228,32 @@ async function pollJobs() {
 
 async function loadAutomation() {
   automation.value = await getICloudHMEAutomation()
+}
+
+async function loadPaymentCards() {
+  paymentCards.value = await listPaymentCards()
+}
+
+function openCardBinding(alias: ICloudHMEAlias) {
+  cardBindingAlias.value = alias
+  cardBindingCardID.value = paymentCardByAlias.value.get(alias.email.toLowerCase())?.id
+  cardBindingVisible.value = true
+}
+
+async function saveCardBinding() {
+  if (!cardBindingAlias.value) return
+  cardBindingSaving.value = true
+  try {
+    const current = paymentCardByAlias.value.get(cardBindingAlias.value.email.toLowerCase())
+    if (cardBindingCardID.value) {
+      await linkPaymentCard(cardBindingAlias.value.email, cardBindingCardID.value)
+    } else if (current) {
+      await unlinkPaymentCard(cardBindingAlias.value.email, current.id)
+    }
+    await loadPaymentCards()
+    cardBindingVisible.value = false
+    ElMessage.success('邮箱关联卡已更新')
+  } finally { cardBindingSaving.value = false }
 }
 
 function deleteJobFinished(job: ICloudHMEDeleteJob) {
@@ -815,6 +855,13 @@ async function permanentlyDeleteSelectedAliases() {
 }
 async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
   if (command === 'receive-key') await openReceiveKey(alias)
+	if (command === 'copy-at') {
+		try {
+			const result = await getICloudHMEAutomationResult(alias.email)
+			if (!result.accessToken) throw new Error('该邮箱尚未收集 AT')
+			await copyValue(result.accessToken, 'AT')
+		} catch (error) { showError(error, '复制 AT 失败') }
+	}
   if (command === 'deactivate') await lifecycleSelected('deactivate', [alias])
   if (command === 'reactivate') await lifecycleSelected('reactivate', [alias])
   if (command === 'delete') await permanentlyDeleteAlias(alias)
@@ -1076,6 +1123,11 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column prop="label" label="Apple 标签" min-width="165" show-overflow-tooltip />
           <el-table-column label="GPT账号" width="220"><template #default="{ row }"><div class="hme-gpt-status-cell"><div><el-tag :type="gptStatusType(row.gptStatus)" effect="light">{{ gptStatusText(row.gptStatus) }}</el-tag></div><span v-if="row.gptPlusActivatedAt">开通 {{ formatDateTime(row.gptPlusActivatedAt) }}</span><span v-if="row.gptDeactivatedAt">封号 {{ formatDateTime(row.gptDeactivatedAt) }}</span><strong v-if="gptSurvivalText(row)">存活 {{ gptSurvivalText(row) }}</strong><small v-if="row.gptScanError" class="danger-text">{{ row.gptScanError }}</small></div></template></el-table-column>
           <el-table-column prop="group" label="分组" width="125" />
+          <el-table-column label="关联卡" width="150" align="center"><template #default="{ row }">
+            <el-button link type="primary" @click.stop="openCardBinding(row)">
+              {{ paymentCardByAlias.get(row.email.toLowerCase()) ? '尾号 ' + paymentCardByAlias.get(row.email.toLowerCase())?.last4 : '关联卡' }}
+            </el-button>
+          </template></el-table-column>
           <el-table-column label="备注" min-width="160" show-overflow-tooltip><template #default="{ row }"><div class="remark-cell"><span :class="{ muted: !row.remark }">{{ row.remark || '无备注' }}</span><el-button link :icon="EditPen" @click.stop="editRemark(row)" /></div></template></el-table-column>
           <el-table-column label="收件密钥" width="220" align="center"><template #default="{ row }"><div class="hme-receive-key-cell"><el-tag :type="row.receiveKeyConfigured ? 'success' : 'info'" effect="plain">{{ row.receiveKeyConfigured ? '已配置' : '未配置' }}</el-tag><el-button link :icon="Link" :loading="receiveURLBusyEmails.has(row.email)" :disabled="row.appleStatus !== 'active'" @click.stop="copyLatestReceiveURL(row)">复制 URL</el-button><el-button link :icon="Key" @click.stop="openReceiveKey(row)">{{ row.receiveKeyConfigured ? '密钥' : '生成' }}</el-button></div></template></el-table-column>
           <el-table-column label="接码验证码" width="230" align="center"><template #default="{ row }">
@@ -1128,6 +1180,7 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
             <el-dropdown trigger="click" @command="handleRowCommand($event, row)"><el-button size="small" :icon="More" />
               <template #dropdown><el-dropdown-menu>
                 <el-dropdown-item command="receive-key" :icon="Key">收件密钥与 API</el-dropdown-item>
+				<el-dropdown-item v-if="row.hasAccessToken" command="copy-at" :icon="CopyDocument">复制 AT</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'active'" command="deactivate">Apple 停用</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'inactive'" command="reactivate">Apple 恢复</el-dropdown-item>
                 <el-dropdown-item command="delete" divided :icon="Delete">永久删除</el-dropdown-item>
@@ -1309,6 +1362,18 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-empty v-else description="选择一封邮件查看正文" />
         </section>
       </div>
+    </el-dialog>
+
+    <el-dialog v-model="cardBindingVisible" title="关联支付卡" width="520px">
+      <el-form label-position="top">
+        <el-form-item label="隐藏邮箱"><el-input :model-value="cardBindingAlias?.email" disabled /></el-form-item>
+        <el-form-item label="支付卡">
+          <el-select v-model="cardBindingCardID" clearable filterable placeholder="不关联支付卡" style="width:100%">
+            <el-option v-for="card in paymentCards" :key="card.id" :label="`${card.numberMasked} · ${card.expiry} · ${card.status}`" :value="card.id" :disabled="!!card.leaseOwner" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer><el-button @click="cardBindingVisible = false">取消</el-button><el-button type="primary" :loading="cardBindingSaving" @click="saveCardBinding">保存</el-button></template>
     </el-dialog>
 
     <el-dialog v-model="smsCodeVisible" title="隐藏邮箱短信验证码" width="620px" class="sms-code-dialog">

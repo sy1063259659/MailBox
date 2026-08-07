@@ -11,24 +11,26 @@ import (
 const DefaultAddr = "127.0.0.1:8787"
 
 type Config struct {
-	Addr          string
-	DatabaseURL   string
-	AdminUsername string
-	AdminPassword string
-	SessionSecret []byte
-	TokenKey      []byte
-	StaticDir     string
-	CookieSecure  bool
+	Addr              string
+	DatabaseURL       string
+	AdminUsername     string
+	AdminPassword     string
+	SessionSecret     []byte
+	TokenKey          []byte
+	StaticDir         string
+	CookieSecure      bool
+	IntegrationAPIKey string
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		Addr:          getEnvAny("GPTBOX_SERVER_ADDR", "MAILBOX_SERVER_ADDR", DefaultAddr),
-		DatabaseURL:   strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		AdminUsername: strings.TrimSpace(getEnvAny("GPTBOX_ADMIN_USERNAME", "MAILBOX_ADMIN_USERNAME", "admin")),
-		AdminPassword: getEnvAny("GPTBOX_ADMIN_PASSWORD", "MAILBOX_ADMIN_PASSWORD", ""),
-		StaticDir:     getEnvAny("GPTBOX_STATIC_DIR", "MAILBOX_STATIC_DIR", "./dist"),
-		CookieSecure:  getBoolEnvAny("GPTBOX_COOKIE_SECURE", "MAILBOX_COOKIE_SECURE", false),
+		Addr:              getEnvAny("GPTBOX_SERVER_ADDR", "MAILBOX_SERVER_ADDR", DefaultAddr),
+		DatabaseURL:       strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		AdminUsername:     strings.TrimSpace(getEnvAny("GPTBOX_ADMIN_USERNAME", "MAILBOX_ADMIN_USERNAME", "admin")),
+		AdminPassword:     getEnvAny("GPTBOX_ADMIN_PASSWORD", "MAILBOX_ADMIN_PASSWORD", ""),
+		StaticDir:         getEnvAny("GPTBOX_STATIC_DIR", "MAILBOX_STATIC_DIR", "./dist"),
+		CookieSecure:      getBoolEnvAny("GPTBOX_COOKIE_SECURE", "MAILBOX_COOKIE_SECURE", false),
+		IntegrationAPIKey: strings.TrimSpace(os.Getenv("GPTBOX_INTEGRATION_API_KEY")),
 	}
 
 	if cfg.DatabaseURL == "" {

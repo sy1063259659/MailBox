@@ -78,6 +78,7 @@ type ICloudHMEAlias struct {
 	MailReady            bool       `json:"mailReady"`
 	ReceiveKeyConfigured bool       `json:"receiveKeyConfigured"`
 	ReceiveKeyUpdatedAt  *time.Time `json:"receiveKeyUpdatedAt,omitempty"`
+	HasAccessToken       bool       `json:"hasAccessToken"`
 	InventoryStatus      string     `json:"inventoryStatus"`
 	SoldAt               *time.Time `json:"soldAt,omitempty"`
 	GPTStatus            string     `json:"gptStatus"`
@@ -444,6 +445,7 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 		       a.apple_status, a.deactivated_at, a.deleted_at, a.last_synced_at,
 		       g.name, a.remark, s.app_password_encrypted <> '',
 		       a.receive_key_encrypted <> '', a.receive_key_updated_at,
+		       EXISTS(SELECT 1 FROM icloud_hme_automation_results result WHERE lower(result.mailbox_email)=lower(a.email) AND result.access_token_encrypted<>''),
 		       a.inventory_status, a.sold_at,
 		       a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
 		       a.gpt_last_scanned_at, a.gpt_scan_error,
@@ -467,7 +469,7 @@ func (s *Store) ListICloudHMEAliases(ctx context.Context) ([]ICloudHMEAlias, err
 			&alias.AnonymousID, &alias.Label, &alias.Active, &alias.AppleStatus,
 			&alias.DeactivatedAt, &alias.DeletedAt, &alias.LastSyncedAt, &alias.Group,
 			&alias.Remark, &alias.MailReady, &alias.ReceiveKeyConfigured,
-			&alias.ReceiveKeyUpdatedAt, &alias.InventoryStatus, &alias.SoldAt,
+			&alias.ReceiveKeyUpdatedAt, &alias.HasAccessToken, &alias.InventoryStatus, &alias.SoldAt,
 			&alias.GPTStatus, &alias.GPTPlusActivatedAt, &alias.GPTDeactivatedAt,
 			&alias.GPTLastScannedAt, &alias.GPTScanError,
 			&alias.GroupMovedAt, &alias.ImportOrder,
