@@ -36,7 +36,7 @@ func main() {
 		Addr: cfg.Addr,
 		Handler: staticfiles.Handler(
 			cfg.StaticDir,
-			api.NewRouter(database, session.NewManager(cfg.SessionSecret, cfg.CookieSecure)),
+			api.NewRouter(database, session.NewManager(cfg.SessionSecret, cfg.CookieSecure), cfg.IntegrationAPIKey),
 		),
 	}
 

@@ -29,6 +29,28 @@ func TestAuthRequiredRejectsMissingSession(t *testing.T) {
 	}
 }
 
+func TestIntegrationAuthRequiresConfiguredBearerKey(t *testing.T) {
+	called := false
+	handler := integrationAuthRequired("integration-secret", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+	})
+
+	missing := httptest.NewRecorder()
+	handler(missing, httptest.NewRequest(http.MethodGet, "/api/integration/v1/groups", nil))
+	if missing.Code != http.StatusUnauthorized || called {
+		t.Fatalf("missing key status=%d called=%v", missing.Code, called)
+	}
+
+	validRequest := httptest.NewRequest(http.MethodGet, "/api/integration/v1/groups", nil)
+	validRequest.Header.Set("Authorization", "Bearer integration-secret")
+	valid := httptest.NewRecorder()
+	handler(valid, validRequest)
+	if valid.Code != http.StatusOK || !called {
+		t.Fatalf("valid key status=%d called=%v", valid.Code, called)
+	}
+}
+
 func TestAccountPathHandlerRejectsUnauthenticatedRemarkPatch(t *testing.T) {
 	handler := authRequired(session.NewManager([]byte("test-secret"), false), accountPathHandler(accountAPI{}))
 	recorder := httptest.NewRecorder()

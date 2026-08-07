@@ -394,6 +394,56 @@ func migrationCreateStatements() []string {
 			target_interval_min_seconds INTEGER NOT NULL DEFAULT 0,
 			target_interval_max_seconds INTEGER NOT NULL DEFAULT 0,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS payment_cards (
+			id BIGSERIAL PRIMARY KEY,
+			number_encrypted TEXT NOT NULL,
+			expiry_encrypted TEXT NOT NULL,
+			cvc_encrypted TEXT NOT NULL,
+			fingerprint TEXT NOT NULL UNIQUE,
+			last4 TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'active',
+			failure_reason TEXT NOT NULL DEFAULT '',
+			used_at TIMESTAMPTZ,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_card_links (
+			mailbox_email TEXT PRIMARY KEY REFERENCES icloud_hme_aliases(email) ON DELETE CASCADE,
+			card_id BIGINT NOT NULL REFERENCES payment_cards(id) ON DELETE RESTRICT,
+			source TEXT NOT NULL DEFAULT 'manual',
+			linked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_card_link_history (
+			id BIGSERIAL PRIMARY KEY,
+			mailbox_email TEXT NOT NULL,
+			card_id BIGINT NOT NULL REFERENCES payment_cards(id) ON DELETE RESTRICT,
+			source TEXT NOT NULL,
+			linked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			unlinked_at TIMESTAMPTZ,
+			end_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS integration_resource_leases (
+			id TEXT PRIMARY KEY,
+			resource_type TEXT NOT NULL,
+			resource_key TEXT NOT NULL,
+			owner_id TEXT NOT NULL,
+			queue_id TEXT NOT NULL,
+			state TEXT NOT NULL DEFAULT 'running',
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(resource_type, resource_key)
+		)`,
+		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_results (
+			mailbox_email TEXT PRIMARY KEY REFERENCES icloud_hme_aliases(email) ON DELETE CASCADE,
+			status TEXT NOT NULL DEFAULT 'new',
+			access_token_encrypted TEXT NOT NULL DEFAULT '',
+			auth_flow TEXT NOT NULL DEFAULT '',
+			codex_auth_encrypted TEXT NOT NULL DEFAULT '',
+			sub2api_encrypted TEXT NOT NULL DEFAULT '',
+			last_error TEXT NOT NULL DEFAULT '',
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`}
 }
 
@@ -510,7 +560,11 @@ func migrationIndexStatements() []string {
 			ON icloud_hme_aliases(source_account_id, gpt_status, gpt_last_scanned_at)
 			WHERE gpt_status <> 'deactivated'`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_automation_events_created ON icloud_hme_automation_events(created_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`}
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_audit_created_at ON icloud_hme_audit_logs(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_payment_cards_available ON payment_cards(status, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_hme_card_links_card ON icloud_hme_card_links(card_id, linked_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_integration_resource_leases_owner ON integration_resource_leases(owner_id, queue_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_integration_resource_leases_expiry ON integration_resource_leases(expires_at)`}
 }
 
 func legacyCleanupStatements() []string {

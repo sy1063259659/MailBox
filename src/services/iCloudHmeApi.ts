@@ -57,6 +57,7 @@ export interface ICloudHMEAlias {
   mailReady: boolean
   receiveKeyConfigured: boolean
   receiveKeyUpdatedAt?: string
+  hasAccessToken: boolean
   inventoryStatus: 'available' | 'reserved' | 'sold'
   soldAt?: string
   gptStatus: 'unregistered' | 'plus' | 'deactivated'
@@ -68,6 +69,16 @@ export interface ICloudHMEAlias {
   importOrder: number
   createdAt: string
   updatedAt: string
+}
+
+export interface ICloudHMEAutomationResult {
+  email: string
+  accessToken?: string
+  authFlow?: string
+  codexAuth?: string
+  sub2api?: string
+  status: string
+  lastError?: string
 }
 
 export interface ICloudHMEAutomation {
@@ -332,6 +343,13 @@ export async function revealICloudHMEReceiveKey(email: string): Promise<ICloudHM
     '/icloud-hme/aliases/' + encodeURIComponent(email) + '/receive-key/reveal',
   )
   return response.record
+}
+
+export async function getICloudHMEAutomationResult(email: string): Promise<ICloudHMEAutomationResult> {
+  const response = await apiGet<{ ok: boolean; result: ICloudHMEAutomationResult }>(
+    '/icloud-hme/aliases/' + encodeURIComponent(email) + '/automation-result',
+  )
+  return response.result
 }
 
 export async function resetICloudHMEReceiveKey(email: string): Promise<ICloudHMEReceiveKeyRecord> {

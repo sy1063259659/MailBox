@@ -16,13 +16,19 @@ var allowedOrigins = map[string]struct{}{
 	"http://localhost:5173": {},
 }
 
-func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
+func NewRouter(store *store.Store, sessions session.Manager, integrationKeys ...string) http.Handler {
 	mux := http.NewServeMux()
 	authAPI := authAPI{store: store, sessions: sessions}
 	accountAPI := accountAPI{store: store}
 	iCloudAPI := newICloudAPI(store)
 	iCloudHMEAPI := newICloudHMEAPI(store)
 	smsAPI := newSMSAPI(store)
+	cardAPI := paymentCardAPI{store: store}
+	integrationKey := ""
+	if len(integrationKeys) > 0 {
+		integrationKey = strings.TrimSpace(integrationKeys[0])
+	}
+	integration := integrationAPI{store: store, hme: iCloudHMEAPI, sms: smsAPI, key: integrationKey}
 	mailAPI := newMailAPI(store)
 	mux.HandleFunc("/api/health", methodHandler(http.MethodGet, healthHandler))
 
@@ -62,6 +68,20 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/sms-accounts/mailboxes", authRequired(sessions, methodHandler(http.MethodGet, smsAPI.listMailboxes)))
 	mux.HandleFunc("/api/sms-accounts/latest", authRequired(sessions, methodHandler(http.MethodPost, smsAPI.latestMessage)))
 	mux.HandleFunc("/api/sms-accounts/", authRequired(sessions, smsAPI.routeAccount))
+	mux.HandleFunc("/api/payment-cards", authRequired(sessions, cardAPI.cards))
+	mux.HandleFunc("/api/payment-cards/", authRequired(sessions, cardAPI.card))
+	mux.HandleFunc("/api/icloud-hme/card-link", authRequired(sessions, cardAPI.cardLink))
+	mux.HandleFunc("/api/integration/v1/groups", integrationAuthRequired(integrationKey, methodHandler(http.MethodGet, integration.groups)))
+	mux.HandleFunc("/api/integration/v1/resources/acquire", integrationAuthRequired(integrationKey, methodHandler(http.MethodPost, integration.acquire)))
+	mux.HandleFunc("/api/integration/v1/queues/", integrationAuthRequired(integrationKey, integration.queueLease))
+	mux.HandleFunc("/api/integration/v1/mail/latest", integrationAuthRequired(integrationKey, methodHandler(http.MethodGet, integration.latestMail)))
+	mux.HandleFunc("/api/integration/v1/cards/credentials", integrationAuthRequired(integrationKey, methodHandler(http.MethodGet, integration.cardCredentials)))
+	mux.HandleFunc("/api/integration/v1/sms/acquire", integrationAuthRequired(integrationKey, methodHandler(http.MethodPost, integration.acquireSMS)))
+	mux.HandleFunc("/api/integration/v1/sms/latest", integrationAuthRequired(integrationKey, methodHandler(http.MethodGet, integration.latestSMS)))
+	mux.HandleFunc("/api/integration/v1/results/auth", integrationAuthRequired(integrationKey, methodHandler(http.MethodPost, integration.authResult)))
+	mux.HandleFunc("/api/integration/v1/results/payment", integrationAuthRequired(integrationKey, methodHandler(http.MethodPost, integration.paymentResult)))
+	mux.HandleFunc("/api/integration/v1/leases", authRequired(sessions, methodHandler(http.MethodGet, integration.activeLeases)))
+	mux.HandleFunc("/api/integration/v1/leases/force-release", authRequired(sessions, methodHandler(http.MethodPost, integration.forceRelease)))
 
 	mux.HandleFunc("/api/icloud-hme/source-accounts", authRequired(sessions, func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
