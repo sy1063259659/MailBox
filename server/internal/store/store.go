@@ -192,6 +192,13 @@ func migrationCreateStatements() []string {
 			access_key_encrypted TEXT NOT NULL,
 			group_id BIGINT NOT NULL REFERENCES icloud_groups(id),
 			remark TEXT NOT NULL DEFAULT '',
+			gpt_status TEXT NOT NULL DEFAULT 'unregistered',
+			gpt_plus_activated_at TIMESTAMPTZ,
+			gpt_deactivated_at TIMESTAMPTZ,
+			gpt_plan_message_id BIGINT,
+			gpt_deactivation_message_id BIGINT,
+			gpt_last_scanned_at TIMESTAMPTZ,
+			gpt_scan_error TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -399,6 +406,13 @@ func migrationColumnStatements() []string {
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS split_generated_at TIMESTAMPTZ`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS remark TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS password_encrypted TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_status TEXT NOT NULL DEFAULT 'unregistered'`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_plus_activated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_deactivated_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_plan_message_id BIGINT`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_deactivation_message_id BIGINT`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_last_scanned_at TIMESTAMPTZ`,
+		`ALTER TABLE icloud_accounts ADD COLUMN IF NOT EXISTS gpt_scan_error TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sms_accounts ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE sms_accounts ADD COLUMN IF NOT EXISTS invalid_at TIMESTAMPTZ`,
 		`ALTER TABLE icloud_hme_source_accounts ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ`,
@@ -462,6 +476,9 @@ func migrationIndexStatements() []string {
 			WHERE parent_email IS NOT NULL AND parent_email <> '' AND split_index IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_group_id ON icloud_accounts(group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_created_at ON icloud_accounts(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_icloud_accounts_gpt_scan
+			ON icloud_accounts(gpt_status, gpt_last_scanned_at)
+			WHERE gpt_status <> 'deactivated'`,
 		`CREATE INDEX IF NOT EXISTS idx_sms_accounts_created_at ON sms_accounts(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sms_accounts_status ON sms_accounts(status, created_at DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_sms_accounts_linked_mailbox

@@ -18,6 +18,7 @@ import { useICloudAccountStore, ICLOUD_DEFAULT_GROUP } from '@/stores/iCloudAcco
 import {
   getICloudMailDetail,
   listICloudMails,
+  scanICloudGPTStatus,
   type ICloudAccount,
   type ICloudGroup,
   type ICloudLatestEmail,
@@ -56,6 +57,7 @@ function buildICloudReaderHtml(content: string): string {
 }
 const store = useICloudAccountStore()
 const keyword = ref('')
+const gptStatusFilter = ref<'all' | ICloudAccount['gptStatus']>('all')
 const page = ref(1)
 const pageSize = ref(20)
 const selectedRows = ref<ICloudAccount[]>([])
@@ -65,6 +67,7 @@ const targetGroup = ref('')
 const moving = ref(false)
 const deleting = ref(false)
 const copying = ref(false)
+const gptScanBusy = ref(false)
 const editingRemarkEmail = ref('')
 const draggingGroupId = ref<number>()
 const deletingGroupId = ref<number>()
@@ -93,10 +96,13 @@ const filteredAccounts = computed(() => {
     if (store.selectedGroup && account.group !== store.selectedGroup) {
       return false
     }
+    if (gptStatusFilter.value !== 'all' && account.gptStatus !== gptStatusFilter.value) {
+      return false
+    }
     if (!normalizedKeyword) {
       return true
     }
-    return [account.email, account.key, account.group, account.remark]
+    return [account.email, account.key, account.group, account.remark, account.gptStatus, gptStatusText(account.gptStatus)]
       .some((value) => value.toLowerCase().includes(normalizedKeyword))
   })
 })
@@ -114,7 +120,7 @@ const groupCounts = computed(() => {
   return counts
 })
 
-watch([keyword, () => store.selectedGroup], () => {
+watch([keyword, gptStatusFilter, () => store.selectedGroup], () => {
   page.value = 1
   selectedRows.value = []
 })
@@ -350,6 +356,39 @@ async function deleteSelected() {
   }
 }
 
+function gptStatusType(status: ICloudAccount['gptStatus']) {
+  return status === 'plus' ? 'success' : status === 'deactivated' ? 'danger' : 'info'
+}
+
+function gptStatusText(status: ICloudAccount['gptStatus']) {
+  return status === 'plus' ? 'PLUS' : status === 'deactivated' ? '已封号' : '未开通'
+}
+
+function gptSurvivalText(account: ICloudAccount) {
+  if (!account.gptPlusActivatedAt || !account.gptDeactivatedAt) return ''
+  const seconds = Math.max(0, Math.floor(
+    (new Date(account.gptDeactivatedAt).getTime() - new Date(account.gptPlusActivatedAt).getTime()) / 1000,
+  ))
+  const days = Math.floor(seconds / 86400)
+  const hours = Math.floor((seconds % 86400) / 3600)
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return days ? `${days}天 ${hours}小时` : hours ? `${hours}小时 ${minutes}分钟` : `${minutes}分钟`
+}
+
+async function scanGPTStatus() {
+  if (gptScanBusy.value) return
+  gptScanBusy.value = true
+  try {
+    const result = await scanICloudGPTStatus()
+    await store.load()
+    ElMessage.success(`扫描 ${result.scanned} 个邮箱，发现 PLUS ${result.plusFound} 个、封号 ${result.bannedFound} 个${result.errors ? `，${result.errors} 个账号失败` : ''}`)
+  } catch (error) {
+    showError(error, '扫描 GPT 状态失败')
+  } finally {
+    gptScanBusy.value = false
+  }
+}
+
 async function renameGroup(group: ICloudGroup) {
   const result = await ElMessageBox.prompt('请输入新的分组名称', '重命名 iCloud 分组', {
     confirmButtonText: '保存',
@@ -521,13 +560,20 @@ function canDeleteGroup(group: ICloudGroup): boolean {
       <MailboxTopbar
         :search-value="keyword"
         workspace-mode="accounts"
-        placeholder="搜索 iCloud 邮箱、密钥、分组或备注..."
+        placeholder="搜索 iCloud 邮箱、密钥、分组、备注或 GPT 状态..."
         @search-input="keyword = $event"
       />
 
       <section class="faka-card">
         <div class="faka-action-row">
           <el-button type="primary" :icon="UploadFilled" @click="importVisible = true">导入账号</el-button>
+          <el-button :icon="Refresh" :loading="gptScanBusy" @click="scanGPTStatus">扫描 GPT 状态</el-button>
+          <el-select v-model="gptStatusFilter" style="width: 150px" aria-label="GPT 状态筛选">
+            <el-option label="全部 GPT 状态" value="all" />
+            <el-option label="未开通" value="unregistered" />
+            <el-option label="PLUS" value="plus" />
+            <el-option label="已封号" value="deactivated" />
+          </el-select>
           <el-dropdown trigger="click">
             <el-button :icon="CopyDocument" :loading="copying">复制</el-button>
             <template #dropdown>
@@ -588,6 +634,17 @@ function canDeleteGroup(group: ICloudGroup): boolean {
               <el-tooltip content="复制密钥" placement="top">
                 <el-button link :icon="CopyDocument" @click.stop="copyValue(row.key, '密钥')" />
               </el-tooltip>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="GPT账号" width="220" align="center" header-align="center">
+          <template #default="{ row }">
+            <div class="hme-gpt-status-cell">
+              <div><el-tag :type="gptStatusType(row.gptStatus)" effect="light">{{ gptStatusText(row.gptStatus) }}</el-tag></div>
+              <span v-if="row.gptPlusActivatedAt">开通 {{ formatDateTime(row.gptPlusActivatedAt) }}</span>
+              <span v-if="row.gptDeactivatedAt">封号 {{ formatDateTime(row.gptDeactivatedAt) }}</span>
+              <strong v-if="gptSurvivalText(row)">存活 {{ gptSurvivalText(row) }}</strong>
+              <small v-if="row.gptScanError" class="danger-text">{{ row.gptScanError }}</small>
             </div>
           </template>
         </el-table-column>

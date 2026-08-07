@@ -50,8 +50,12 @@ func normalizeICloudHMEGPTBody(value string) string {
 }
 
 func classifyICloudHMEGPTMail(message imapmail.MessageDetail) iCloudHMEGPTMailKind {
-	subject := normalizeICloudHMEGPTSubject(message.Subject)
-	body := normalizeICloudHMEGPTBody(message.Content)
+	return classifyICloudGPTMail(message.Subject, message.Content)
+}
+
+func classifyICloudGPTMail(rawSubject, rawBody string) iCloudHMEGPTMailKind {
+	subject := normalizeICloudHMEGPTSubject(rawSubject)
+	body := normalizeICloudHMEGPTBody(rawBody)
 	if strings.EqualFold(subject, "ChatGPT - Your new plan") &&
 		strings.Contains(body, "you've successfully subscribed to chatgpt plus") &&
 		strings.Contains(body, "chatgpt plus subscription") {

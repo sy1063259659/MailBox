@@ -20,7 +20,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux := http.NewServeMux()
 	authAPI := authAPI{store: store, sessions: sessions}
 	accountAPI := accountAPI{store: store}
-	iCloudAPI := iCloudAPI{store: store, latestFetch: newICloudLatestClient()}
+	iCloudAPI := newICloudAPI(store)
 	iCloudHMEAPI := newICloudHMEAPI(store)
 	smsAPI := newSMSAPI(store)
 	mailAPI := newMailAPI(store)
@@ -46,6 +46,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	mux.HandleFunc("/api/icloud-accounts/latest", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.latestMail)))
 	mux.HandleFunc("/api/icloud-accounts/messages", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.listMail)))
 	mux.HandleFunc("/api/icloud-accounts/message", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.mailDetail)))
+	mux.HandleFunc("/api/icloud-accounts/gpt-status/scan", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.scanGPTStatus)))
 	mux.HandleFunc("/api/icloud-accounts/remark", authRequired(sessions, methodHandler(http.MethodPatch, iCloudAPI.updateRemark)))
 	mux.HandleFunc("/api/icloud-accounts/move-group", authRequired(sessions, methodHandler(http.MethodPost, iCloudAPI.moveAccounts)))
 	mux.HandleFunc("/api/icloud-accounts/", authRequired(sessions, iCloudAccountPathHandler(iCloudAPI)))
@@ -122,7 +123,7 @@ func NewRouter(store *store.Store, sessions session.Manager) http.Handler {
 	return withRequestLogging(withCORS(mux))
 }
 
-func iCloudAccountPathHandler(api iCloudAPI) http.HandlerFunc {
+func iCloudAccountPathHandler(api *iCloudAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			api.deleteAccount(w, r)
@@ -132,7 +133,7 @@ func iCloudAccountPathHandler(api iCloudAPI) http.HandlerFunc {
 	}
 }
 
-func iCloudGroupsHandler(api iCloudAPI) http.HandlerFunc {
+func iCloudGroupsHandler(api *iCloudAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
@@ -145,7 +146,7 @@ func iCloudGroupsHandler(api iCloudAPI) http.HandlerFunc {
 	}
 }
 
-func iCloudGroupIDHandler(api iCloudAPI) http.HandlerFunc {
+func iCloudGroupIDHandler(api *iCloudAPI) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if strings.TrimSuffix(r.URL.Path, "/") == "/api/icloud-groups/order" {
 			if r.Method != http.MethodPatch {

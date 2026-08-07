@@ -5,8 +5,20 @@ export interface ICloudAccount {
   key: string
   group: string
   remark: string
+  gptStatus: 'unregistered' | 'plus' | 'deactivated'
+  gptPlusActivatedAt?: string
+  gptDeactivatedAt?: string
+  gptLastScannedAt?: string
+  gptScanError?: string
   createdAt: string
   updatedAt: string
+}
+
+export interface ICloudGPTScanResult {
+  scanned: number
+  plusFound: number
+  bannedFound: number
+  errors: number
 }
 
 export interface ICloudGroup {
@@ -95,6 +107,11 @@ export async function listICloudMails(email: string): Promise<ICloudMailListResp
 
 export async function getICloudMailDetail(email: string, id: number): Promise<ICloudMailDetailResponse> {
   return apiPost<ICloudMailDetailResponse>('/icloud-accounts/message', { email, id })
+}
+
+export async function scanICloudGPTStatus(): Promise<ICloudGPTScanResult> {
+  const response = await apiPost<{ ok: boolean; result: ICloudGPTScanResult }>('/icloud-accounts/gpt-status/scan')
+  return response.result
 }
 
 export async function updateICloudRemark(email: string, remark: string): Promise<ICloudAccount> {

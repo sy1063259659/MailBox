@@ -23,12 +23,17 @@ type ICloudGroup struct {
 }
 
 type ICloudAccount struct {
-	Email     string    `json:"email"`
-	Key       string    `json:"key"`
-	Group     string    `json:"group"`
-	Remark    string    `json:"remark"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	Email              string     `json:"email"`
+	Key                string     `json:"key"`
+	Group              string     `json:"group"`
+	Remark             string     `json:"remark"`
+	GPTStatus          string     `json:"gptStatus"`
+	GPTPlusActivatedAt *time.Time `json:"gptPlusActivatedAt,omitempty"`
+	GPTDeactivatedAt   *time.Time `json:"gptDeactivatedAt,omitempty"`
+	GPTLastScannedAt   *time.Time `json:"gptLastScannedAt,omitempty"`
+	GPTScanError       string     `json:"gptScanError,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 type ICloudAccountInput struct {
@@ -143,7 +148,9 @@ func (s *Store) DeleteICloudGroup(ctx context.Context, id int64) error {
 
 func (s *Store) ListICloudAccounts(ctx context.Context) ([]ICloudAccount, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT a.email, a.access_key_encrypted, g.name, a.remark, a.created_at, a.updated_at
+		SELECT a.email, a.access_key_encrypted, g.name, a.remark,
+		       a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
+		       a.gpt_last_scanned_at, a.gpt_scan_error, a.created_at, a.updated_at
 		FROM icloud_accounts a
 		JOIN icloud_groups g ON g.id = a.group_id
 		ORDER BY a.created_at DESC, a.email ASC
@@ -162,6 +169,11 @@ func (s *Store) ListICloudAccounts(ctx context.Context) ([]ICloudAccount, error)
 			&encryptedKey,
 			&account.Group,
 			&account.Remark,
+			&account.GPTStatus,
+			&account.GPTPlusActivatedAt,
+			&account.GPTDeactivatedAt,
+			&account.GPTLastScannedAt,
+			&account.GPTScanError,
 			&account.CreatedAt,
 			&account.UpdatedAt,
 		); err != nil {
@@ -274,12 +286,19 @@ func (s *Store) UpdateICloudAccountRemark(ctx context.Context, email string, rem
 		SET remark = $2, updated_at = now()
 		FROM icloud_groups g
 		WHERE a.group_id = g.id AND lower(a.email) = $1
-		RETURNING a.email, a.access_key_encrypted, g.name, a.remark, a.created_at, a.updated_at
+		RETURNING a.email, a.access_key_encrypted, g.name, a.remark,
+		          a.gpt_status, a.gpt_plus_activated_at, a.gpt_deactivated_at,
+		          a.gpt_last_scanned_at, a.gpt_scan_error, a.created_at, a.updated_at
 	`, normalizeEmail(email), strings.TrimSpace(remark)).Scan(
 		&account.Email,
 		&encryptedKey,
 		&account.Group,
 		&account.Remark,
+		&account.GPTStatus,
+		&account.GPTPlusActivatedAt,
+		&account.GPTDeactivatedAt,
+		&account.GPTLastScannedAt,
+		&account.GPTScanError,
 		&account.CreatedAt,
 		&account.UpdatedAt,
 	)

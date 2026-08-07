@@ -319,10 +319,44 @@ func TestICloudHMEMigrationCreatesIndependentTables(t *testing.T) {
 	}
 }
 
-func TestICloudHMEMigrationDoesNotAlterExistingICloudTables(t *testing.T) {
+func TestICloudAccountGPTStatusMigrationsAreScoped(t *testing.T) {
+	allowed := []string{
+		"gpt_status", "gpt_plus_activated_at", "gpt_deactivated_at",
+		"gpt_plan_message_id", "gpt_deactivation_message_id",
+		"gpt_last_scanned_at", "gpt_scan_error",
+	}
+	for _, statement := range migrationColumnStatements() {
+		if strings.Contains(statement, "ALTER TABLE icloud_groups") {
+			t.Fatalf("migration must not alter iCloud groups: %s", statement)
+		}
+		if !strings.Contains(statement, "ALTER TABLE icloud_accounts") {
+			continue
+		}
+		matched := false
+		for _, column := range allowed {
+			matched = matched || strings.Contains(statement, column)
+		}
+		if !matched {
+			t.Fatalf("unexpected iCloud account migration: %s", statement)
+		}
+	}
+}
+
+func TestICloudAccountGPTStatusMigration(t *testing.T) {
+	creates := strings.Join(migrationCreateStatements(), "\n")
 	columns := strings.Join(migrationColumnStatements(), "\n")
-	if strings.Contains(columns, "icloud_accounts") || strings.Contains(columns, "icloud_groups") {
-		t.Fatal("HME migrations must not alter existing iCloud tables")
+	indexes := strings.Join(migrationIndexStatements(), "\n")
+	for _, want := range []string{
+		"gpt_status TEXT NOT NULL DEFAULT 'unregistered'",
+		"gpt_plus_activated_at TIMESTAMPTZ",
+		"gpt_deactivated_at TIMESTAMPTZ",
+	} {
+		if !strings.Contains(creates, want) || !strings.Contains(columns, want) {
+			t.Fatalf("iCloud GPT migration missing %q", want)
+		}
+	}
+	if !strings.Contains(indexes, "idx_icloud_accounts_gpt_scan") {
+		t.Fatal("iCloud GPT scan index is missing")
 	}
 }
 

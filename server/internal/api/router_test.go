@@ -271,6 +271,7 @@ func TestICloudRoutesRejectMissingSession(t *testing.T) {
 		{http.MethodPost, "/api/icloud-accounts/latest", `{}`},
 		{http.MethodPost, "/api/icloud-accounts/messages", `{}`},
 		{http.MethodPost, "/api/icloud-accounts/message", `{}`},
+		{http.MethodPost, "/api/icloud-accounts/gpt-status/scan", `{}`},
 		{http.MethodPatch, "/api/icloud-accounts/remark", `{}`},
 		{http.MethodPost, "/api/icloud-accounts/move-group", `{}`},
 		{http.MethodDelete, "/api/icloud-accounts/user%40icloud.com", ""},
@@ -374,7 +375,8 @@ func TestICloudOverwriteWithNoValidAccountsDoesNotUseStore(t *testing.T) {
 		strings.NewReader(`{"overwrite":true,"text":"invalid@example.com----key"}`),
 	)
 
-	iCloudAPI{}.importAccounts(recorder, request)
+	api := &iCloudAPI{}
+	api.importAccounts(recorder, request)
 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusOK)
@@ -392,7 +394,8 @@ func TestUpdateICloudRemarkRejectsTooLongRemark(t *testing.T) {
 		strings.NewReader(`{"email":"user@icloud.com","remark":"`+strings.Repeat("好", maxAccountRemarkLength+1)+`"}`),
 	)
 
-	iCloudAPI{}.updateRemark(recorder, request)
+	api := &iCloudAPI{}
+	api.updateRemark(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
@@ -506,7 +509,8 @@ func TestICloudMailDetailRejectsInvalidID(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/api/icloud-accounts/message", strings.NewReader(`{"email":"alias@icloud.com","id":0}`))
 
-	iCloudAPI{}.mailDetail(recorder, request)
+	api := &iCloudAPI{}
+	api.mailDetail(recorder, request)
 
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)

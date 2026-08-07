@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gptbox-server/internal/store"
@@ -35,6 +36,15 @@ type iCloudLatestFetcher interface {
 type iCloudAPI struct {
 	store       *store.Store
 	latestFetch iCloudLatestFetcher
+	gptScanMu   sync.Mutex
+}
+
+func newICloudAPI(database *store.Store) *iCloudAPI {
+	api := &iCloudAPI{store: database, latestFetch: newICloudLatestClient()}
+	if database != nil {
+		api.startGPTStatusWorker()
+	}
+	return api
 }
 
 type iCloudAccountsResponse struct {
@@ -267,7 +277,7 @@ func iCloudMailFailure(errorCode string, message string, key string) error {
 	return errors.New(message)
 }
 
-func (api iCloudAPI) listAccounts(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) listAccounts(w http.ResponseWriter, r *http.Request) {
 	accounts, err := api.store.ListICloudAccounts(r.Context())
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -276,7 +286,7 @@ func (api iCloudAPI) listAccounts(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, iCloudAccountsResponse{OK: true, Accounts: accounts})
 }
 
-func (api iCloudAPI) importAccounts(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) importAccounts(w http.ResponseWriter, r *http.Request) {
 	var req importICloudAccountsRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -301,7 +311,7 @@ func (api iCloudAPI) importAccounts(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, result)
 }
 
-func (api iCloudAPI) latestMail(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) latestMail(w http.ResponseWriter, r *http.Request) {
 	var req latestICloudMailRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -318,7 +328,7 @@ func (api iCloudAPI) latestMail(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, payload)
 }
 
-func (api iCloudAPI) listMail(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) listMail(w http.ResponseWriter, r *http.Request) {
 	var req latestICloudMailRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -335,7 +345,7 @@ func (api iCloudAPI) listMail(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, payload)
 }
 
-func (api iCloudAPI) mailDetail(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) mailDetail(w http.ResponseWriter, r *http.Request) {
 	var req iCloudMailDetailRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -356,7 +366,7 @@ func (api iCloudAPI) mailDetail(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, payload)
 }
 
-func (api iCloudAPI) iCloudCredentials(w http.ResponseWriter, r *http.Request, rawEmail string) (store.ICloudCredentials, bool) {
+func (api *iCloudAPI) iCloudCredentials(w http.ResponseWriter, r *http.Request, rawEmail string) (store.ICloudCredentials, bool) {
 	email := strings.ToLower(strings.TrimSpace(rawEmail))
 	if !iCloudEmailPattern.MatchString(email) {
 		WriteError(w, http.StatusBadRequest, "bad_request", "只支持 @icloud.com 邮箱")
@@ -370,7 +380,7 @@ func (api iCloudAPI) iCloudCredentials(w http.ResponseWriter, r *http.Request, r
 	return credentials, true
 }
 
-func (api iCloudAPI) updateRemark(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) updateRemark(w http.ResponseWriter, r *http.Request) {
 	var req updateICloudRemarkRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -393,7 +403,7 @@ func (api iCloudAPI) updateRemark(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "account": account})
 }
 
-func (api iCloudAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {
 	var req moveICloudAccountsRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -405,7 +415,7 @@ func (api iCloudAPI) moveAccounts(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (api iCloudAPI) deleteAccount(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimPrefix(r.URL.Path, "/api/icloud-accounts/")
 	if email == "" {
 		WriteError(w, http.StatusBadRequest, "bad_request", "email is required")
@@ -418,7 +428,7 @@ func (api iCloudAPI) deleteAccount(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func (api iCloudAPI) listGroups(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) listGroups(w http.ResponseWriter, r *http.Request) {
 	groups, err := api.store.ListICloudGroups(r.Context())
 	if err != nil {
 		WriteError(w, http.StatusInternalServerError, "internal_error", err.Error())
@@ -427,7 +437,7 @@ func (api iCloudAPI) listGroups(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, iCloudGroupsResponse{OK: true, Groups: groups})
 }
 
-func (api iCloudAPI) createGroup(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) createGroup(w http.ResponseWriter, r *http.Request) {
 	var req groupRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -440,7 +450,7 @@ func (api iCloudAPI) createGroup(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group})
 }
 
-func (api iCloudAPI) reorderGroups(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) reorderGroups(w http.ResponseWriter, r *http.Request) {
 	var req reorderGroupsRequest
 	if !decodeJSON(w, r, &req) {
 		return
@@ -453,7 +463,7 @@ func (api iCloudAPI) reorderGroups(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, iCloudGroupsResponse{OK: true, Groups: groups})
 }
 
-func (api iCloudAPI) updateGroup(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) updateGroup(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseICloudGroupID(w, r.URL.Path)
 	if !ok {
 		return
@@ -470,7 +480,7 @@ func (api iCloudAPI) updateGroup(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "group": group})
 }
 
-func (api iCloudAPI) deleteGroup(w http.ResponseWriter, r *http.Request) {
+func (api *iCloudAPI) deleteGroup(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseICloudGroupID(w, r.URL.Path)
 	if !ok {
 		return
