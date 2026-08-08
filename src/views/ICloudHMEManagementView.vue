@@ -115,6 +115,7 @@ const cardBindingVisible = ref(false)
 const cardBindingAlias = ref<ICloudHMEAlias>()
 const cardBindingCardID = ref<number>()
 const cardBindingSaving = ref(false)
+const atCopyingEmail = ref('')
 
 const filteredAliases = computed(() => {
   const query = keyword.value.trim().toLowerCase()
@@ -853,15 +854,18 @@ async function permanentlyDeleteSelectedAliases() {
   } catch (error) { showError(error, '创建批量永久删除任务失败') }
   finally { busy.value = false }
 }
+async function copyAccessToken(alias: ICloudHMEAlias) {
+  if (atCopyingEmail.value) return
+  atCopyingEmail.value = alias.email
+  try {
+    const result = await getICloudHMEAutomationResult(alias.email)
+    if (!result.accessToken) throw new Error('该邮箱尚未收集 AT')
+    await copyValue(result.accessToken, 'AT')
+  } catch (error) { showError(error, '复制 AT 失败') }
+  finally { atCopyingEmail.value = '' }
+}
 async function handleRowCommand(command: string, alias: ICloudHMEAlias) {
   if (command === 'receive-key') await openReceiveKey(alias)
-	if (command === 'copy-at') {
-		try {
-			const result = await getICloudHMEAutomationResult(alias.email)
-			if (!result.accessToken) throw new Error('该邮箱尚未收集 AT')
-			await copyValue(result.accessToken, 'AT')
-		} catch (error) { showError(error, '复制 AT 失败') }
-	}
   if (command === 'deactivate') await lifecycleSelected('deactivate', [alias])
   if (command === 'reactivate') await lifecycleSelected('reactivate', [alias])
   if (command === 'delete') await permanentlyDeleteAlias(alias)
@@ -1175,12 +1179,22 @@ async function dropGroup(target: ICloudHMEGroup, event: DragEvent) {
           <el-table-column label="库存" width="90" align="center"><template #default="{ row }"><el-tag :type="inventoryType(row.inventoryStatus)" effect="plain">{{ inventoryText(row.inventoryStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="Apple 状态" width="130" align="center"><template #default="{ row }"><el-tag :type="aliasStatusType(row.appleStatus)" effect="light">{{ aliasStatusText(row.appleStatus) }}</el-tag></template></el-table-column>
           <el-table-column label="最后同步" width="155"><template #default="{ row }"><span class="hme-last-sync" :class="{ muted: !row.lastSyncedAt }">{{ row.lastSyncedAt ? formatDateTime(row.lastSyncedAt) : '未同步' }}</span></template></el-table-column>
+          <el-table-column label="AT" width="112" fixed="right" align="center"><template #default="{ row }">
+            <el-button
+              v-if="row.hasAccessToken"
+              link
+              type="success"
+              :icon="CopyDocument"
+              :loading="atCopyingEmail === row.email"
+              @click.stop="copyAccessToken(row)"
+            >复制 AT</el-button>
+            <el-tag v-else type="info" effect="plain">未收集</el-tag>
+          </template></el-table-column>
           <el-table-column label="操作" width="190" fixed="right" align="center"><template #default="{ row }">
             <el-button size="small" type="primary" :icon="View" :disabled="row.appleStatus === 'deleted'" @click.stop="openMail(row)">查看邮件</el-button>
             <el-dropdown trigger="click" @command="handleRowCommand($event, row)"><el-button size="small" :icon="More" />
               <template #dropdown><el-dropdown-menu>
                 <el-dropdown-item command="receive-key" :icon="Key">收件密钥与 API</el-dropdown-item>
-				<el-dropdown-item v-if="row.hasAccessToken" command="copy-at" :icon="CopyDocument">复制 AT</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'active'" command="deactivate">Apple 停用</el-dropdown-item>
                 <el-dropdown-item v-if="row.appleStatus === 'inactive'" command="reactivate">Apple 恢复</el-dropdown-item>
                 <el-dropdown-item command="delete" divided :icon="Delete">永久删除</el-dropdown-item>
