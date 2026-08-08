@@ -31,7 +31,8 @@ func TestAuthRequiredRejectsMissingSession(t *testing.T) {
 
 func TestIntegrationAuthRequiresConfiguredBearerKey(t *testing.T) {
 	called := false
-	handler := integrationAuthRequired("integration-secret", func(w http.ResponseWriter, r *http.Request) {
+	keys := newIntegrationKeyState("integration-secret")
+	handler := integrationAuthRequired(keys, func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
 	})
@@ -48,6 +49,21 @@ func TestIntegrationAuthRequiresConfiguredBearerKey(t *testing.T) {
 	handler(valid, validRequest)
 	if valid.Code != http.StatusOK || !called {
 		t.Fatalf("valid key status=%d called=%v", valid.Code, called)
+	}
+
+	called = false
+	keys.replace("replacement-secret")
+	oldKey := httptest.NewRecorder()
+	handler(oldKey, validRequest)
+	if oldKey.Code != http.StatusUnauthorized || called {
+		t.Fatalf("old key after reset status=%d called=%v", oldKey.Code, called)
+	}
+	newRequest := httptest.NewRequest(http.MethodGet, "/api/integration/v1/groups", nil)
+	newRequest.Header.Set("Authorization", "Bearer replacement-secret")
+	newKey := httptest.NewRecorder()
+	handler(newKey, newRequest)
+	if newKey.Code != http.StatusOK || !called {
+		t.Fatalf("replacement key status=%d called=%v", newKey.Code, called)
 	}
 }
 

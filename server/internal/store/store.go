@@ -435,6 +435,11 @@ func migrationCreateStatements() []string {
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			UNIQUE(resource_type, resource_key)
 		)`,
+		`CREATE TABLE IF NOT EXISTS application_settings (
+			setting_key TEXT PRIMARY KEY,
+			value_encrypted TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
 		`CREATE TABLE IF NOT EXISTS icloud_hme_automation_results (
 			mailbox_email TEXT PRIMARY KEY REFERENCES icloud_hme_aliases(email) ON DELETE CASCADE,
 			status TEXT NOT NULL DEFAULT 'new',

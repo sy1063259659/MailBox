@@ -31,12 +31,16 @@ func main() {
 	if err := database.EnsureAdmin(ctx, cfg.AdminUsername, cfg.AdminPassword); err != nil {
 		log.Fatalf("admin init failed: %v", err)
 	}
+	integrationAPIKey, err := database.EnsureIntegrationAPIKey(ctx, cfg.IntegrationAPIKey)
+	if err != nil {
+		log.Fatalf("integration API key init failed: %v", err)
+	}
 
 	server := &http.Server{
 		Addr: cfg.Addr,
 		Handler: staticfiles.Handler(
 			cfg.StaticDir,
-			api.NewRouter(database, session.NewManager(cfg.SessionSecret, cfg.CookieSecure), cfg.IntegrationAPIKey),
+			api.NewRouter(database, session.NewManager(cfg.SessionSecret, cfg.CookieSecure), integrationAPIKey),
 		),
 	}
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"gptbox-server/internal/store"
@@ -15,7 +16,28 @@ type integrationAPI struct {
 	store *store.Store
 	hme   *iCloudHMEAPI
 	sms   smsAPI
-	key   string
+	keys  *integrationKeyState
+}
+
+type integrationKeyState struct {
+	mu  sync.RWMutex
+	key string
+}
+
+func newIntegrationKeyState(key string) *integrationKeyState {
+	return &integrationKeyState{key: strings.TrimSpace(key)}
+}
+
+func (state *integrationKeyState) current() string {
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.key
+}
+
+func (state *integrationKeyState) replace(key string) {
+	state.mu.Lock()
+	state.key = strings.TrimSpace(key)
+	state.mu.Unlock()
 }
 
 func (api integrationAPI) acquireSMS(w http.ResponseWriter, r *http.Request) {
@@ -63,8 +85,12 @@ func (api integrationAPI) latestSMS(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "message": message, "code": code, "available": code != "", "checkedAt": time.Now()})
 }
 
-func integrationAuthRequired(key string, handler http.HandlerFunc) http.HandlerFunc {
+func integrationAuthRequired(keys *integrationKeyState, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		key := ""
+		if keys != nil {
+			key = keys.current()
+		}
 		if strings.TrimSpace(key) == "" {
 			WriteError(w, http.StatusServiceUnavailable, "integration_disabled", "集成 API 尚未配置")
 			return
@@ -75,6 +101,27 @@ func integrationAuthRequired(key string, handler http.HandlerFunc) http.HandlerF
 			return
 		}
 		handler(w, r.WithContext(context.WithValue(r.Context(), requestActorKey{}, "integration")))
+	}
+}
+
+func (api integrationAPI) integrationAPIKeySettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "apiKey": api.keys.current()})
+	case http.MethodPost:
+		if api.store == nil {
+			WriteError(w, http.StatusServiceUnavailable, "settings_unavailable", "设置存储不可用")
+			return
+		}
+		key, err := api.store.ResetIntegrationAPIKey(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "integration_key_reset_failed", "重置 Integration API Key 失败")
+			return
+		}
+		api.keys.replace(key)
+		WriteJSON(w, http.StatusOK, map[string]any{"ok": true, "apiKey": key})
+	default:
+		WriteError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
 	}
 }
 
